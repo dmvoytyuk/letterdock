@@ -69,12 +69,30 @@ jobs:
       #     wait-for-completion: true
       #     output-artifact-directory: release
 
+      # Stable-name copy for the website's Download button:
+      # https://github.com/voydapps/letterdock/releases/latest/download/Letterdock-Setup.exe
+      # Made after the self-tests. latest.yml is untouched and still points at the versioned file,
+      # which is what electron-updater uses. The blockmap stays with the versioned file only.
+      - name: Make stable-name installer copy
+        shell: bash
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(release/Letterdock-Setup-*.exe)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one versioned installer in release/, found ${#files[@]}"
+            exit 1
+          fi
+          cp "${files[0]}" release/Letterdock-Setup.exe
+          grep -q "$(basename "${files[0]}")" release/latest.yml
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: letterdock-windows
           if-no-files-found: error
           path: |
             release/Letterdock-Setup-*.exe
+            release/Letterdock-Setup.exe
             release/Letterdock-Setup-*.exe.blockmap
             release/latest.yml
 
@@ -84,6 +102,7 @@ jobs:
         with:
           files: |
             release/Letterdock-Setup-*.exe
+            release/Letterdock-Setup.exe
             release/Letterdock-Setup-*.exe.blockmap
             release/latest.yml
           fail_on_unmatched_files: true
