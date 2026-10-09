@@ -27,6 +27,8 @@ export interface SeedMessage {
   raw: string;
   flags?: string[];
   internaldate?: Date;
+  /** Gmail conversation id (X-GM-THRID). Needs the 'X-GM-EXT-1' plugin. */
+  gmThrid?: string;
 }
 
 export interface FakeImapOptions {
@@ -57,6 +59,9 @@ export const DEFAULT_PLUGINS = [
   'LIST-EXTENDED',
 ];
 
+/** A Gmail-like server: also offers X-GM-EXT-1 (X-GM-MSGID, X-GM-THRID, labels). */
+export const PLUGINS_GMAIL = [...DEFAULT_PLUGINS, 'X-GM-EXT-1'];
+
 /** Plugins for a server without CONDSTORE (forces the full flag-fetch path). */
 export const PLUGINS_NO_CONDSTORE = DEFAULT_PLUGINS.filter((p) => p !== 'CONDSTORE');
 
@@ -67,17 +72,48 @@ export interface RawMessageOpts {
   date?: Date;
   messageId?: string;
   text?: string;
+  cc?: string;
+  inReplyTo?: string;
+  references?: string;
+  /** Adds a small PDF attachment. */
+  attachment?: boolean;
 }
 
 export function rawMessage(o: RawMessageOpts): string {
   const id = o.messageId ?? `<${Math.random().toString(36).slice(2)}@fake.test>`;
-  return [
+  const head = [
     `From: ${o.from ?? 'Alice <alice@example.com>'}`,
     `To: ${o.to ?? 'Me <me@example.com>'}`,
+    ...(o.cc ? [`Cc: ${o.cc}`] : []),
     `Subject: ${o.subject}`,
     `Date: ${(o.date ?? new Date()).toUTCString()}`,
     `Message-ID: ${id}`,
+    ...(o.inReplyTo ? [`In-Reply-To: ${o.inReplyTo}`] : []),
+    ...(o.references ? [`References: ${o.references}`] : []),
     'MIME-Version: 1.0',
+  ];
+  if (o.attachment) {
+    const b = 'ATT-BOUNDARY';
+    return [
+      ...head,
+      `Content-Type: multipart/mixed; boundary="${b}"`,
+      '',
+      `--${b}`,
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      o.text ?? 'Hello from the fake server.',
+      `--${b}`,
+      'Content-Type: application/pdf; name="doc.pdf"',
+      'Content-Transfer-Encoding: base64',
+      'Content-Disposition: attachment; filename="doc.pdf"',
+      '',
+      Buffer.from(PDF_TEXT).toString('base64'),
+      `--${b}--`,
+      '',
+    ].join('\r\n');
+  }
+  return [
+    ...head,
     'Content-Type: text/plain; charset=utf-8',
     '',
     o.text ?? 'Hello from the fake server.',
@@ -135,6 +171,7 @@ function buildStorage(o: FakeImapOptions): Record<string, unknown> {
       raw: m.raw,
       flags: m.flags ?? [],
       internaldate: m.internaldate ?? new Date(),
+      ...(m.gmThrid ? { 'X-GM-THRID': m.gmThrid } : {}),
     })),
   });
   const f = (special: string | null, extra: SeedMessage[] = []) => ({
@@ -252,6 +289,8 @@ export async function startFakeImap(opts: FakeImapOptions = {}): Promise<FakeIma
         msg.flags ?? [],
         msg.internaldate ?? new Date(),
         msg.raw,
+        false,
+        msg.gmThrid ? { 'X-GM-THRID': msg.gmThrid } : undefined,
       );
       return message.uid;
     },

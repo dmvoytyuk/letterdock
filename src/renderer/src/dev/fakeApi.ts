@@ -5,6 +5,7 @@
 import type {
   Account,
   AccountStatus,
+  ConversationRow,
   Address,
   AppEvent,
   AppSettings,
@@ -218,6 +219,7 @@ const settings: AppSettings = {
   alwaysShowCcBcc: false,
   rememberComposeBounds: true,
   suggestFromAllAccounts: true,
+  groupConversations: false,
 };
 
 const statuses: AccountStatus[] = [
@@ -395,6 +397,42 @@ function scopeFilter(scope: { kind: string; folderId?: number; accountId?: strin
     if (scope.kind === 'unifiedUnread') return !m.seen && role === 'inbox';
     return role === 'inbox';
   };
+}
+
+// ---------- conversations (simple fake: same account + same subject without Re:/Fwd:) ----------
+const plainSubject = (s: string) => s.replace(/^s*((re|fwd?|aw|sv)s*:s*)+/i, '').trim();
+const threadOfFake = (m: MessageHeader) => `fake:${m.accountId}:${plainSubject(m.subject).toLowerCase()}`;
+function fakeConversationRows(scope: { kind: string; folderId?: number; accountId?: string }, unreadOnly: boolean): ConversationRow[] {
+  const inScope = scopeFilter(scope);
+  const own = new Set(accounts.map((a) => a.email.toLowerCase()));
+  const member = new Set(messages.filter((m) => inScope(m) && (!unreadOnly || !m.seen)).map(threadOfFake));
+  const byThread = new Map<string, MessageHeader[]>();
+  for (const m of messages) {
+    const key = threadOfFake(m);
+    if (!member.has(key)) continue;
+    const role = folderOf(m.folderId).role;
+    const included = scope.kind === 'folder' && folderOf(scope.folderId!).role !== 'inbox' ? m.folderId === scope.folderId : role === 'inbox' || role === 'sent' || role === 'archive';
+    if (!included) continue;
+    byThread.set(key, [...(byThread.get(key) ?? []), m]);
+  }
+  const rows: ConversationRow[] = [];
+  for (const [threadId, list] of byThread) {
+    list.sort((a, b) => a.date - b.date || a.id - b.id);
+    const latest = list[list.length - 1]!;
+    rows.push({
+      threadId,
+      accountId: latest.accountId,
+      count: list.length,
+      unreadCount: list.filter((m) => !m.seen).length,
+      hasFlag: list.some((m) => m.flagged),
+      hasAttachment: list.some((m) => m.hasAttachments),
+      participants: [...new Map([...list].reverse().map((m) => [m.from?.address ?? '?', { name: m.from?.name ?? null, address: m.from?.address ?? '?', isMe: own.has((m.from?.address ?? '').toLowerCase()), hasUnread: list.some((x) => x.from?.address === m.from?.address && !x.seen) }])).values()],
+      latest: { id: latest.id, subject: latest.subject, title: plainSubject(latest.subject), snippet: latest.snippet, date: latest.date, fromMe: own.has((latest.from?.address ?? '').toLowerCase()), from: latest.from },
+      folderMessageIds: list.filter(inScope).map((m) => m.id),
+      messageIds: list.map((m) => m.id),
+    });
+  }
+  return rows.sort((a, b) => b.latest.date - a.latest.date || b.latest.id - a.latest.id);
 }
 
 interface Parsed {
@@ -635,6 +673,45 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         canLoadOlderFromServer: false,
         total: cursor ? null : list.length,
       });
+    }
+    case 'conversations.list': {
+      const rows = fakeConversationRows(r!.scope as never, !!r!.unreadOnly);
+      const cursor = r!.cursor as { date: number; id: number } | null;
+      const limit = (r!.limit as number) ?? 50;
+      const after = cursor ? rows.filter((x) => x.latest.date < cursor.date || (x.latest.date === cursor.date && x.latest.id < cursor.id)) : rows;
+      const page = after.slice(0, limit);
+      const more = after.length > limit;
+      return delay({
+        items: page,
+        nextCursor: more ? { date: page[page.length - 1]!.latest.date, id: page[page.length - 1]!.latest.id } : null,
+        canLoadOlderFromServer: false,
+        total: cursor ? null : rows.length,
+      });
+    }
+    case 'conversations.get': {
+      const list = messages.filter((m) => threadOfFake(m) === r!.threadId).sort((a, b) => a.date - b.date || a.id - b.id);
+      if (list.length === 0) return err('NOT_FOUND', 'This conversation was moved or deleted.');
+      const inScope = r!.scope ? scopeFilter(r!.scope as never) : () => false;
+      const own = new Set(accounts.map((a) => a.email.toLowerCase()));
+      return delay({
+        threadId: r!.threadId,
+        accountId: r!.accountId,
+        title: plainSubject(list[list.length - 1]!.subject),
+        count: list.length,
+        messages: list.map((m) => ({ header: m, folderId: m.folderId, folderRole: folderOf(m.folderId).role, folderName: folderOf(m.folderId).name, inCurrentFolder: inScope(m), isDraft: m.draft, fromMe: own.has((m.from?.address ?? '').toLowerCase()) })),
+      });
+    }
+    case 'conversations.act': {
+      const inScope = scopeFilter(r!.scope as never);
+      const ids: number[] = [];
+      for (const t of r!.threadIds as string[]) {
+        const list = messages.filter((m) => threadOfFake(m) === t && inScope(m)).sort((a, b) => a.date - b.date || a.id - b.id);
+        const a = r!.action as { type: string; read?: boolean; flagged?: boolean };
+        if (a.type === 'markRead') ids.push(...(a.read ? list.filter((m) => !m.seen) : list.slice(-1)).map((m) => m.id));
+        else if (a.type === 'flag') ids.push(...(a.flagged ? list.slice(-1) : list.filter((m) => m.flagged)).map((m) => m.id));
+        else ids.push(...list.map((m) => m.id));
+      }
+      return handle('messages.apply', { messageIds: ids, action: r!.action }).then((res) => ({ ...(res as object), threadCount: (r!.threadIds as string[]).length, messageCount: ids.length }));
     }
     case 'messages.getHeaders':
       return delay(messages.filter((m) => (r!.messageIds as number[]).includes(m.id)));

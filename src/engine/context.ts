@@ -17,6 +17,15 @@ export class EventHub {
   } | null = null;
   private countsDirty = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Where `conversations:changed` comes from (set by the engine): the conversations of changed message
+   * ids, and the ones the message repo collected itself (merges, deleted rows).
+   */
+  threadSource?: {
+    keysOf(ids: number[]): { accountId: string; threadId: string }[];
+    drain(): Map<string, Set<string>>;
+    enabled(): boolean;
+  };
 
   constructor(
     private readonly send: (e: AppEvent) => void,
@@ -54,10 +63,32 @@ export class EventHub {
     this.schedule();
   }
 
+  /** Conversations changed without message ids (a background pass): send `conversations:changed` soon. */
+  touchThreads(): void {
+    this.schedule();
+  }
+
   /** Counts changed without message ids (e.g. after folder changes). */
   touchCounts(): void {
     this.countsDirty = true;
     this.schedule();
+  }
+
+  private flushThreads(p: EventHub['pending']): void {
+    const src = this.threadSource!;
+    const byAccount = src.drain();
+    if (!src.enabled()) return;
+    if (p) {
+      for (const k of src.keysOf([...p.added, ...p.updated])) {
+        let set = byAccount.get(k.accountId);
+        if (!set) byAccount.set(k.accountId, (set = new Set()));
+        set.add(k.threadId);
+      }
+    }
+    for (const [accountId, set] of byAccount) {
+      if (set.size === 0) continue;
+      this.send({ type: 'conversations:changed', accountId, threadIds: [...set] });
+    }
   }
 
   private schedule(): void {
@@ -68,6 +99,8 @@ export class EventHub {
   flush(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    const p0 = this.pending;
+    if (this.threadSource) this.flushThreads(p0);
     if (this.pending) {
       const p = this.pending;
       this.pending = null;

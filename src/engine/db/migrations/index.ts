@@ -4,6 +4,7 @@ import snippetChecked from './003_snippet_checked.sql?raw';
 import resetHeaderSnippets from './004_reset_header_snippets.sql?raw';
 import contacts from './005_contacts.sql?raw';
 import localDrafts from './006_local_drafts.sql?raw';
+import conversations from './007_conversations.sql?raw';
 
 export interface Migration {
   version: number;
@@ -18,4 +19,5 @@ export const MIGRATIONS: Migration[] = [
   { version: 4, sql: resetHeaderSnippets },
   { version: 5, sql: contacts },
   { version: 6, sql: localDrafts },
+  { version: 7, sql: conversations },
 ];

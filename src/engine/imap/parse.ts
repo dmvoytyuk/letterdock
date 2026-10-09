@@ -36,6 +36,8 @@ export interface FetchedLike {
   bodyStructure?: StructLike | undefined;
   headers?: Buffer | undefined;
   modseq?: bigint | undefined;
+  /** Server conversation id (Gmail X-GM-THRID / OBJECTID THREADID). */
+  threadId?: string | undefined;
 }
 
 export function toAddresses(list: EnvAddr[] | undefined): Address[] {
@@ -176,5 +178,6 @@ export function fetchedToHeader(accountId: string, folderId: number, m: FetchedL
     flags: flagsToSet(m.flags),
     modseq: m.modseq !== undefined ? m.modseq.toString() : null,
     hasAttachments: structureHasAttachments(m.bodyStructure),
+    gmThrid: m.threadId ? String(m.threadId) : null,
   };
 }

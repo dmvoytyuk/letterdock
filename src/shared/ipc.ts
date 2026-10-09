@@ -137,6 +137,11 @@ export interface MessageHeader {
    * upload failed; it is retried automatically, or at once with `drafts.retrySave`), 'saved'.
    */
   draftSync?: DraftSyncState;
+  /**
+   * Conversation this message belongs to (DESIGN-SPEC 3.10). Present on every message once the
+   * engine has threaded it; the same value for all messages of one conversation.
+   */
+  threadId?: string;
 }
 
 export type DraftSyncState = 'saving' | 'queued' | 'failed' | 'saved';
@@ -177,6 +182,104 @@ export type ListScope =
 export interface PageCursor {
   date: EpochMs;
   id: MessageId;
+}
+
+// ---------- conversations (DESIGN-SPEC 3.10) ----------
+export interface ConversationParticipant {
+  name: string | null;
+  address: string; // lower case
+  /** One of the user's own addresses (the UI shows "me"). */
+  isMe: boolean;
+  hasUnread: boolean;
+}
+
+export interface ConversationRow {
+  /** Unique across accounts. A conversation never crosses accounts. */
+  threadId: string;
+  accountId: AccountId;
+  /** Messages shown in this view: Message-ID duplicates counted once, drafts not counted. */
+  count: number;
+  unreadCount: number;
+  hasFlag: boolean;
+  hasAttachment: boolean;
+  /** Distinct senders, most recent first. The UI shows the first 3 and "+N". */
+  participants: ConversationParticipant[];
+  /** The newest message of the conversation (in the folders this view includes). */
+  latest: {
+    id: MessageId;
+    /** Subject as written. */
+    subject: string;
+    /** Subject without Re:/Fwd:/AW:/SV: prefixes, for the row title. */
+    title: string;
+    snippet: string;
+    date: EpochMs;
+    fromMe: boolean;
+    from: Address | null;
+  };
+  /** The messages that are in the folder being viewed (what actions change). Oldest first. */
+  folderMessageIds: MessageId[];
+  /** All messages counted in `count` (one id per Message-ID), oldest first. */
+  messageIds: MessageId[];
+}
+
+export interface ListConversationsReq {
+  scope: ListScope;
+  /** `date` = latest date of the conversation, `id` = tie-breaker given back as nextCursor. */
+  cursor: PageCursor | null;
+  limit: number; // 1..200, default 50
+  unreadOnly?: boolean;
+}
+export interface ListConversationsRes {
+  items: ConversationRow[];
+  nextCursor: PageCursor | null;
+  canLoadOlderFromServer: boolean;
+  /** Number of conversations in the view (first page only), else null. */
+  total: number | null;
+}
+
+export interface ConversationMessage {
+  header: MessageHeader;
+  folderId: FolderId;
+  folderRole: FolderRole | null;
+  folderName: string;
+  /** The message is in the folder (or scope) the user is looking at. Without a scope: false. */
+  inCurrentFolder: boolean;
+  /** A draft (shown as a collapsed card with a "Draft" chip; not counted). */
+  isDraft: boolean;
+  fromMe: boolean;
+}
+export interface GetConversationReq {
+  threadId: string;
+  accountId: AccountId;
+  /** The view the user is in. It decides which folders are included and `inCurrentFolder`. */
+  scope?: ListScope;
+}
+export interface GetConversationRes {
+  threadId: string;
+  accountId: AccountId;
+  /** Title without Re:/Fwd: prefixes. */
+  title: string;
+  /** Messages counted for the title block ("4 messages"): drafts not counted. */
+  count: number;
+  /** Oldest first. */
+  messages: ConversationMessage[];
+}
+
+export interface ConversationActReq {
+  threadIds: string[];
+  /** The view the user acts in: only the messages that are in it are changed. */
+  scope: ListScope;
+  /**
+   * Archive, delete, move, spam, notSpam: all messages in the view.
+   * markRead true: every unread one; markRead false: only the newest.
+   * flag false: unflag all of them; flag true: flag only the newest.
+   */
+  action: MessageAction;
+}
+export interface ConversationActRes extends ApplyActionRes {
+  threadCount: number;
+  /** Messages the action was applied to (for the toast: "Conversation archived (4 messages)"). */
+  messageCount: number;
 }
 
 export interface ListMessagesReq {
@@ -569,6 +672,8 @@ export interface AppSettings {
   rememberComposeBounds: boolean;
   /** Recipient suggestions also offer addresses known only from the user's other accounts (after the From account's own). Default true. */
   suggestFromAllAccounts: boolean;
+  /** Show one row per conversation (DESIGN-SPEC 3.10). Default false. */
+  groupConversations: boolean;
 }
 
 // ---------- app updates (section 0, item 7; GitHub Releases via electron-updater) ----------
@@ -627,6 +732,10 @@ export interface IpcMethods {
   'messages.apply': { req: ApplyActionReq; res: ApplyActionRes };
   'messages.undo': { req: UndoReq; res: UndoRes };
   'messages.markAllRead': { req: MarkAllReadReq; res: { count: number } };
+  // conversations (DESIGN-SPEC 3.10)
+  'conversations.list': { req: ListConversationsReq; res: ListConversationsRes };
+  'conversations.get': { req: GetConversationReq; res: GetConversationRes };
+  'conversations.act': { req: ConversationActReq; res: ConversationActRes };
   'senders.allowImages': { req: AllowSenderImagesReq; res: void };
   'senders.listAllowed': { req: void; res: string[] };
   /** Open the message in its own window (main). Opening it again focuses the existing window. */
@@ -749,6 +858,8 @@ export type AppEvent =
       reason: 'exists' | 'gone' | 'refused';
       resolvedName?: string;
     }
+  /** Conversations changed (new mail, move, flag, merge). Re-fetch these rows. */
+  | { type: 'conversations:changed'; accountId: AccountId; threadIds: string[] }
   | { type: 'outbox:changed' }
   | { type: 'send:result'; outboxId: number; ok: boolean; error?: AppError }
   | { type: 'update:status'; status: UpdateStatus }

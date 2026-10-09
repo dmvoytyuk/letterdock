@@ -17,6 +17,8 @@ import { ComposeService } from './smtp/composeService';
 import { SearchService } from './search/searchService';
 import { ActionService } from './messages/actionService';
 import { MessageService } from './messages/messageService';
+import { ConversationService } from './messages/conversationService';
+import { ThreadBackfill } from './messages/threadBackfill';
 import { ContactService } from './contacts/contactService';
 import { pruneBodyCache } from './messages/bodyCache';
 
@@ -51,6 +53,8 @@ export interface Engine {
   applySettings(): Promise<void>;
   start(): void;
   shutdown(): Promise<void>;
+  /** Test hook: resolves when messages stored before conversations existed are threaded. */
+  threadsReady(): Promise<void>;
 }
 
 export function createEngine(opts: EngineOptions): Engine {
@@ -83,6 +87,13 @@ export function createEngine(opts: EngineOptions): Engine {
   const folderSvc = new FolderService(ctx, sessions, actions);
   const search = new SearchService(ctx, sessions);
   const compose = new ComposeService(ctx, sessions, messages, actions);
+  const conversations = new ConversationService(ctx, messages, actions);
+  const threadBackfill = new ThreadBackfill(ctx);
+  ctx.hub.threadSource = {
+    keysOf: (ids) => ctx.messages.threadKeysOf(ids),
+    drain: () => ctx.messages.drainTouchedThreads(),
+    enabled: () => ctx.settings().groupConversations === true,
+  };
 
   const handlers: Handlers = {
     'accounts.list': () => accounts.list(),
@@ -106,6 +117,9 @@ export function createEngine(opts: EngineOptions): Engine {
     'messages.getHeaders': (r) => messages.getHeaders(r.messageIds),
     'messages.rawSource': (r) => messages.rawSource(r.messageId),
     'messages.apply': (r) => actions.apply(r),
+    'conversations.list': (r) => conversations.list(r),
+    'conversations.get': (r) => conversations.get(r),
+    'conversations.act': (r) => conversations.act(r),
     'attachments.cidData': (r) => messages.cidData(r.messageId, r.contentId),
 
     'folders.empty': (r) => actions.emptyFolder(r.folderId),
@@ -187,6 +201,7 @@ export function createEngine(opts: EngineOptions): Engine {
     actions,
     compose,
     applySettings: () => cleanBodyCache(),
+    threadsReady: () => threadBackfill.whenDone(),
     async handle(channel, payload) {
       const h = (handlers as Record<string, (r: unknown) => unknown>)[channel];
       if (h) return h(payload);
@@ -208,6 +223,7 @@ export function createEngine(opts: EngineOptions): Engine {
       cacheTimer = setInterval(() => void cleanBodyCache(), 60 * 60_000);
       cacheTimer.unref();
       compose.start();
+      threadBackfill.start();
       // One-time learning from the headers that are already stored (runs in small chunks).
       void ctx.contacts.backfill().catch((e) =>
         ctx.log.warn({ err: String(e?.message ?? e) }, 'contacts backfill failed'),
@@ -215,6 +231,7 @@ export function createEngine(opts: EngineOptions): Engine {
     },
     async shutdown() {
       if (cacheTimer) clearInterval(cacheTimer);
+      threadBackfill.stop();
       ctx.contacts.stop();
       await compose.shutdown().catch(() => undefined);
       actions.stop();

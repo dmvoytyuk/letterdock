@@ -45,7 +45,7 @@ export class MessageService {
     };
   }
 
-  private canLoadOlder(scope: ListScope): boolean {
+  canLoadOlder(scope: ListScope): boolean {
     const base =
       'uidvalidity IS NOT NULL AND history_complete = 0 AND oldest_synced_uid > 1 AND selectable = 1';
     let sql: string;

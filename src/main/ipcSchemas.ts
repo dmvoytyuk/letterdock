@@ -88,6 +88,7 @@ const settingsPatch = z
     alwaysShowCcBcc: z.boolean(),
     rememberComposeBounds: z.boolean(),
     suggestFromAllAccounts: z.boolean(),
+    groupConversations: z.boolean(),
   })
   .partial();
 
@@ -162,6 +163,18 @@ export const schemas: Schemas = {
   'messages.undo': z.object({ undoToken: str(200) }),
   'messages.markAllRead': z.object({
     scope: z.union([scope, z.object({ kind: z.literal('account'), accountId })]),
+  }),
+  'conversations.list': z.object({
+    scope,
+    cursor: z.object({ date: z.number(), id: z.number() }).nullable(),
+    limit: z.number().int().min(1).max(200),
+    unreadOnly: z.boolean().optional(),
+  }),
+  'conversations.get': z.object({ threadId: str(300).min(1), accountId, scope: scope.optional() }),
+  'conversations.act': z.object({
+    threadIds: z.array(str(300).min(1)).min(1).max(1000),
+    scope,
+    action,
   }),
   'senders.allowImages': z.object({ address: str(320), allow: z.boolean() }),
   'senders.listAllowed': none,

@@ -37,6 +37,9 @@ const HEADER_QUERY = {
   envelope: true,
   bodyStructure: true,
   headers: ['references'],
+  // Gmail (X-GM-THRID) and servers with OBJECTID (THREADID) tell their own conversation id; for other
+  // servers imapflow leaves the item out. (DESIGN-SPEC 3.10.1)
+  threadId: true,
 };
 
 export async function fetchHeaders(client: ImapFlow, uids: number[]): Promise<FetchedLike[]> {

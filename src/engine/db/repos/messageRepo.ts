@@ -10,7 +10,9 @@ import type {
 } from '../../../shared/ipc';
 import type { ContactSource } from '../../contacts/contactService';
 import { ftsText } from '../../messages/bodyUtils';
+import { normalizeSubject } from '../../messages/threading';
 import type { Db } from '../connection';
+import { ThreadRepo, type ThreadKey } from './threadRepo';
 
 export interface FlagSet {
   seen: boolean;
@@ -40,6 +42,8 @@ export interface HeaderInput {
   flags: FlagSet;
   modseq: string | null;
   hasAttachments: boolean;
+  /** The server's conversation id (Gmail X-GM-THRID), when it gave one. */
+  gmThrid?: string | null;
 }
 
 export interface LocalFlagRow extends FlagSet {
@@ -76,6 +80,11 @@ export interface MessageRow {
   body_state: 'none' | 'cached';
   /** Drafts only: 'saving' | 'queued' | 'failed' while the server copy is not up to date; else null. */
   draft_sync: string | null;
+  /** Conversation (DESIGN-SPEC 3.10). */
+  thread_id: string | null;
+  subject_norm: string | null;
+  /** 1 once the rules looked at this message (DESIGN-SPEC 3.12). */
+  rules_done?: number;
 }
 
 interface ContactRow {
@@ -146,6 +155,7 @@ export function rowToHeader(r: MessageRow): MessageHeader {
     hasAttachments: r.has_attachments === 1,
     size: r.size,
     bodyCached: r.body_state === 'cached',
+    ...(r.thread_id ? { threadId: r.thread_id } : {}),
   };
 }
 
@@ -210,7 +220,49 @@ export function scopeFilter(scope: ListScope, unreadOnly: boolean): ScopeFilter 
 }
 
 export class MessageRepo {
-  constructor(private readonly db: Db) {}
+  readonly threads: ThreadRepo;
+  /**
+   * Conversations that changed since the last `drainTouchedThreads` (rows added or deleted, threads
+   * merged). The event hub turns these into `conversations:changed`.
+   */
+  private touched = new Map<string, Set<string>>();
+
+  constructor(private readonly db: Db) {
+    this.threads = new ThreadRepo(db);
+  }
+
+  /** Remember that these conversations changed. */
+  touchThreads(keys: ThreadKey[]): void {
+    for (const k of keys) {
+      let set = this.touched.get(k.accountId);
+      if (!set) this.touched.set(k.accountId, (set = new Set()));
+      if (set.size < 2000) set.add(k.threadId);
+    }
+  }
+
+  /** Conversations that changed, then forget them. */
+  drainTouchedThreads(): Map<string, Set<string>> {
+    const out = this.touched;
+    this.touched = new Map();
+    return out;
+  }
+
+  /** Conversation of each message id (rows that exist), grouped by account. */
+  threadKeysOf(ids: MessageId[]): ThreadKey[] {
+    const out: ThreadKey[] = [];
+    const stmt = this.db.prepare('SELECT account_id, thread_id FROM message WHERE id = ?');
+    for (const id of ids) {
+      const r = stmt.get(id) as { account_id: string; thread_id: string | null } | undefined;
+      if (r?.thread_id) out.push({ accountId: r.account_id, threadId: r.thread_id });
+    }
+    return out;
+  }
+
+  /** Called before rows are deleted: their conversations still change. */
+  private captureThreads(ids: MessageId[]): void {
+    if (ids.length === 0) return;
+    this.touchThreads(this.threadKeysOf(ids));
+  }
 
   // ---------- FTS (regular table; rowid == message.id) ----------
   private ftsReplace(
@@ -239,10 +291,12 @@ export class MessageRepo {
     const insert = this.db.prepare(
       `INSERT INTO message (account_id,folder_id,uid,message_id,in_reply_to,references_h,thread_key,subject,
          from_name,from_addr,to_json,cc_json,bcc_json,reply_to_json,date_ms,internal_ms,size,
-         flag_seen,flag_flagged,flag_answered,flag_draft,flag_deleted,keywords_json,modseq,has_attachments)
+         flag_seen,flag_flagged,flag_answered,flag_draft,flag_deleted,keywords_json,modseq,has_attachments,
+         thread_id,subject_norm)
        VALUES (@accountId,@folderId,@uid,@messageId,@inReplyTo,@references,@threadKey,@subject,
          @fromName,@fromAddr,@to,@cc,@bcc,@replyTo,@dateMs,@internalMs,@size,
-         @seen,@flagged,@answered,@draft,@deleted,@keywords,@modseq,@hasAttachments)`,
+         @seen,@flagged,@answered,@draft,@deleted,@keywords,@modseq,@hasAttachments,
+         @threadId,@subjectNorm)`,
     );
     const updateFlags = this.db.prepare(
       `UPDATE message SET flag_seen=?, flag_flagged=?, flag_answered=?, flag_draft=?, flag_deleted=?,
@@ -265,7 +319,25 @@ export class MessageRepo {
           updated.push(existing.id);
           continue;
         }
+        const thread = this.threads.resolve({
+          accountId: h.accountId,
+          messageId: h.messageId,
+          inReplyTo: h.inReplyTo,
+          references: h.references,
+          subject: h.subject,
+          fromAddr: h.from?.address ?? null,
+          to: h.to,
+          cc: h.cc,
+          dateMs: h.dateMs,
+          gmThrid: h.gmThrid ?? null,
+        });
+        this.touchThreads([
+          { accountId: h.accountId, threadId: thread.threadId },
+          ...thread.merged.map((t) => ({ accountId: h.accountId, threadId: t })),
+        ]);
         const res = insert.run({
+          threadId: thread.threadId,
+          subjectNorm: thread.subjectNorm,
           accountId: h.accountId,
           folderId: h.folderId,
           uid: h.uid,
@@ -400,6 +472,7 @@ export class MessageRepo {
         const r = find.get(folderId, uid) as { id: number } | undefined;
         if (!r) continue;
         ids.push(r.id);
+        this.captureThreads([r.id]);
         del.run(r.id);
       }
       this.ftsDelete(ids);
@@ -409,6 +482,7 @@ export class MessageRepo {
 
   deleteById(id: MessageId): void {
     this.db.transaction(() => {
+      this.captureThreads([id]);
       this.db.prepare('DELETE FROM message WHERE id = ?').run(id);
       this.ftsDelete([id]);
     })();
@@ -422,6 +496,7 @@ export class MessageRepo {
       }[]
     ).map((r) => r.id);
     this.db.transaction(() => {
+      this.captureThreads(ids);
       this.db.prepare('DELETE FROM message WHERE folder_id = ?').run(folderId);
       this.ftsDelete(ids);
     })();
@@ -433,6 +508,7 @@ export class MessageRepo {
     if (ids.length === 0) return;
     this.db.transaction(() => {
       const del = this.db.prepare('DELETE FROM message WHERE id = ?');
+      this.captureThreads(ids);
       for (const id of ids) del.run(id);
       this.ftsDelete(ids);
     })();
@@ -569,6 +645,7 @@ export class MessageRepo {
   ): { id: MessageId; created: boolean } {
     const cols = {
       subject: d.subject,
+      subjectNorm: normalizeSubject(d.subject),
       fromName: d.from?.name ?? null,
       fromAddr: d.from?.address ?? null,
       to: JSON.stringify(d.to),
@@ -586,18 +663,36 @@ export class MessageRepo {
       let rowId = id !== null && this.row(id) ? id : null;
       let created = false;
       if (rowId === null) {
+        const thread = this.threads.resolve({
+          accountId: d.accountId,
+          messageId: d.messageId,
+          inReplyTo: d.inReplyTo,
+          references: d.references,
+          subject: d.subject,
+          fromAddr: d.from?.address ?? null,
+          to: d.to,
+          cc: d.cc,
+          dateMs: d.dateMs,
+        });
+        this.touchThreads([
+          { accountId: d.accountId, threadId: thread.threadId },
+          ...thread.merged.map((t) => ({ accountId: d.accountId, threadId: t })),
+        ]);
         const res = this.db
           .prepare(
             `INSERT INTO message (account_id,folder_id,uid,message_id,in_reply_to,references_h,thread_key,subject,
                from_name,from_addr,to_json,cc_json,bcc_json,date_ms,internal_ms,snippet,
-               flag_seen,flag_draft,has_attachments,draft_sync)
+               flag_seen,flag_draft,has_attachments,draft_sync,thread_id,subject_norm)
              VALUES (@accountId,@folderId,
                -(SELECT COALESCE(MAX(id),0)+1 FROM message),
                @messageId,@inReplyTo,@references,@threadKey,@subject,
-               @fromName,@fromAddr,@to,@cc,@bcc,@dateMs,@dateMs,@snippet,1,1,@hasAttachments,@sync)`,
+               @fromName,@fromAddr,@to,@cc,@bcc,@dateMs,@dateMs,@snippet,1,1,@hasAttachments,@sync,
+               @threadId,@subjectNorm)`,
           )
           .run({
             ...cols,
+            threadId: thread.threadId,
+            subjectNorm: thread.subjectNorm,
             accountId: d.accountId,
             folderId: d.folderId,
             messageId: d.messageId,
@@ -613,7 +708,7 @@ export class MessageRepo {
       } else {
         this.db
           .prepare(
-            `UPDATE message SET subject=@subject, from_name=@fromName, from_addr=@fromAddr, to_json=@to,
+            `UPDATE message SET subject=@subject, subject_norm=@subjectNorm, from_name=@fromName, from_addr=@fromAddr, to_json=@to,
                cc_json=@cc, bcc_json=@bcc, date_ms=@dateMs, internal_ms=@dateMs, snippet=@snippet,
                has_attachments=@hasAttachments, draft_sync=@sync, flag_draft=1, flag_seen=1,
                in_reply_to=@inReplyTo, references_h=@references
@@ -851,6 +946,7 @@ export class MessageRepo {
       const gone: number[] = [];
       for (const r of rows) {
         if (keep.has(r.id)) continue;
+        this.captureThreads([r.id]);
         del.run(r.id);
         gone.push(r.id);
         const list = out.get(r.folderId) ?? [];

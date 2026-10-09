@@ -25,6 +25,8 @@ declare module 'hoodiecrow-imap' {
       flags: string[],
       internaldate: string | Date,
       raw: string,
+      ignoreConnection?: boolean,
+      properties?: Record<string, unknown>,
     ): { mailbox: HoodiecrowMailbox; message: HoodiecrowMessage };
     listen(port: number, host: string, cb: () => void): void;
     address(): { port: number };

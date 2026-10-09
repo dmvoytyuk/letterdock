@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alwaysShowCcBcc: false,
   rememberComposeBounds: true,
   suggestFromAllAccounts: true,
+  groupConversations: false,
 };
 
 interface StoredFile {

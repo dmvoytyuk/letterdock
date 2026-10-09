@@ -27,6 +27,7 @@ import { loadOlder, syncFolder } from './syncFolder';
 import { isWidenPending, pruneToWindow, setWidenPending, widenFolder } from './history';
 import { backoffDelayMs } from './syncDiff';
 import { newMailToAnnounce } from '../notify';
+import { backfillThreadIdsBatch, markThreadIdsDone, threadIdsDone } from './threadIds';
 
 export interface SessionShared {
   semaphore: Semaphore;
@@ -407,6 +408,46 @@ export class AccountSession {
     }
     await this.widenHistory();
     void this.backfillSnippets();
+    void this.backfillThreadIds();
+  }
+
+  private threadIdsRunning = false;
+  private threadIdsUnsupported = false;
+
+  /**
+   * Gmail tells which messages belong to one conversation. Rows stored before we asked for that get
+   * it now, folder by folder, on the lowest-priority lane. Once per folder (kv marker).
+   */
+  private async backfillThreadIds(): Promise<void> {
+    if (this.threadIdsRunning || this.stopped || this.threadIdsUnsupported) return;
+    this.threadIdsRunning = true;
+    try {
+      for (const f of this.syncableFolders()) {
+        if (f.uidvalidity === null || threadIdsDone(this.ctx, f)) continue;
+        const below = { uid: Number.MAX_SAFE_INTEGER };
+        for (;;) {
+          if (this.stopped) return;
+          const fresh = this.ctx.folders.row(f.id);
+          if (!fresh) break;
+          const n = await this.run('background', async (c) => {
+            await c.mailboxOpen(fresh.path, { readOnly: true });
+            return backfillThreadIdsBatch(this.ctx, c, fresh, below);
+          });
+          if (n === null) {
+            this.threadIdsUnsupported = true;
+            return;
+          }
+          if (n === 0) {
+            markThreadIdsDone(this.ctx, fresh);
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      this.ctx.log.debug({ err: String((e as Error)?.message ?? e) }, 'conversation id backfill stopped');
+    } finally {
+      this.threadIdsRunning = false;
+    }
   }
 
   private widening = false;
