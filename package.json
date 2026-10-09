@@ -1,7 +1,7 @@
 {
   "name": "mailroom",
   "productName": "Mailroom",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Free, open-source Windows email client with unlimited accounts",
   "license": "MIT",
   "homepage": "https://github.com/voydapps/mailroom#readme",
