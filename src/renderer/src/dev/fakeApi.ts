@@ -24,10 +24,14 @@ import type {
   SendReq,
   UpdateStatus,
 } from '../../../shared/ipc';
+import { buildDemo } from './demoData';
 
 const now = Date.now();
 const isComposeWindow = location.pathname.endsWith('compose.html');
 const isViewerWindow = location.pathname.endsWith('viewer.html');
+// ?fake=1&scenario=demo: invented accounts and mail for the website pictures (see demoData.ts).
+const DEMO = new URLSearchParams(location.search).get('scenario') === 'demo';
+const demo = DEMO ? buildDemo(now) : null;
 
 const accounts: Account[] = [
   ['a1', 'Personal Gmail', 'alex.rivera@gmail.example', '#0F6CBD', 'gmail'],
@@ -238,6 +242,15 @@ function addMsg(accountId: string, role: string, o: Partial<MessageHeader> & { s
   addMsg('a2', 'inbox', { subject: `Fwd: ${t3}`, minutesAgo: 60 * 6, from: { name: 'Tom Ellery', address: 'tom@example.com' }, seen: false, snippet: 'Forwarding the final version to the whole team.' });
 }
 
+if (demo) {
+  // Replace the everyday dev data with the demo set (keeps the same arrays, others hold references).
+  accounts.splice(0, accounts.length, ...demo.accounts);
+  folders.splice(0, folders.length, ...demo.folders);
+  messages.splice(0, messages.length, ...demo.messages);
+  fixtureBodies.clear();
+  mid = demo.nextMessageId;
+}
+
 messages.sort((a, b) => b.date - a.date || b.id - a.id);
 
 function recount(): void {
@@ -268,9 +281,10 @@ const settings: AppSettings = {
   rememberComposeBounds: true,
   suggestFromAllAccounts: true,
   groupConversations: false,
+  ...(demo?.settings ?? {}),
 };
 
-const statuses: AccountStatus[] = [
+const statuses: AccountStatus[] = demo?.statuses ?? [
   { accountId: 'a1', state: 'online', lastSyncAt: now - 120_000, error: null, nextRetryAt: null, pendingCount: 0 },
   { accountId: 'a2', state: 'needs_reauth', lastSyncAt: null, error: { code: 'OAUTH_REAUTH_REQUIRED', message: 'Sign in again.', retryable: false }, nextRetryAt: null, pendingCount: 0 },
   {
@@ -284,6 +298,8 @@ const statuses: AccountStatus[] = [
 ];
 
 let updateStatus: UpdateStatus = { state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'dev-build' };
+const VERSION_NOW = DEMO ? '0.4.0' : '0.2.6';
+const VERSION_NEXT = DEMO ? '0.4.1' : '0.2.7';
 
 const html = (n: number) => `<div style="font-family:Arial,sans-serif"><h2 style="color:#7a2e0e">Out for delivery #${n}</h2>
 <p>Hi Alex, your parcel from <b>Hollow Books</b> will arrive today.</p>
@@ -320,6 +336,7 @@ const contactBook: FakeContact[] = [
   { address: 'jose.garcia@example.es', name: 'Jos\u00e9 Garc\u00eda', sentCount: 5, lastUsed: now - 2 * DAYS, isOwn: false },
   ...accounts.map((a) => ({ address: a.email, name: 'Alex Rivera', sentCount: 0, lastUsed: now, isOwn: true })),
 ];
+if (demo) contactBook.splice(0, contactBook.length, ...demo.contacts);
 const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 type FakeSuggestion = FakeContact & { otherAccountId?: string };
 function suggest(query: string, limit: number, accountId?: string): FakeSuggestion[] {
@@ -360,10 +377,11 @@ channel?.addEventListener('message', (m: MessageEvent<AppEvent>) => {
   if (!isComposeWindow && !isViewerWindow && m.data.type === 'outbox:changed') armOutbox();
 });
 
+const LS_PREFIX = DEMO ? 'fake.demo.' : 'fake.';
 const LS = {
   get<T>(k: string, d: T): T {
     try {
-      const v = localStorage.getItem('fake.' + k);
+      const v = localStorage.getItem(LS_PREFIX + k);
       return v ? (JSON.parse(v) as T) : d;
     } catch {
       return d;
@@ -371,7 +389,7 @@ const LS = {
   },
   set(k: string, v: unknown): void {
     try {
-      localStorage.setItem('fake.' + k, JSON.stringify(v));
+      localStorage.setItem(LS_PREFIX + k, JSON.stringify(v));
     } catch {
       /* ignore */
     }
@@ -392,6 +410,7 @@ const saveDrafts = (d: Record<string, SendReq>) => LS.set('drafts', d);
 // ---------- rules (simple fake; they never run on the fake mail) ----------
 /** Three rules to look at: one with two actions, one for every account and off, one whose folder is gone. Clear `fake.rules` in localStorage to make them again. */
 function seedRules(): Rule[] {
+  if (demo) return demo.rules;
   const t = Date.now();
   const receipts = folders.find((f) => f.accountId === 'a1' && f.name === 'Receipts')!;
   const base = { enabled: true, matchMode: 'all' as const, trigger: 'inbox' as const, createdAt: t - 5 * 86_400_000, warning: null };
@@ -413,6 +432,7 @@ function seedRules(): Rule[] {
   ] as Rule[];
 }
 function seedActivity(): RuleActivityItem[] {
+  if (demo) return demo.activity;
   const t = Date.now();
   const e = (id: number, minutesAgo: number, o: Partial<RuleActivityItem>): RuleActivityItem => ({
     id,
@@ -467,6 +487,7 @@ interface FakeScheduled extends ScheduledItem {
 }
 /** One of each state of the Scheduled view (DESIGN-SPEC 3.11), made once. Clear `fake.scheduled` in localStorage to make them again. */
 function seedScheduled(): FakeScheduled[] {
+  if (demo) return demo.scheduled;
   const t = Date.now();
   const H = 3_600_000;
   const day = (n: number, hour: number) => {
@@ -766,6 +787,11 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
           400,
         );
       }
+      if (DEMO && email.endsWith('@example.com')) {
+        // Demo only: pretend this address is a Gmail-style account that needs an app password.
+        const help = { providerName: 'Gmail', authMethod: 'app-password' as const, appPasswordHelpUrl: 'https://myaccount.google.com/apppasswords', instructions: 'Gmail needs an app password. Create one in your Google account, then paste it here instead of your normal password. Spaces in the code are fine.', notes: ['App passwords only work when 2-Step Verification is turned on for your Google account.'] };
+        return delay({ config: { provider: 'gmail' as const, imap: { host: 'imap.example.com', port: 993, security: 'ssl' as const }, smtp: { host: 'smtp.example.com', port: 465, security: 'ssl' as const }, usernameTemplate: email, suggestedAuth: 'password' as const, oauthProvider: null, oauthRequired: false, appPasswordHelpUrl: help.appPasswordHelpUrl, help, source: 'known' as const } }, 400);
+      }
       return delay({ config: null }, 400);
     }
     case 'folders.list':
@@ -897,6 +923,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'messages.get': {
       const m = messages.find((x) => x.id === r!.messageId);
       if (!m) return err('NOT_FOUND', 'That message is gone.');
+      const db = demo?.bodies.get(m.id);
       const body: MessageBody = {
         id: m.id,
         header: m,
@@ -905,15 +932,17 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         inReplyTo: null,
         references: null,
         senderImagesAllowed: allowed.has(m.from?.address.toLowerCase() ?? ''),
-        html: fixtureBodies.has(m.id) ? fixtureBodies.get(m.id)!.html : m.id % 2 === 0 ? html(m.id) : null,
-        text: fixtureBodies.has(m.id) ? fixtureBodies.get(m.id)!.text : m.id % 2 === 0 ? null : 'Hello,\n\nPlain text message with a link https://example.com/page and more.\n\nBye',
-        attachments: m.hasAttachments
-          ? [
-              { id: m.id * 10, filename: 'budget-q4.pdf', contentType: 'application/pdf', size: 245760, contentId: null, inline: false },
-              { id: m.id * 10 + 1, filename: 'setup.exe', contentType: 'application/octet-stream', size: 1800000, contentId: null, inline: false },
-            ]
-          : [],
-        hasRemoteImages: fixtureBodies.has(m.id) ? false : m.id % 2 === 0,
+        html: db ? (db.html ?? null) : fixtureBodies.has(m.id) ? fixtureBodies.get(m.id)!.html : m.id % 2 === 0 ? html(m.id) : null,
+        text: db ? (db.text ?? null) : fixtureBodies.has(m.id) ? fixtureBodies.get(m.id)!.text : m.id % 2 === 0 ? null : 'Hello,\n\nPlain text message with a link https://example.com/page and more.\n\nBye',
+        attachments: db
+          ? (db.attachments ?? []).map((a, i) => ({ id: m.id * 10 + i, filename: a.filename, contentType: a.contentType, size: a.size, contentId: null, inline: false }))
+          : m.hasAttachments
+            ? [
+                { id: m.id * 10, filename: 'budget-q4.pdf', contentType: 'application/pdf', size: 245760, contentId: null, inline: false },
+                { id: m.id * 10 + 1, filename: 'setup.exe', contentType: 'application/octet-stream', size: 1800000, contentId: null, inline: false },
+              ]
+            : [],
+        hasRemoteImages: db ? !!db.remoteImages : fixtureBodies.has(m.id) ? false : m.id % 2 === 0,
         truncated: false,
       };
       return delay(body, 250);
@@ -1407,7 +1436,8 @@ export function installFakeApi(): void {
   (window as unknown as { __fakeEmit: (e: AppEvent) => void }).__fakeEmit = emit;
   // Dev hook for the status bar (DESIGN-SPEC 4.8): __fakeScenario('syncing'), or ?fake=1&scenario=syncing.
   (window as unknown as { __fakeScenario: (name: string) => void }).__fakeScenario = runScenario;
-  const wanted = new URLSearchParams(location.search).get('scenario');
+  const wantedRaw = new URLSearchParams(location.search).get('scenario');
+  const wanted = wantedRaw === 'demo' ? 'upToDate' : wantedRaw;
   if (wanted && !isComposeWindow && !isViewerWindow) {
     // Mutate before the first read, and again once the window listens for events.
     runScenario(wanted);
@@ -1452,8 +1482,8 @@ function runScenario(name: string): void {
     return;
   }
   const calm = (): void => {
-    for (const a of ['a1', 'a2', 'a3']) setStatus(a, { state: 'online', error: null, nextRetryAt: null, lastSyncAt: Date.now() - 5 * 60_000, pendingCount: 0 });
-    for (const a of ['a1', 'a2', 'a3']) emit({ type: 'sync:progress', accountId: a, folderId: null, phase: 'idle', done: 0, total: null });
+    for (const a of accounts.map((x) => x.id)) setStatus(a, { state: 'online', error: null, nextRetryAt: null, lastSyncAt: Date.now() - 5 * 60_000, pendingCount: 0 });
+    for (const a of accounts.map((x) => x.id)) emit({ type: 'sync:progress', accountId: a, folderId: null, phase: 'idle', done: 0, total: null });
     window.dispatchEvent(new Event('online'));
   };
   const setUpdate = (st: UpdateStatus): void => {
@@ -1468,7 +1498,7 @@ function runScenario(name: string): void {
   // Outbox and update scenarios are overlays: they keep whatever the sync state is.
   const overlay = name.startsWith('outbox') || name.startsWith('update');
   if (!overlay && name !== 'signIn' && name !== 'signInOne') calm();
-  if (!overlay && name !== 'upToDateOne') only(['a1', 'a2', 'a3']);
+  if (!overlay && name !== 'upToDateOne') only(accounts.map((a) => a.id));
   switch (name) {
     case 'reset':
       writeOutbox([]);
@@ -1522,10 +1552,10 @@ function runScenario(name: string): void {
       putOutbox('failed');
       break;
     case 'updateDownloading':
-      setUpdate({ state: 'downloading', currentVersion: '0.2.6', newVersion: '0.2.7', percent: 42 });
+      setUpdate({ state: 'downloading', currentVersion: VERSION_NOW, newVersion: VERSION_NEXT, percent: 42 });
       break;
     case 'updateReady':
-      setUpdate({ state: 'ready', currentVersion: '0.2.6', newVersion: '0.2.7' });
+      setUpdate({ state: 'ready', currentVersion: VERSION_NOW, newVersion: VERSION_NEXT });
       break;
     case 'updateIdle':
       setUpdate({ state: 'upToDate', currentVersion: '0.2.6', checkedAt: Date.now() });

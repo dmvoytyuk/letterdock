@@ -38,6 +38,10 @@ export default tseslint.config(
     plugins: { 'react-hooks': reactHooks },
     rules: { ...reactHooks.configs.recommended.rules },
   },
+  {
+    files: ['site/**/*.js', 'scripts/make-site-screenshots.mjs'],
+    languageOptions: { globals: { ...globals.browser, ...globals.node } },
+  },
   // Import rules from ARCHITECTURE.md section 3.
   layer('renderer', ['**/main/**', '**/engine/**', '**/preload/**', 'electron', 'node:*']),
   layer('engine', ['**/main/**', '**/renderer/**', '**/preload/**', 'electron']),
