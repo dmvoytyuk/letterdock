@@ -11,6 +11,16 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+function Show-Diagnostics {
+  Write-Host '---- diagnostics ----'
+  $mf = Join-Path $env:APPDATA 'Letterdock\migrated-from-mailroom.json'
+  if (Test-Path $mf) { Write-Host '[migrated-from-mailroom.json]'; Get-Content $mf -Raw | Write-Host } else { Write-Host 'migrated-from-mailroom.json: not found' }
+  $lg = Join-Path $env:APPDATA 'Letterdock\logs\main.log'
+  if (Test-Path $lg) { Write-Host '[main.log tail]'; Get-Content $lg -Tail 80 | Write-Host } else { Write-Host 'main.log: not found' }
+  if (Test-Path (Join-Path $env:APPDATA 'Letterdock')) { Get-ChildItem (Join-Path $env:APPDATA 'Letterdock') -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName } }
+}
+trap { Write-Host "FAILED: $_"; Show-Diagnostics; exit 1 }
+
 $setup = Get-ChildItem -Path $ReleaseDir -Filter 'Letterdock-Setup-*.exe' | Select-Object -First 1
 if (-not $setup) { throw "No Letterdock-Setup-*.exe in $ReleaseDir" }
 $newInstall = Join-Path $env:LOCALAPPDATA 'Programs\letterdock'
@@ -73,7 +83,10 @@ Set-Content -Path (Join-Path $oldData 'settings.json') -Encoding ascii -Value '{
 Set-Content -Path (Join-Path $oldData 'Local State') -Encoding ascii -Value '{"ci_marker":"local-state-keep-me"}'
 [IO.File]::WriteAllBytes((Join-Path $oldData 'secrets.bin'), [byte[]](1..64))
 Set-Content -Path (Join-Path $oldData 'ci-marker.txt') -Encoding ascii -Value 'keep-me-1234'
-Set-Content -Path (Join-Path $oldData 'image-cache\x.bin') -Encoding ascii -Value 'img'
+# A valid cache entry (the app deletes files without metadata at start-up): <sha256(url)>.bin + .json.
+$imgKey = -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes('https://example.com/ci.png')) | ForEach-Object { $_.ToString('x2') })
+[IO.File]::WriteAllBytes((Join-Path $oldData "image-cache\$imgKey.bin"), [byte[]](1..16))
+[IO.File]::WriteAllText((Join-Path $oldData "image-cache\$imgKey.json"), '{"contentType":"image/png","size":16}')
 $db = Join-Path $oldData 'mail.db'
 $mk = "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table ci_marker(v text)'); c.execute(""insert into ci_marker values ('db-keep-me')""); c.commit(); c.close()"
 python -c $mk $db
@@ -98,9 +111,10 @@ Stop-All
 
 Write-Host '== Step 6: assertions'
 Assert (-not (Test-Path $oldData)) 'old data folder still exists'
-foreach ($f in @('settings.json', 'Local State', 'ci-marker.txt', 'mail.db', 'image-cache\x.bin')) {
+foreach ($f in @('settings.json', 'Local State', 'ci-marker.txt', 'mail.db')) {
   Assert (Test-Path (Join-Path $newData $f)) "missing in new data folder: $f"
 }
+Assert (Test-Path (Join-Path $newData "image-cache\$imgKey.bin")) 'image-cache entry lost'
 Assert ((Get-Content (Join-Path $newData 'ci-marker.txt') -Raw).Trim() -eq 'keep-me-1234') 'ci-marker.txt content changed'
 Assert ((Get-Content (Join-Path $newData 'Local State') -Raw) -match 'local-state-keep-me') 'Local State content changed'
 # The app moves an unreadable secrets.bin to secrets.bin.corrupt (it is fake here), so accept both.
@@ -121,9 +135,9 @@ Assert (-not (Test-Path $oldUpdaterCache)) 'old updater cache still exists'
 
 Assert (Test-Path $newExe) 'Letterdock.exe missing at the end'
 # "Start at sign-in" was on in the old settings: the new app must have registered itself again.
-$runValues = (Get-ItemProperty -Path $runKey).PSObject.Properties | Where-Object { "$($_.Value)" -like '*ProgramsletterdockLetterdock.exe*' }
+$runValues = (Get-ItemProperty -Path $runKey).PSObject.Properties | Where-Object { "$($_.Value)" -like '*Programs\letterdock\Letterdock.exe*' }
 Assert ($null -ne $runValues) 'start-at-sign-in was not re-applied for Letterdock'
-Assert (Test-Path (Join-Path $env:APPDATA 'MicrosoftWindowsStart MenuProgramsLetterdock.lnk')) 'Letterdock Start menu shortcut missing'
+Assert (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Letterdock.lnk')) 'Letterdock Start menu shortcut missing'
 $entry = Find-Entry 'Letterdock'
 Assert ($null -ne $entry) 'new uninstall registry entry missing'
 Assert ($entry.UninstallString -like '*Uninstall Letterdock.exe*') "unexpected UninstallString: $($entry.UninstallString)"
