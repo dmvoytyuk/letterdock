@@ -136,6 +136,19 @@ export class ScheduledService implements SchedulerApi {
     }
   }
 
+  onOutboxCancelled(scheduledId: number): string | null {
+    const r = this.repo.get(scheduledId);
+    if (!r) return null;
+    let draftId: string | null = null;
+    try {
+      draftId = this.compose.reattachDraft(JSON.parse(r.meta_json) as OutboxMeta);
+    } catch (e) {
+      this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'could not restore a cancelled scheduled message');
+    }
+    this.finish(r.id);
+    return draftId;
+  }
+
   /** An account is going away: its scheduled messages and their files go with it. */
   async forgetAccount(accountId: string): Promise<void> {
     for (const r of this.repo.list(accountId)) {

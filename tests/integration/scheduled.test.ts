@@ -422,6 +422,39 @@ describe('edit, cancel, delete', () => {
   });
 });
 
+describe('cancelling from the Outbox', () => {
+  it('a scheduled message removed from the Outbox is a draft again and is never sent later', async () => {
+    const c = await boot({ persistent: true });
+    smtp!.failNextData(1, 451);
+    (c.h.engine.ctx as { sendRetryDelaysMs?: number[] }).sendRetryDelaysMs = [60 * MIN];
+    await schedule(c, HOUR, { subject: 'changed my mind' });
+    c.clock.offset += 2 * HOUR;
+    await recheck(c);
+    const queued = await waitFor('waiting in the Outbox', async () =>
+      (await outbox(c)).find((o) => o.state === 'queued' && o.attempts === 1),
+    );
+    const res = await call<{ draftId: string | null }>(c.h, 'outbox.cancel', { outboxId: queued.id });
+    expect(res.draftId).toBeTruthy();
+    expect(await listAll(c)).toHaveLength(0);
+    const drafts = c.h.folderByRole(c.acc.id, 'drafts');
+    await waitFor('draft is back', () => c.h.folderMessages(drafts.id).some((m) => m.subject === 'changed my mind'));
+    const reopened = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: res.draftId });
+    expect(reopened.subject).toBe('changed my mind');
+
+    // After a restart nothing sends it.
+    await c.h.engine.shutdown();
+    harnesses.splice(harnesses.indexOf(c.h), 1);
+    const h2 = await createHarness(imap!, { smtp: smtp!, now: c.clock.now, scheduledSpacingMs: 20, ...c.extra });
+    harnesses.push(h2);
+    h2.engine.start();
+    await waitFor('online', () => h2.engine.sessions.statuses()[0]?.state === 'online');
+    c.clock.offset += 10 * MIN;
+    await h2.engine.scheduled.recheck();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(smtp!.mails).toHaveLength(0);
+  });
+});
+
 describe('quit prompt data', () => {
   it('counts messages due within 24 hours', async () => {
     const c = await boot();

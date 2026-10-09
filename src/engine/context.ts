@@ -199,6 +199,11 @@ export interface SchedulerApi {
   protectedTokens(): Set<string>;
   /** A message that came from a scheduled send left the Outbox: sent (ok) or failed for good. */
   onOutboxFinished(outboxId: number, scheduledId: number | undefined, ok: boolean, error?: AppError): void;
+  /**
+   * The user cancelled a scheduled message's Outbox row ("Undo send" / remove): the schedule is over,
+   * the message becomes a normal draft again. Returns that draft's id.
+   */
+  onOutboxCancelled(scheduledId: number): string | null;
   /** Look for messages that are due now (an account came online, the network came back, the PC woke up). */
   recheck(): Promise<void>;
   /** The account is being removed: delete its scheduled messages' files. */

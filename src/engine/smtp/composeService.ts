@@ -1068,7 +1068,11 @@ export class ComposeService implements DraftsApi {
     this.repo.deleteOutbox(id);
     await rm(row.raw_path, { force: true }).catch(() => undefined);
     this.ctx.hub.emit({ type: 'outbox:changed' });
-    const draftId = meta && this.repo.draft(meta.req.draftId) ? meta.req.draftId : null;
+    let draftId = meta && this.repo.draft(meta.req.draftId) ? meta.req.draftId : null;
+    // A scheduled message that was cancelled on its way: the schedule is over, it is a draft again.
+    if (meta?.scheduledId !== undefined) {
+      draftId = this.ctx.scheduler?.onOutboxCancelled(meta.scheduledId) ?? draftId;
+    }
     return { draftId };
   }
 
