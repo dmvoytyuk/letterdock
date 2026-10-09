@@ -11,6 +11,7 @@ import { Banner, Button, MenuHost, ToastHost } from './components/ui';
 import { useApp } from './store/app';
 import { useUi } from './store/ui';
 import { UpdateBanner } from './features/shell/UpdateBanner';
+import { StatusBar, useStatusBarVisible } from './features/shell/StatusBar';
 import { useAppEvents, useLayoutModeEffect, useThemeEffect } from './lib/hooks';
 import { logRenderer } from './lib/api';
 
@@ -47,6 +48,7 @@ export function App() {
   const accountCount = useApp((s) => s.accounts.length);
   const page = useUi((s) => s.page);
   const addAccount = useUi((s) => s.addAccount);
+  const statusBar = useStatusBarVisible();
 
   // Keep the page title useful for screen readers.
   useEffect(() => {
@@ -77,10 +79,11 @@ export function App() {
 
   return (
     <ErrorBoundary>
-      <div className="app">
+      <div className={`app ${statusBar ? 'has-sbar' : ''}`}>
         <TitleBar />
         <UpdateBanner />
         {body}
+        {statusBar ? <StatusBar /> : null}
         {addAccount ? <AddAccountDialog request={addAccount} /> : null}
         <FolderDialogHost />
         <RemoveAccountDialogHost />

@@ -625,6 +625,18 @@ function ToastView({ id }: { id: number }) {
           {t.actionLabel}
         </button>
       ) : null}
+      {t.secondaryLabel ? (
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            t.onSecondary?.();
+            dismiss(id);
+          }}
+        >
+          {t.secondaryLabel}
+        </button>
+      ) : null}
       {t.tone === 'danger' ? (
         <IconButton icon="x" label="Dismiss" size="xs" onClick={() => dismiss(id)} />
       ) : null}

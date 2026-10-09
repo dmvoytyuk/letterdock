@@ -607,6 +607,7 @@ function Appearance() {
   const settings = useApp((s) => s.settings);
   const density = useUi((s) => s.density);
   const showAccountBadge = useUi((s) => s.showAccountBadge);
+  const showStatusBar = useUi((s) => s.showStatusBar);
   const emailDarkMode = useUi((s) => s.emailDarkMode);
   const dark = useThemeState((s) => s.dark);
   const set = useSetting();
@@ -620,6 +621,13 @@ function Appearance() {
         <Radio name="theme" checked={settings.theme === 'light'} onChange={() => void set({ theme: 'light' })} label="Light" />
         <Radio name="theme" checked={settings.theme === 'dark'} onChange={() => void set({ theme: 'dark' })} label="Dark" />
       </div>
+      <h2>WINDOW</h2>
+      <Checkbox
+        checked={showStatusBar}
+        label="Show status bar"
+        onChange={(v) => useUi.setState({ showStatusBar: v })}
+      />
+      <p className="hint indent">Shows sync status, message counts and updates at the bottom of the window.</p>
       <h2 id="h-density">DENSITY</h2>
       <div role="radiogroup" aria-labelledby="h-density" style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
         <Radio name="density" checked={density === 'compact'} onChange={() => useUi.setState({ density: 'compact' })} label="Compact" />

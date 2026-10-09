@@ -18,6 +18,7 @@ import type {
   OutboxItem,
   PreloadApi,
   SendReq,
+  UpdateStatus,
 } from '../../../shared/ipc';
 
 const now = Date.now();
@@ -231,6 +232,8 @@ const statuses: AccountStatus[] = [
     pendingCount: 0,
   },
 ];
+
+let updateStatus: UpdateStatus = { state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'dev-build' };
 
 const html = (n: number) => `<div style="font-family:Arial,sans-serif"><h2 style="color:#7a2e0e">Out for delivery #${n}</h2>
 <p>Hi Alex, your parcel from <b>Hollow Books</b> will arrive today.</p>
@@ -929,7 +932,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       return delay(undefined, 20);
     case 'updates.status':
     case 'updates.check':
-      return delay({ state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'dev-build' }, 60);
+      return delay(updateStatus, 60);
+    case 'updates.install':
+      return delay(undefined, 200);
     case 'sync.loadOlder':
       return delay({ fetched: 0, reachedStart: true }, 10);
     case 'images.cacheInfo':
@@ -955,4 +960,132 @@ export function installFakeApi(): void {
   if (!isComposeWindow && !isViewerWindow) armOutbox();
   // Dev hook: push any event into every fake window, e.g. __fakeEmit({ type: 'pending:count', accountId: 'a1', count: 2 }).
   (window as unknown as { __fakeEmit: (e: AppEvent) => void }).__fakeEmit = emit;
+  // Dev hook for the status bar (DESIGN-SPEC 4.8): __fakeScenario('syncing'), or ?fake=1&scenario=syncing.
+  (window as unknown as { __fakeScenario: (name: string) => void }).__fakeScenario = runScenario;
+  const wanted = new URLSearchParams(location.search).get('scenario');
+  if (wanted && !isComposeWindow && !isViewerWindow) {
+    // Mutate before the first read, and again once the window listens for events.
+    runScenario(wanted);
+    setTimeout(() => runScenario(wanted), 900);
+  }
+}
+
+// ---------- status bar scenarios (dev only) ----------
+const SCENARIOS = [
+  'upToDate', 'upToDateOne', 'syncing', 'syncingUnknown', 'syncingMany', 'error', 'errorMany', 'signIn', 'signInOne',
+  'offline', 'online', 'pending', 'outboxSending', 'outboxQueued', 'outboxFailed', 'updateDownloading', 'updateReady',
+  'updateIdle', 'reset',
+];
+
+function setStatus(id: string, patch: Partial<AccountStatus>): void {
+  const st = statuses.find((x) => x.accountId === id);
+  if (!st) return;
+  Object.assign(st, patch);
+  emit({ type: 'account:status', status: { ...st } });
+}
+
+function putOutbox(state: OutboxItem['state']): void {
+  const accountId = 'a1';
+  const req = { draftId: 'dev-scenario', accountId, to: [], cc: [], bcc: [], subject: 'x', html: '', attachments: [] } as unknown as SendReq;
+  const item: StoredOutbox = {
+    id: 1,
+    accountId,
+    subject: state === 'failed' ? 'Quarterly budget review (fail)' : 'Quarterly budget review',
+    state,
+    lastError: state === 'failed' ? 'The server refused the connection (fake).' : null,
+    sendAt: Date.now() + (state === 'queued' ? 10 * 60_000 : 0),
+    attempts: state === 'queued' ? 1 : state === 'failed' ? 1 : 0,
+    req,
+  };
+  writeOutbox([item]);
+  emit({ type: 'outbox:changed' });
+}
+
+function runScenario(name: string): void {
+  if (!SCENARIOS.includes(name)) {
+    console.warn(`Unknown scenario "${name}". Use one of: ${SCENARIOS.join(', ')}`);
+    return;
+  }
+  const calm = (): void => {
+    for (const a of ['a1', 'a2', 'a3']) setStatus(a, { state: 'online', error: null, nextRetryAt: null, lastSyncAt: Date.now() - 5 * 60_000, pendingCount: 0 });
+    for (const a of ['a1', 'a2', 'a3']) emit({ type: 'sync:progress', accountId: a, folderId: null, phase: 'idle', done: 0, total: null });
+    window.dispatchEvent(new Event('online'));
+  };
+  const setUpdate = (st: UpdateStatus): void => {
+    updateStatus = st;
+    emit({ type: 'update:status', status: st });
+  };
+  const only = (ids: string[]): void => {
+    // The sidebar and the bar look at the accounts that are enabled.
+    accounts.forEach((a) => (a.enabled = ids.includes(a.id)));
+    emit({ type: 'accounts:changed' });
+  };
+  // Outbox and update scenarios are overlays: they keep whatever the sync state is.
+  const overlay = name.startsWith('outbox') || name.startsWith('update');
+  if (!overlay && name !== 'signIn' && name !== 'signInOne') calm();
+  if (!overlay && name !== 'upToDateOne') only(['a1', 'a2', 'a3']);
+  switch (name) {
+    case 'reset':
+      writeOutbox([]);
+      emit({ type: 'outbox:changed' });
+      setUpdate({ state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'dev-build' });
+      break;
+    case 'upToDateOne':
+      only(['a1']);
+      break;
+    case 'syncing':
+      setStatus('a1', { state: 'syncing' });
+      emit({ type: 'sync:progress', accountId: 'a1', folderId: 1, phase: 'initial', done: 120, total: 500 });
+      break;
+    case 'syncingUnknown':
+      setStatus('a1', { state: 'syncing' });
+      break;
+    case 'syncingMany':
+      setStatus('a1', { state: 'syncing' });
+      setStatus('a2', { state: 'connecting' });
+      setStatus('a3', { state: 'syncing' });
+      break;
+    case 'error':
+      setStatus('a3', { state: 'retrying', nextRetryAt: Date.now() + 60_000, error: { code: 'HOST_UNREACHABLE', message: "Can't reach the server.", retryable: true } });
+      break;
+    case 'errorMany':
+      for (const a of ['a1', 'a2', 'a3']) setStatus(a, { state: 'retrying', nextRetryAt: Date.now() + 60_000, error: { code: 'HOST_UNREACHABLE', message: "Can't reach the server.", retryable: true } });
+      break;
+    case 'signIn':
+      setStatus('a2', { state: 'needs_reauth', error: { code: 'OAUTH_REAUTH_REQUIRED', message: 'Sign in again.', retryable: false } });
+      setStatus('a3', { state: 'auth_failed', error: { code: 'AUTH_FAILED', message: 'The server rejected the password.', retryable: false } });
+      break;
+    case 'signInOne':
+      setStatus('a1', { state: 'online', error: null });
+      setStatus('a3', { state: 'online', error: null });
+      setStatus('a2', { state: 'needs_reauth', error: { code: 'OAUTH_REAUTH_REQUIRED', message: 'Sign in again.', retryable: false } });
+      break;
+    case 'offline':
+      window.dispatchEvent(new Event('offline'));
+      break;
+    case 'pending':
+      setStatus('a1', { pendingCount: 3 });
+      emit({ type: 'pending:count', accountId: 'a1', count: 3 });
+      break;
+    case 'outboxSending':
+      putOutbox('sending');
+      break;
+    case 'outboxQueued':
+      putOutbox('queued');
+      break;
+    case 'outboxFailed':
+      putOutbox('failed');
+      break;
+    case 'updateDownloading':
+      setUpdate({ state: 'downloading', currentVersion: '0.2.6', newVersion: '0.2.7', percent: 42 });
+      break;
+    case 'updateReady':
+      setUpdate({ state: 'ready', currentVersion: '0.2.6', newVersion: '0.2.7' });
+      break;
+    case 'updateIdle':
+      setUpdate({ state: 'upToDate', currentVersion: '0.2.6', checkedAt: Date.now() });
+      break;
+    default:
+      break;
+  }
 }

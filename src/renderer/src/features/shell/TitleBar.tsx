@@ -1,22 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from '../../components/Icon';
-import { AccountBadge, Button, IconButton } from '../../components/ui';
-import { pendingText, syncKindOf, syncText } from '../../components/Sync';
+import { IconButton } from '../../components/ui';
+import { syncKindOf } from '../../components/Sync';
 import { useApp } from '../../store/app';
 import { useUi } from '../../store/ui';
-import { useAccountColor } from '../../lib/hooks';
-import { call } from '../../lib/api';
-import { reportActionError, toast } from '../../store/toasts';
 import { SearchBox } from './SearchBox';
+import { SyncPopover } from './SyncPopover';
 import appIcon from '../../../../../build/icon-small.svg';
 
-export function syncAll(): void {
-  call('sync.all').catch((e) => reportActionError(e));
-  toast('Checking all accounts...');
-}
+export { syncAll } from './SyncPopover';
 
 export function TitleBar() {
-  const online = useApp((s) => s.online);
   const [focused, setFocused] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -64,11 +58,6 @@ export function TitleBar() {
         <SearchBox inputRef={inputRef} tiny={tiny} onDismiss={() => setSearchOpen(false)} />
       )}
       <div className="tb-right nodrag">
-        {!online ? (
-          <span className="offline-pill" role="status">
-            <Icon name="cloud-off" /> You&apos;re offline
-          </span>
-        ) : null}
         <SyncButton />
       </div>
     </header>
@@ -80,17 +69,17 @@ function SyncButton() {
   const statuses = useApp((s) => s.statuses);
   const authRequired = useApp((s) => s.authRequired);
   const online = useApp((s) => s.online);
-  const colorOf = useAccountColor();
-  const [open, setOpen] = useState(false);
+  const open = useUi((s) => s.syncPopover === 'title');
   const ref = useRef<HTMLDivElement>(null);
+  const close = () => useUi.setState((s) => (s.syncPopover === 'title' ? { syncPopover: null } : s));
 
   useEffect(() => {
     if (!open) return;
     const down = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') close();
     };
     window.addEventListener('mousedown', down);
     window.addEventListener('keydown', key);
@@ -100,9 +89,9 @@ function SyncButton() {
     };
   }, [open]);
 
-  const kinds = accounts.map((a) => ({ a, kind: syncKindOf(statuses[a.id], !!authRequired[a.id], online) }));
-  const syncing = kinds.some((k) => k.kind === 'syncing');
-  const problem = kinds.some((k) => k.kind === 'error' || k.kind === 'auth');
+  const kinds = accounts.map((a) => syncKindOf(statuses[a.id], !!authRequired[a.id], online));
+  const syncing = kinds.some((k) => k === 'syncing');
+  const problem = kinds.some((k) => k === 'error' || k === 'auth');
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
@@ -113,45 +102,12 @@ function SyncButton() {
         aria-label={syncing ? 'Sync status: syncing' : problem ? 'Sync status: problem with an account' : 'Sync status'}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => useUi.setState({ syncPopover: open ? null : 'title' })}
       >
         {syncing ? <i className="spin" /> : <Icon name="sync" />}
         {problem ? <i className="pulse" /> : null}
       </button>
-      {open ? (
-        <div className="sdrop" role="dialog" aria-label="Sync status" style={{ left: 'auto', right: 0, width: 340, minWidth: 0, top: 36 }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
-            <b style={{ fontWeight: 600, flex: 1 }}>Accounts</b>
-            <Button size="sm" icon="sync" onClick={syncAll}>
-              Check all
-            </Button>
-          </div>
-          {accounts.length === 0 ? <div className="hint">No accounts yet.</div> : null}
-          <div className="scroll" style={{ maxHeight: 320 }}>
-            {kinds.map(({ a, kind }) => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-                <AccountBadge color={colorOf(a.id)} name={a.displayName} letter={a.badge} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.displayName}</div>
-                  <div className="hint">{syncText(kind === 'pending' ? 'idle' : kind, statuses[a.id])}</div>
-                  {kind !== 'offline' && (statuses[a.id]?.pendingCount ?? 0) > 0 ? (
-                    <div className="hint">{pendingText(statuses[a.id]!.pendingCount)}</div>
-                  ) : null}
-                </div>
-                <Button
-                  size="sm"
-                  variant="subtle"
-                  onClick={() => {
-                    call('sync.account', { accountId: a.id }).catch((e) => reportActionError(e));
-                  }}
-                >
-                  Sync now
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      {open ? <SyncPopover placement="below" /> : null}
     </div>
   );
 }

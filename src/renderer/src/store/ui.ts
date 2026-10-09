@@ -54,6 +54,8 @@ interface UiState {
   emailDarkMode: 'auto' | 'light';
   /** Show the account badge in single-account folders too (always shown in unified views with 2+ accounts). */
   showAccountBadge: boolean;
+  /** DESIGN-SPEC 4.8: the status bar at the bottom of the main window. */
+  showStatusBar: boolean;
   expanded: Record<AccountId, boolean>;
   moreOpen: Record<AccountId, boolean>;
   /** Last folders the user moved mail to, per account (newest first). */
@@ -77,6 +79,8 @@ interface UiState {
   removeAccountId: AccountId | null;
   cheatsheetOpen: boolean;
   searchHint: boolean;
+  /** Which sync popover is open: the title bar button's or the status bar's. They never open together. */
+  syncPopover: 'title' | 'bar' | null;
   searchFocusTick: number;
   /** Message to select once the list has it (from ui:openMessage). */
   pendingOpenMessageId: number | null;
@@ -107,6 +111,7 @@ export const useUi = create<UiState>()(
       density: 'comfortable',
       emailDarkMode: 'auto',
       showAccountBadge: false,
+      showStatusBar: true,
       expanded: {},
       moreOpen: {},
       recentFolders: {},
@@ -126,6 +131,7 @@ export const useUi = create<UiState>()(
       removeAccountId: null,
       cheatsheetOpen: false,
       searchHint: false,
+      syncPopover: null,
       searchFocusTick: 0,
       pendingOpenMessageId: null,
       moveDialog: null,
@@ -185,6 +191,7 @@ export const useUi = create<UiState>()(
         density: s.density,
         emailDarkMode: s.emailDarkMode,
         showAccountBadge: s.showAccountBadge,
+        showStatusBar: s.showStatusBar,
         expanded: s.expanded,
         moreOpen: s.moreOpen,
         recentFolders: s.recentFolders,

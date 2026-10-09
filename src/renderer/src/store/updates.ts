@@ -6,6 +6,8 @@ interface UpdatesState {
   status: UpdateStatus | null;
   /** Version whose "ready" banner the user closed with Later. Shown again for a newer version. */
   dismissedVersion: string | null;
+  /** Version that already got its one "is ready" toast (DESIGN-SPEC 4.8). */
+  toastedVersion: string | null;
   setStatus: (s: UpdateStatus) => void;
   dismissBanner: () => void;
 }
@@ -13,6 +15,7 @@ interface UpdatesState {
 export const useUpdates = create<UpdatesState>((set, get) => ({
   status: null,
   dismissedVersion: null,
+  toastedVersion: null,
   setStatus: (status) => set({ status }),
   dismissBanner: () => {
     const s = get().status;

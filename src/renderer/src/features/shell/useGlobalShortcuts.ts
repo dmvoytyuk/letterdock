@@ -27,17 +27,30 @@ const WORKS_WHILE_TYPING: ShortcutId[] = [
 const PLAIN_KEYS: ShortcutId[] = ['delete', 'deletePermanent', 'archive', 'flag', 'open'];
 
 function focusPane(dir: 1 | -1): void {
-  const panes = [
-    () => document.querySelector<HTMLElement>('nav.sidebar [data-nav]'),
-    () => document.querySelector<HTMLElement>('#pane-list [role=listbox]') ?? document.querySelector<HTMLElement>('#pane-list'),
-    () => document.querySelector<HTMLElement>('#pane-reading .rtool button') ?? document.querySelector<HTMLElement>('#pane-reading'),
+  // The status bar (DESIGN-SPEC 4.8) is the last stop. It is skipped when it is not on screen.
+  const stops: { sel: string; get: () => HTMLElement | null }[] = [
+    { sel: 'nav.sidebar', get: () => document.querySelector<HTMLElement>('nav.sidebar [data-nav]') },
+    {
+      sel: '#pane-list',
+      get: () => document.querySelector<HTMLElement>('#pane-list [role=listbox]') ?? document.querySelector<HTMLElement>('#pane-list'),
+    },
+    {
+      sel: '#pane-reading',
+      get: () => document.querySelector<HTMLElement>('#pane-reading .rtool button') ?? document.querySelector<HTMLElement>('#pane-reading'),
+    },
+    { sel: '.statusbar', get: () => document.querySelector<HTMLElement>('.statusbar button:not([disabled])') },
   ];
-  const current = ['nav.sidebar', '#pane-list', '#pane-reading'].findIndex((sel) =>
-    document.activeElement?.closest(sel),
-  );
-  const next = (current + dir + panes.length) % panes.length;
-  const el = panes[current < 0 ? 0 : next]!();
-  el?.focus();
+  const current = stops.findIndex((p) => document.activeElement?.closest(p.sel));
+  for (let step = 1; step <= stops.length; step++) {
+    const i = current < 0 ? 0 : (current + dir * step + stops.length * step) % stops.length;
+    const el = stops[i]!.get();
+    if (el) {
+      el.focus();
+      // A pane that cannot take focus (an empty reading pane) is skipped.
+      if (el.contains(document.activeElement)) return;
+    }
+    if (current < 0) break;
+  }
 }
 
 export function useGlobalShortcuts(): void {

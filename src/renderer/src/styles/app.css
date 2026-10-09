@@ -314,19 +314,6 @@ svg.i.fill {
   background: var(--warn);
   border: 1.5px solid var(--bg-app);
 }
-.offline-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: var(--warn-bg);
-  color: var(--warn);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
 
 /* ---------- panes ---------- */
 .panes {
@@ -2309,6 +2296,148 @@ kbd {
   color: var(--t3);
 }
 
+/* ---------- status bar (DESIGN-SPEC 4.8) ---------- */
+.statusbar {
+  flex: none;
+  height: 26px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--bg-app);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  color: var(--t2);
+  position: relative;
+  white-space: nowrap;
+}
+.sb-left {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+}
+.sb-mid {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sb-fill {
+  flex: 1 1 0;
+}
+.sb-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  min-width: 0;
+}
+.sb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 6px;
+  border-radius: 4px;
+  font: inherit;
+  color: inherit;
+}
+.sb-btn:hover {
+  background: var(--hover);
+}
+.sb-btn:active {
+  background: var(--pressed);
+}
+.sb-btn[disabled] {
+  pointer-events: none;
+  opacity: 0.6;
+}
+.sb-tx {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sb-q {
+  color: var(--t3);
+}
+.sb-btn.sb-danger {
+  color: var(--danger);
+}
+.sb-btn.sb-warn {
+  color: var(--warn);
+}
+.sb-link {
+  color: var(--accent);
+}
+.sb-link:hover {
+  text-decoration: underline;
+  background: transparent;
+}
+.sb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+}
+.sb-icon {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  padding: 0;
+}
+.sb-gl {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  display: inline-grid;
+  place-items: center;
+}
+.sb-gl svg {
+  width: 14px;
+  height: 14px;
+}
+.sb-gl.spin {
+  width: 12px;
+  height: 12px;
+}
+.sb-mute {
+  color: var(--t3);
+}
+.sb-bad {
+  color: var(--danger);
+}
+.sb-div {
+  width: 1px;
+  height: 12px;
+  margin: 0 8px;
+  background: var(--border);
+  flex: none;
+}
+.sb-prog {
+  display: inline-block;
+  width: 48px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  flex: none;
+}
+.sb-prog i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+.app.has-sbar .toasts {
+  bottom: 42px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spin,
   .pbar::after,
@@ -2319,6 +2448,9 @@ kbd {
   * {
     transition-duration: 0.01ms !important;
   }
+  .sb-prog i {
+    transition: none;
+  }
 }
 @media (prefers-contrast: more) {
   :root {
@@ -2326,6 +2458,32 @@ kbd {
   }
 }
 @media (forced-colors: active) {
+  .statusbar {
+    background: Canvas;
+    color: CanvasText;
+    border-top: 1px solid CanvasText;
+  }
+  .statusbar .sb-q,
+  .statusbar .sb-mute,
+  .statusbar .sb-bad,
+  .statusbar .sb-btn.sb-danger,
+  .statusbar .sb-btn.sb-warn {
+    color: CanvasText;
+  }
+  .statusbar .sb-link {
+    color: LinkText;
+  }
+  .sb-prog {
+    forced-color-adjust: none;
+    background: Canvas;
+    border: 1px solid CanvasText;
+  }
+  .sb-prog i {
+    background: Highlight;
+  }
+  .statusbar .sb-div {
+    background: CanvasText;
+  }
   .inp:focus-visible,
   .cbx input:focus-visible + i,
   .rad input:focus-visible + i {

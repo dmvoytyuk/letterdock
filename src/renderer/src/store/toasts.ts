@@ -7,13 +7,16 @@ export interface ToastItem {
   tone: 'info' | 'danger';
   actionLabel?: string;
   onAction?: () => void;
+  /** Optional second link that only closes the toast, for example "Later". */
+  secondaryLabel?: string;
+  onSecondary?: () => void;
   duration: number; // ms, 0 = stays until dismissed
   /** One line per item; shown under the message when the user presses Details. */
   details?: string[];
 }
 
 type NewToast = Pick<ToastItem, 'message'> &
-  Partial<Pick<ToastItem, 'tone' | 'actionLabel' | 'onAction' | 'duration' | 'details'>>;
+  Partial<Pick<ToastItem, 'tone' | 'actionLabel' | 'onAction' | 'secondaryLabel' | 'onSecondary' | 'duration' | 'details'>>;
 
 interface ToastState {
   items: ToastItem[];
