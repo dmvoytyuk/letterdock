@@ -31,7 +31,7 @@ export function loginItemOptions(
 }
 
 export function trayTooltip(unread: number): string {
-  return unread > 0 ? `Mailroom - ${unread} unread` : 'Mailroom';
+  return unread > 0 ? `Letterdock - ${unread} unread` : 'Letterdock';
 }
 
 /** A second launch that only carries the login-item argument must not pop the window up. */

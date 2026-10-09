@@ -7,11 +7,11 @@ import { join } from 'node:path';
 import { BrowserWindow, session } from 'electron';
 import { IMAGE_SCHEME } from '../../shared/imageProxy';
 
-const PARTITION = 'mailroom-print'; // no "persist:" prefix = in memory only
+const PARTITION = 'letterdock-print'; // no "persist:" prefix = in memory only
 const GIVE_UP_MS = 10 * 60_000;
 
 export interface PrintDeps {
-  /** The handler for mailroom-img: (the local image cache). */
+  /** The handler for letterdock-img: (the local image cache). */
   imagesHandle: (req: Request) => Promise<Response>;
   /** A folder for the one-shot document files (cleaned up after printing). */
   tempDir: string;

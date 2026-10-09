@@ -79,7 +79,7 @@ describe('buildSrcdoc', () => {
     expect(blocked).toContain("default-src 'none'");
     expect(blocked).toContain('img-src data:;');
     expect(blocked).not.toContain('https:');
-    expect(allowed).toContain('img-src data: mailroom-img:;');
+    expect(allowed).toContain('img-src data: letterdock-img:;');
     expect(allowed).not.toMatch(/https?:/);
     expect(blocked).toContain("frame-src 'none'");
   });
@@ -100,13 +100,13 @@ describe('remote image rewrite to the local cache', () => {
     expect(html).toContain(toProxyUrl('https://e.com/c.png')!);
     expect(html).toContain(toProxyUrl('https://e.com/d.png')!);
     // blocked mode is unchanged: no proxy URLs, no remote URLs at all
-    expect(out.blocked).not.toMatch(/mailroom-img|https?:\/\/e\.com|srcset/);
+    expect(out.blocked).not.toMatch(/letterdock-img|https?:\/\/e\.com|srcset/);
   });
   it('round-trips URLs with unusual characters', () => {
     const u = 'https://ex.com/a b/é?x=1&y=(2)\'"';
     expect(fromProxyUrl(toProxyUrl(u)!)).toBe(u);
     expect(toProxyUrl('data:image/png;base64,AA')).toBeNull();
-    expect(fromProxyUrl('mailroom-img://i/' + btoa('ftp://x/y'))).toBeNull();
+    expect(fromProxyUrl('letterdock-img://i/' + btoa('ftp://x/y'))).toBeNull();
     expect(fromProxyUrl('https://example.com/')).toBeNull();
   });
 });

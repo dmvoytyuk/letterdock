@@ -1,8 +1,9 @@
 # Permanent app identity: appId is also the Windows AppUserModelID (src/main/buildConfig.ts APP_ID).
-# Never change it after the first public release.
-appId: app.mailroom
-productName: Mailroom
-executableName: Mailroom
+# Never change it after the first public release. (It was changed once, on purpose: the product was
+# renamed from Mailroom (app.mailroom) to Letterdock in 0.3.0. See src/main/legacyMigration.ts.)
+appId: app.letterdock
+productName: Letterdock
+executableName: Letterdock
 copyright: Copyright (c) 2026 voyd
 directories:
   output: release
@@ -38,7 +39,7 @@ electronLanguages:
 extraResources:
   - from: build/icon.ico
   - from: build/icon.png
-# mailto: links. NSIS ignores this key; the Windows registry entries that make Mailroom show up in
+# mailto: links. NSIS ignores this key; the Windows registry entries that make Letterdock show up in
 # Settings > Default apps are written by build/installer.nsh. Kept for other platforms and as a record.
 protocols:
   - name: Mailto
@@ -49,7 +50,7 @@ win:
   target:
     - target: nsis
       arch: [x64]
-  artifactName: Mailroom-Setup-${version}.${ext}
+  artifactName: Letterdock-Setup-${version}.${ext}
   # TODO(SignPath): the installer is unsigned for now, so there is no publisher name to check.
   # Turn this on (remove the line) together with code signing, or unsigned updates stay accepted.
   verifyUpdateCodeSignature: false
@@ -62,19 +63,20 @@ nsis:
   runAfterFinish: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
-  shortcutName: Mailroom
+  shortcutName: Letterdock
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  # Keep %APPDATA%\Mailroom (accounts, mail, settings) when uninstalling or updating.
+  # Keep %APPDATA%\Letterdock (accounts, mail, settings) when uninstalling or updating.
   deleteAppDataOnUninstall: false
 # Auto-update (ARCHITECTURE section 0, item 7): GitHub Releases. The release workflow uploads
-# Mailroom-Setup-<version>.exe, its .blockmap and latest.yml (electron-builder runs with
+# Letterdock-Setup-<version>.exe, its .blockmap and latest.yml (electron-builder runs with
 # --publish never). The app reads latest.yml from the latest non-prerelease release.
 # No code signing yet (section 0, item 8): to add it later, set win.signtoolOptions /
 # azureSignOptions here and remove win.verifyUpdateCodeSignature.
 publish:
   provider: github
   owner: voydapps
-  repo: mailroom
+  repo: letterdock
+  updaterCacheDirName: letterdock-updater
   releaseType: release

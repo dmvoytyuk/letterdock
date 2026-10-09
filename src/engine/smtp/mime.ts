@@ -135,15 +135,15 @@ export function signatureHtml(signature: string | null | undefined): string {
   const sig = signature?.trim();
   if (!sig) return '';
   const body = /<[a-z][\s\S]*>/i.test(sig) ? sig : textToHtml(sig);
-  return `<div class="mailroom-signature">-- <br>${body}</div>`;
+  return `<div class="letterdock-signature">-- <br>${body}</div>`;
 }
 
 /** Safe quoted block: the original rendered as escaped text inside a blockquote. */
 export function quoteHtml(src: MessageBody): string {
   const intro = `On ${formatDate(src.header.date)}, ${escapeHtml(whoLine(src.header.from))} wrote:`;
   return (
-    `<div class="mailroom-quote-intro">${intro}</div>` +
-    `<blockquote class="mailroom-quote" type="cite" style="${QUOTE_STYLE}">${textToHtml(quotableText(src))}</blockquote>`
+    `<div class="letterdock-quote-intro">${intro}</div>` +
+    `<blockquote class="letterdock-quote" type="cite" style="${QUOTE_STYLE}">${textToHtml(quotableText(src))}</blockquote>`
   );
 }
 
@@ -157,8 +157,8 @@ export function forwardHtml(src: MessageBody): string {
     ...(src.header.cc.length ? [`Cc: ${src.header.cc.map(whoLine).join(', ')}`] : []),
   ];
   return (
-    `<div class="mailroom-forward-header">${lines.map(escapeHtml).join('<br>')}</div><br>` +
-    `<div class="mailroom-forward">${textToHtml(quotableText(src))}</div>`
+    `<div class="letterdock-forward-header">${lines.map(escapeHtml).join('<br>')}</div><br>` +
+    `<div class="letterdock-forward">${textToHtml(quotableText(src))}</div>`
   );
 }
 
@@ -243,7 +243,7 @@ export interface BuildInput {
 }
 
 export function generateMessageId(email: string): string {
-  const domain = email.split('@')[1]?.trim() || 'mailroom.local';
+  const domain = email.split('@')[1]?.trim() || 'letterdock.local';
   return `<${randomUUID()}@${domain}>`;
 }
 
@@ -270,7 +270,7 @@ export function buildRaw(input: BuildInput): Promise<Buffer> {
       path: a.path,
       contentType: a.contentType,
     })),
-    headers: { 'X-Mailer': 'Mailroom' },
+    headers: { 'X-Mailer': 'Letterdock' },
     date: input.date ?? new Date(),
   };
   const mail = new MailComposer(options);

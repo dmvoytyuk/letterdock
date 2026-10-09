@@ -1,7 +1,7 @@
 // The local remote-image cache URL format (ARCHITECTURE section 6.3 / 9).
 // Used by the renderer sanitizer (encode) and by main (decode). Pure functions, no platform APIs.
 
-export const IMAGE_SCHEME = 'mailroom-img';
+export const IMAGE_SCHEME = 'letterdock-img';
 const PREFIX = `${IMAGE_SCHEME}://i/`;
 
 function toBase64Url(s: string): string {

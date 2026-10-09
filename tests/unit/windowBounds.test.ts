@@ -81,7 +81,7 @@ describe('BoundsStore', () => {
   });
 
   it('saves and reloads', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'mailroom-bounds-'));
+    const dir = await mkdtemp(join(tmpdir(), 'letterdock-bounds-'));
     dirs.push(dir);
     const file = join(dir, 'compose-window-state.json');
     const a = new BoundsStore(file, COMPOSE_RULES);

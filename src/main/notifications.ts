@@ -104,7 +104,7 @@ export class Notifier {
     const name = await this.d.accountName(accountId).catch(() => 'An account');
     this.d.show({
       title: `${name} needs you to sign in again`,
-      body: 'Open Mailroom to fix it.',
+      body: 'Open Letterdock to fix it.',
       silent: !this.d.settings().notifications.sound,
       onClick: () => this.d.focusMain(),
     });

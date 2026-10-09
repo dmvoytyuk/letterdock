@@ -55,7 +55,7 @@ export async function createHarness(
 ): Promise<Harness> {
   // Tests send at once unless they ask for an undo delay.
   const settings: AppSettings = { ...DEFAULT_SETTINGS, undoSendDelayMs: 0, ...opts.settings };
-  const dataDir = opts.dataDir ?? (await mkdtemp(join(tmpdir(), 'mailroom-it-')));
+  const dataDir = opts.dataDir ?? (await mkdtemp(join(tmpdir(), 'letterdock-it-')));
   const events: AppEvent[] = [];
   const secrets = opts.secrets ?? new Map<string, string>();
   const oauthSessions = new Map<string, OAuthSessionInfo>();

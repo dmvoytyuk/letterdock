@@ -46,7 +46,7 @@ export function UpdateBanner() {
         </>
       }
     >
-      Mailroom {status.newVersion} is ready &mdash; Restart to update
+      Letterdock {status.newVersion} is ready &mdash; Restart to update
     </Banner>
   );
 }

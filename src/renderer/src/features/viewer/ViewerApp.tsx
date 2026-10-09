@@ -129,10 +129,10 @@ export function ViewerApp({ messageId }: { messageId: number | null }) {
     return () => clearTimeout(h);
   }, [left]);
 
-  // Window title (taskbar and title bar): "Subject - Mailroom".
+  // Window title (taskbar and title bar): "Subject - Letterdock".
   const subject = header ? header.subject || '(no subject)' : null;
   useEffect(() => {
-    document.title = subject ? `${subject} - Mailroom` : 'Mailroom';
+    document.title = subject ? `${subject} - Letterdock` : 'Letterdock';
     document.documentElement.dataset.window = 'message';
   }, [subject]);
 

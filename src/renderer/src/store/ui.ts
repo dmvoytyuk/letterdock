@@ -1,6 +1,23 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type { AccountId, FolderId, ListScope, MessageId } from '../../../shared/ipc';
+
+// Settings saved by the app under its old name are still read once (the data folder is migrated
+// as a whole, including this storage).
+const LEGACY_UI_KEY = 'mailroom.ui';
+const uiStorage = {
+  getItem: (name: string): string | null => {
+    const v = localStorage.getItem(name);
+    if (v !== null) return v;
+    try {
+      return localStorage.getItem(LEGACY_UI_KEY);
+    } catch {
+      return null;
+    }
+  },
+  setItem: (name: string, value: string): void => localStorage.setItem(name, value),
+  removeItem: (name: string): void => localStorage.removeItem(name),
+};
 
 export type View =
   | { kind: 'all' }
@@ -13,14 +30,7 @@ export type View =
 
 export type Page = 'mail' | 'settings';
 export type SettingsSection =
-  | 'accounts'
-  | 'general'
-  | 'appearance'
-  | 'mail'
-  | 'notifications'
-  | 'keys'
-  | 'shortcuts'
-  | 'about';
+  'accounts' | 'general' | 'appearance' | 'mail' | 'notifications' | 'keys' | 'shortcuts' | 'about';
 export type Density = 'compact' | 'comfortable' | 'roomy';
 export type LayoutMode = 'wide' | 'medium' | 'narrow';
 
@@ -177,13 +187,17 @@ export const useUi = create<UiState>()(
         set((s) => ({
           recentFolders: {
             ...s.recentFolders,
-            [accountId]: [folderId, ...(s.recentFolders[accountId] ?? []).filter((x) => x !== folderId)].slice(0, 4),
+            [accountId]: [
+              folderId,
+              ...(s.recentFolders[accountId] ?? []).filter((x) => x !== folderId),
+            ].slice(0, 4),
           },
         })),
     }),
     {
-      name: 'mailroom.ui',
+      name: 'letterdock.ui',
       version: 1,
+      storage: createJSONStorage(() => uiStorage),
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,
         sidebarW: s.sidebarW,
@@ -220,5 +234,10 @@ export function scopeOf(view: View): ListScope {
 }
 
 export function isUnified(view: View): boolean {
-  return view.kind === 'all' || view.kind === 'unread' || view.kind === 'flagged' || view.kind === 'search';
+  return (
+    view.kind === 'all' ||
+    view.kind === 'unread' ||
+    view.kind === 'flagged' ||
+    view.kind === 'search'
+  );
 }

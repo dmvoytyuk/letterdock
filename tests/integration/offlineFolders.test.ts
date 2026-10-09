@@ -105,7 +105,7 @@ async function restart(h: Harness, srv: FakeImapServer, dir: string, dbFile: str
 }
 
 async function persistent() {
-  const dir = await mkdtemp(join(tmpdir(), 'mailroom-folders-'));
+  const dir = await mkdtemp(join(tmpdir(), 'letterdock-folders-'));
   dirs.push(dir);
   return { dir, dbFile: join(dir, 'mail.db'), secrets: new Map<string, string>() };
 }

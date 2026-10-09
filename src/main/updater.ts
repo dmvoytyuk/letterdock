@@ -71,14 +71,14 @@ function notesToText(notes: unknown): string | null {
 export function toUpdateError(raw: unknown): AppError {
   const text = raw instanceof Error ? raw.message : String(raw ?? '');
   const lower = text.toLowerCase();
-  let message = "Mailroom couldn't check for updates. Try again later.";
+  let message = "Letterdock couldn't check for updates. Try again later.";
   if (
     /enotfound|econnreset|econnrefused|etimedout|eai_again|net::|network|socket|offline|timed out/.test(
       lower,
     )
   ) {
     message =
-      "Mailroom couldn't reach the update server. Check your internet connection and try again.";
+      "Letterdock couldn't reach the update server. Check your internet connection and try again.";
   } else if (/\b404\b|cannot find latest|no published versions/.test(lower)) {
     message = 'No update information was found yet. Try again later.';
   } else if (/\b403\b|rate limit/.test(lower)) {

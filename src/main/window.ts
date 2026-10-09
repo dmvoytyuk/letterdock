@@ -62,7 +62,7 @@ export function createMainWindow(opts: {
     minHeight: 560,
     show: false,
     backgroundColor: bg,
-    title: 'Mailroom',
+    title: 'Letterdock',
     icon: appIconPath(),
     // DESIGN-SPEC 2.1: custom 36px title bar; native caption buttons stay (Snap Layouts work).
     titleBarStyle: 'hidden',

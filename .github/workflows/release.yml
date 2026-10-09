@@ -47,6 +47,14 @@ jobs:
         shell: pwsh
         run: ./scripts/test-installer.ps1 -ReleaseDir release
 
+      # Proves that the real published Mailroom 0.2.9 can be replaced by this build: user data moves
+      # to the new folder and the old app is removed. Also stops the release if it fails.
+      - name: Migration self-test (real Mailroom 0.2.9 -> this build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/test-migration.ps1 -ReleaseDir release
+
       # Code signing (later): SignPath Foundation, free for open-source projects.
       # Upload the unsigned installer to SignPath, wait for the signed one, then replace it
       # in release/ BEFORE the upload steps below. Rebuild latest.yml hashes after signing.
@@ -55,7 +63,7 @@ jobs:
       #   with:
       #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
       #     organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-      #     project-slug: mailroom
+      #     project-slug: letterdock
       #     signing-policy-slug: release-signing
       #     github-artifact-id: <id of the uploaded unsigned artifact>
       #     wait-for-completion: true
@@ -63,11 +71,11 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mailroom-windows
+          name: letterdock-windows
           if-no-files-found: error
           path: |
-            release/Mailroom-Setup-*.exe
-            release/Mailroom-Setup-*.exe.blockmap
+            release/Letterdock-Setup-*.exe
+            release/Letterdock-Setup-*.exe.blockmap
             release/latest.yml
 
       - name: Create or update GitHub Release
@@ -75,8 +83,8 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
-            release/Mailroom-Setup-*.exe
-            release/Mailroom-Setup-*.exe.blockmap
+            release/Letterdock-Setup-*.exe
+            release/Letterdock-Setup-*.exe.blockmap
             release/latest.yml
           fail_on_unmatched_files: true
           generate_release_notes: true

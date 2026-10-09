@@ -5,7 +5,7 @@ export interface DragState {
   ids: MessageId[];
   accountIds: Set<AccountId>;
 }
-export const DRAG_TYPE = 'application/x-mailroom-messages';
+export const DRAG_TYPE = 'application/x-letterdock-messages';
 
 let current: DragState | null = null;
 export const getDrag = (): DragState | null => current;

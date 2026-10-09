@@ -231,10 +231,10 @@ export function rightItems(update: UpdateStatus | null, outbox: OutboxItem[], no
   if (update?.state === 'ready') {
     out.push({
       id: 'ready',
-      text: `Mailroom ${update.newVersion} ready`,
+      text: `Letterdock ${update.newVersion} ready`,
       version: update.newVersion,
       tip: `You have version ${update.currentVersion}`,
-      announce: `Update ready: Mailroom ${update.newVersion}`,
+      announce: `Update ready: Letterdock ${update.newVersion}`,
     });
   } else if (update?.state === 'downloading') {
     out.push({

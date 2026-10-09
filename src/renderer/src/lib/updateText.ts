@@ -7,7 +7,7 @@ export function updateLine(s: UpdateStatus | null): string {
     case 'checking':
       return 'Checking for updates...';
     case 'upToDate':
-      return `Mailroom is up to date (${s.currentVersion})`;
+      return `Letterdock is up to date (${s.currentVersion})`;
     case 'available':
       return `Version ${s.newVersion} was found. Starting the download...`;
     case 'downloading':
@@ -17,7 +17,7 @@ export function updateLine(s: UpdateStatus | null): string {
     case 'error':
       return s.error.message;
     case 'idle':
-      return `You have Mailroom ${s.currentVersion}.`;
+      return `You have Letterdock ${s.currentVersion}.`;
     default:
       return '';
   }

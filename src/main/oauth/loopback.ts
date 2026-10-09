@@ -69,12 +69,12 @@ export async function startLoopback(opts: {
     }
     if (params.get('state') !== opts.expectedState) {
       // Wrong or missing state: a stray or forged request. Do not end the sign-in because of it.
-      return send(res, 400, PAGE('Sign-in not accepted', 'This request did not come from Mailroom.'));
+      return send(res, 400, PAGE('Sign-in not accepted', 'This request did not come from Letterdock.'));
     }
     if (settled) return send(res, 410, PAGE('Already done', 'You can close this tab.'));
     const error = params.get('error');
     if (error) {
-      send(res, 200, PAGE('Sign-in cancelled', 'You can close this tab and return to Mailroom.'));
+      send(res, 200, PAGE('Sign-in cancelled', 'You can close this tab and return to Letterdock.'));
       const denied = error === 'access_denied';
       return finish(() =>
         reject(
@@ -90,7 +90,7 @@ export async function startLoopback(opts: {
     }
     const code = params.get('code');
     if (!code) return send(res, 400, PAGE('Sign-in not accepted', 'No sign-in code was received.'));
-    send(res, 200, PAGE('You are signed in', 'You can close this tab and return to Mailroom.'));
+    send(res, 200, PAGE('You are signed in', 'You can close this tab and return to Letterdock.'));
     finish(() => resolve({ code }));
   };
 

@@ -96,7 +96,7 @@ describe('image sniffing', () => {
 describe('disk cache (LRU)', () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'mailroom-imgcache-'));
+    dir = mkdtempSync(join(tmpdir(), 'letterdock-imgcache-'));
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -162,7 +162,7 @@ describe('image service with a local server', () => {
   let dir: string;
 
   beforeEach(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'mailroom-imgsvc-'));
+    dir = mkdtempSync(join(tmpdir(), 'letterdock-imgsvc-'));
     hits = {};
     server = http.createServer((req, res) => {
       hits[req.url!] = (hits[req.url!] ?? 0) + 1;
@@ -270,7 +270,7 @@ describe('image service with a local server', () => {
 
   it('rejects malformed cache URLs and non-GET requests', async () => {
     const s = service();
-    expect((await s.handle(new Request('mailroom-img://i/!!!'))).status).toBe(400);
+    expect((await s.handle(new Request('letterdock-img://i/!!!'))).status).toBe(400);
     expect(
       (await s.handle(new Request(toProxyUrl(`${base}/p.png`)!, { method: 'POST' }))).status,
     ).toBe(405);

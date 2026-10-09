@@ -103,7 +103,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       getOwnText: () => {
         if (!el.current) return '';
         const clone = el.current.cloneNode(true) as HTMLElement;
-        clone.querySelectorAll('blockquote, .mailroom-signature, .mailroom-quote-intro').forEach((n) => n.remove());
+        clone.querySelectorAll('blockquote, .letterdock-signature, .letterdock-quote-intro, .mailroom-signature, .mailroom-quote-intro').forEach((n) => n.remove());
         return clone.textContent ?? '';
       },
       focusStart: () => {
@@ -120,7 +120,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       focus: () => el.current?.focus(),
       swapSignature: (oldHtml, newHtml) => {
         const e = el.current;
-        const block = e?.querySelector<HTMLElement>('.mailroom-signature');
+        const block = e?.querySelector<HTMLElement>('.letterdock-signature, .mailroom-signature');
         if (!e) return false;
         const norm = (h: string) => {
           const d = document.createElement('div');

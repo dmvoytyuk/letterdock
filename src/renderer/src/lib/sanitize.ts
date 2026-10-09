@@ -83,7 +83,7 @@ function cleanCss(css: string, blockRemote: boolean, asDeclarations: boolean): s
                 remote = true;
                 if (blockRemote) drop = true;
                 else {
-                  // Remote images load through the local cache (mailroom-img:), never directly.
+                  // Remote images load through the local cache (letterdock-img:), never directly.
                   const p = toProxyUrl(v);
                   if (p) n.value = p;
                   else drop = true;

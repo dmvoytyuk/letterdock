@@ -5,7 +5,7 @@ import { APP_CSP } from '../../src/shared/appCsp';
 
 describe('app shell CSP', () => {
   it('allows the local image scheme and no direct internet images', () => {
-    expect(APP_CSP).toContain("img-src 'self' data: mailroom-img:");
+    expect(APP_CSP).toContain("img-src 'self' data: letterdock-img:");
     expect(APP_CSP).not.toMatch(/https?:/);
   });
   it('is the only copy: the build config and main both use it', () => {

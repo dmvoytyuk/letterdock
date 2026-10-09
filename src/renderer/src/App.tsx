@@ -52,7 +52,7 @@ export function App() {
 
   // Keep the page title useful for screen readers.
   useEffect(() => {
-    document.title = 'Mailroom';
+    document.title = 'Letterdock';
   }, []);
 
   let body: ReactNode;
@@ -69,7 +69,7 @@ export function App() {
             </>
           }
         >
-          Mailroom can&apos;t read its data. {loadError.message}
+          Letterdock can&apos;t read its data. {loadError.message}
         </Banner>
       </div>
     );

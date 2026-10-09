@@ -38,8 +38,8 @@ describe('background decisions', () => {
   });
 
   it('tooltip shows the unread count', () => {
-    expect(trayTooltip(0)).toBe('Mailroom');
-    expect(trayTooltip(7)).toBe('Mailroom - 7 unread');
+    expect(trayTooltip(0)).toBe('Letterdock');
+    expect(trayTooltip(7)).toBe('Letterdock - 7 unread');
   });
 
   it('a second launch with only --hidden does not restore the window', () => {

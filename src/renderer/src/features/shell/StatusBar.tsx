@@ -134,7 +134,7 @@ export function StatusBar() {
   useEffect(() => {
     if (!readyVersion || useUpdates.getState().toastedVersion === readyVersion) return;
     useUpdates.setState({ toastedVersion: readyVersion });
-    toast(`Mailroom ${readyVersion} is ready.`, {
+    toast(`Letterdock ${readyVersion} is ready.`, {
       duration: 8000,
       actionLabel: 'Restart',
       onAction: restart,

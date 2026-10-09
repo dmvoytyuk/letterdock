@@ -297,7 +297,7 @@ function suggest(query: string, limit: number, accountId?: string): FakeSuggesti
 
 // ---------- cross-window plumbing (the fake compose window is a second page) ----------
 const listeners = new Set<(e: AppEvent) => void>();
-const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('mailroom-fake') : null;
+const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('letterdock-fake') : null;
 function emitLocal(e: AppEvent): void {
   for (const l of listeners) l(e);
 }
@@ -497,10 +497,10 @@ function destFor(action: { type: string; destFolderId?: number }, m: MessageHead
 
 function quoteOf(m: MessageHeader): string {
   const who = m.from?.name ?? m.from?.address ?? 'someone';
-  return `<div class="mailroom-quote-intro">On ${new Date(m.date).toLocaleString()}, ${who} wrote:</div><blockquote class="mailroom-quote" type="cite" style="margin:0 0 0 .8ex;border-left:2px solid #c8c8c8;padding-left:1ex">${m.snippet}</blockquote>`;
+  return `<div class="letterdock-quote-intro">On ${new Date(m.date).toLocaleString()}, ${who} wrote:</div><blockquote class="letterdock-quote" type="cite" style="margin:0 0 0 .8ex;border-left:2px solid #c8c8c8;padding-left:1ex">${m.snippet}</blockquote>`;
 }
 const sigHtml = (a: Account) =>
-  a.signature ? `<div class="mailroom-signature">-- <br>${a.signature.replace(/\n/g, '<br>')}</div>` : '';
+  a.signature ? `<div class="letterdock-signature">-- <br>${a.signature.replace(/\n/g, '<br>')}</div>` : '';
 
 function oauthNow() {
   return { microsoft: { clientIdOverride: '', builtInClientId: '00000000-0000-4000-8000-000000000000', effectiveClientId: '00000000-0000-4000-8000-000000000000', tenant: 'common' } };
@@ -927,7 +927,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'app.mailtoStatus':
       return delay({ registered: true, isDefault: LS.get<boolean | null>('mailtoDefault', false) ?? undefined }, 60);
     case 'app.openDefaultAppsSettings':
-      // Dev: pretend the user picked Mailroom in Windows Settings.
+      // Dev: pretend the user picked Letterdock in Windows Settings.
       LS.set('mailtoDefault', true);
       return delay(undefined, 20);
     case 'updates.status':
@@ -942,7 +942,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'images.clearCache':
       return delay({ freed: 12 * 1024 * 1024 });
     case 'app.info':
-      return delay({ version: '0.1.0-fake', dbPath: 'C:\\fake\\mailroom.db', electron: '0' });
+      return delay({ version: '0.1.0-fake', dbPath: 'C:\\fake\\letterdock.db', electron: '0' });
     default:
       return Promise.reject({ code: 'UNSUPPORTED', message: `${channel} is not available in the fake API.`, retryable: false });
   }

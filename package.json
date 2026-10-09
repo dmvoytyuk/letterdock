@@ -1,16 +1,16 @@
 {
-  "name": "mailroom",
-  "productName": "Mailroom",
+  "name": "letterdock",
+  "productName": "Letterdock",
   "version": "0.2.9",
   "description": "Free, open-source Windows email client with unlimited accounts",
   "license": "MIT",
-  "homepage": "https://github.com/voydapps/mailroom#readme",
+  "homepage": "https://github.com/voydapps/letterdock#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/voydapps/mailroom.git"
+    "url": "git+https://github.com/voydapps/letterdock.git"
   },
   "bugs": {
-    "url": "https://github.com/voydapps/mailroom/issues"
+    "url": "https://github.com/voydapps/letterdock/issues"
   },
   "private": true,
   "main": "./out/main/index.js",

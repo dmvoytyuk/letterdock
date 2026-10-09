@@ -21,7 +21,9 @@ import {
   shouldStartHidden,
 } from './background';
 import { AppTray } from './tray';
-import { APP_NAME, resolveAppUserModelId } from './buildConfig';
+import { APP_NAME, readEnv, resolveAppUserModelId } from './buildConfig';
+import { LEGACY_APP_NAME, MIGRATION_MARKER, migrateUserData } from './legacyMigration';
+import { nodeCleanupDeps, removeLegacyInstall, stopLegacyProcessesSync } from './legacyCleanup';
 import { createComposeWindow } from './composeWindow';
 import { EngineHost } from './engineHost';
 import { createEngineBridge } from './engineBridge';
@@ -47,7 +49,30 @@ import { ViewerWindows } from './viewerWindow';
 import { BoundsStore, COMPOSE_RULES } from './windowBounds';
 
 app.setName(APP_NAME);
-app.setPath('userData', process.env.MAILROOM_DATA_DIR ?? join(app.getPath('appData'), APP_NAME));
+// Up to 0.2.9 the app was called Mailroom and kept its data in %APPDATA%Mailroom. Move that folder
+// (whole: it holds Chromium's "Local State", the key for the saved passwords) BEFORE anything
+// opens a file in the data folder. Skipped when a custom data folder is set.
+const dataDirOverride = readEnv('DATA_DIR');
+const migration = dataDirOverride
+  ? null
+  : (() => {
+      const appData = app.getPath('appData');
+      const oldDir = join(appData, LEGACY_APP_NAME);
+      const result = migrateUserData({
+        oldDir,
+        newDir: join(appData, APP_NAME),
+        stopOldApp: stopLegacyProcessesSync,
+        appVersion: app.getVersion(),
+      });
+      return result;
+    })();
+// If the migration failed, keep running on the old folder so nothing looks lost. It is tried
+// again at the next start.
+app.setPath(
+  'userData',
+  dataDirOverride ??
+    join(app.getPath('appData'), migration?.status === 'failed' ? LEGACY_APP_NAME : APP_NAME),
+);
 app.setAppUserModelId(resolveAppUserModelId(app.isPackaged));
 
 // Must run before the app is ready. Remote email images load through this scheme (local cache).
@@ -69,6 +94,9 @@ async function boot(): Promise<void> {
   const logsDir = join(dataDir, 'logs');
   const log = createLogger(logsDir, 'main', settings.get().verboseLogging);
   log.info({ version: app.getVersion() }, 'starting');
+  for (const [level, msg] of migration?.messages ?? [])
+    log[level]({ migration: migration?.status }, msg);
+  scheduleLegacyCleanup(dataDir, log, migration !== null);
 
   await app.whenReady();
   nativeTheme.themeSource = settings.get().theme;
@@ -189,7 +217,7 @@ async function boot(): Promise<void> {
       log.fatal('engine crashed repeatedly');
       void import('electron').then(({ dialog }) =>
         dialog.showErrorBox(
-          'Mailroom cannot continue',
+          'Letterdock cannot continue',
           'The mail engine keeps stopping. Open the log folder from Settings and report the problem.',
         ),
       );
@@ -232,7 +260,7 @@ async function boot(): Promise<void> {
       w.on('closed', () => appWindows.delete(w));
     },
   });
-  const printTemp = join(app.getPath('temp'), 'mailroom-print');
+  const printTemp = join(app.getPath('temp'), 'letterdock-print');
   void cleanPrintTemp(printTemp);
 
   // ---- automatic updates (GitHub Releases). Packaged builds only. ----
@@ -409,6 +437,36 @@ async function boot(): Promise<void> {
   });
 }
 
+/**
+ * After the data folder was migrated, removes the old Mailroom install (it is a separate app id,
+ * so the Letterdock installer leaves it in place). Packaged Windows builds only. Runs a few
+ * seconds after start so it never slows the first window down.
+ */
+function scheduleLegacyCleanup(dataDir: string, log: Logger, defaultDataDir: boolean): void {
+  if (!app.isPackaged || process.platform !== 'win32' || !defaultDataDir) return;
+  if (!existsSync(join(dataDir, MIGRATION_MARKER))) return;
+  const timer = setTimeout(() => {
+    const deps = nodeCleanupDeps({
+      localAppData: process.env['LOCALAPPDATA'] ?? join(app.getPath('home'), 'AppData', 'Local'),
+      appData: app.getPath('appData'),
+      desktopDir: app.getPath('desktop'),
+      dataDir,
+      readShortcutTarget: (lnk) => {
+        try {
+          return shell.readShortcutLink(lnk).target || null;
+        } catch {
+          return null;
+        }
+      },
+      log: { info: (m) => log.info(m), warn: (m) => log.warn(m) },
+    });
+    removeLegacyInstall(deps).catch((e) =>
+      log.warn({ err: String(e) }, 'old install cleanup failed'),
+    );
+  }, 8000);
+  timer.unref();
+}
+
 /** Loads electron-updater (only when packaged) and routes its log lines to our logger. */
 async function loadAutoUpdater(log: Logger): Promise<UpdaterLike> {
   const mod = (await import('electron-updater')) as unknown as {
@@ -439,7 +497,7 @@ function noopUpdater(): UpdaterLike {
 }
 
 /**
- * Registers Mailroom as a mailto: handler. Packaged builds only (a dev run must never take over
+ * Registers Letterdock as a mailto: handler. Packaged builds only (a dev run must never take over
  * mailto: links). Windows still asks the user to choose the default app (Settings > Default apps);
  * this just makes us a candidate. Done once per installed version and path.
  */

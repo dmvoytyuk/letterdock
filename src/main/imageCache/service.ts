@@ -1,4 +1,4 @@
-// Serves mailroom-img: requests from the disk cache, downloading on a miss.
+// Serves letterdock-img: requests from the disk cache, downloading on a miss.
 import { fromProxyUrl } from '../../shared/imageProxy';
 import { fetchImage, type FetchOptions, type FetchedImage } from './fetcher';
 import type { ImageDiskCache } from './store';
@@ -66,7 +66,7 @@ export class ImageService {
     return p;
   }
 
-  /** Handler for protocol.handle('mailroom-img', ...). */
+  /** Handler for protocol.handle('letterdock-img', ...). */
   handle = async (request: Request): Promise<Response> => {
     if (request.method !== 'GET') return new Response(null, { status: 405 });
     const original = fromProxyUrl(request.url);

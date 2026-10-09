@@ -61,7 +61,7 @@ describe('mentionsAttachment', () => {
 
 describe('signatureHtml', () => {
   it('matches the markup the engine writes', () => {
-    expect(signatureHtml('Alex\nRivera')).toBe('<div class="mailroom-signature">-- <br>Alex<br>Rivera</div>');
+    expect(signatureHtml('Alex\nRivera')).toBe('<div class="letterdock-signature">-- <br>Alex<br>Rivera</div>');
     expect(signatureHtml('  ')).toBe('');
     expect(signatureHtml(null)).toBe('');
   });

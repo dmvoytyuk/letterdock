@@ -502,7 +502,7 @@ export interface PrintMessageReq {
   messageId: MessageId;
   /**
    * The message body as the renderer already sanitized it (ARCHITECTURE section 9), in the LIGHT
-   * variant, with remote images either removed or pointing to `mailroom-img:`. Main still treats it
+   * variant, with remote images either removed or pointing to `letterdock-img:`. Main still treats it
    * as untrusted: the print window runs no scripts and a strict CSP. Omit it to print the plain text.
    */
   bodyHtml?: string;

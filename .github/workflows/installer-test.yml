@@ -22,3 +22,8 @@ jobs:
       - name: Installer self-test (broken old uninstaller)
         shell: pwsh
         run: ./scripts/test-installer.ps1 -ReleaseDir release
+      - name: Migration self-test (real Mailroom 0.2.9 -> this build)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/test-migration.ps1 -ReleaseDir release

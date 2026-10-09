@@ -9,7 +9,7 @@ export function WelcomeScreen() {
       <div className="logo" aria-hidden="true">
         <Icon name="mail" />
       </div>
-      <h1>Welcome to Mailroom</h1>
+      <h1>Welcome to Letterdock</h1>
       <div className="sub">All your email accounts in one place. No limits.</div>
       <div className="btns">
         <Button onClick={() => open('gmail')}>

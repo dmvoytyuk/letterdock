@@ -168,7 +168,7 @@ describe('drafts: local first, server later', () => {
   });
 
   it('survives an app restart: the draft is still listed and goes out later', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'mailroom-drafts-'));
+    const dir = await mkdtemp(join(tmpdir(), 'letterdock-drafts-'));
     dirs.push(dir);
     const dbFile = join(dir, 'mail.db');
     const secrets = new Map<string, string>();

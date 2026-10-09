@@ -1,6 +1,6 @@
 // Builds the document that is printed (pure, no Electron). The print window runs NO script and has a
 // strict CSP, so even a body that slipped past the renderer's sanitizer cannot run anything or load
-// anything except data: and the local image cache (mailroom-img:). Colors are always light.
+// anything except data: and the local image cache (letterdock-img:). Colors are always light.
 import { IMAGE_SCHEME } from '../../shared/imageProxy';
 
 export const PRINT_CSP = [

@@ -167,7 +167,7 @@ describe('right side', () => {
   it('update ready, then outbox; two items at most', () => {
     const r = rightItems({ state: 'ready', currentVersion: '0.2.7', newVersion: '0.2.8' }, [item({ state: 'sending' })], NOW);
     expect(r.map((x) => x.id)).toEqual(['ready', 'outbox']);
-    expect(r[0]!.text).toBe('Mailroom 0.2.8 ready');
+    expect(r[0]!.text).toBe('Letterdock 0.2.8 ready');
     expect(r[0]).toMatchObject({ tip: 'You have version 0.2.7' });
   });
   it('download shows the percent but never announces it', () => {

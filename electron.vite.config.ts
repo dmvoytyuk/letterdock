@@ -14,7 +14,7 @@ const CSP_DEV = CSP_PROD.replace("script-src 'self'", "script-src 'self' 'unsafe
 
 function cspPlugin(): Plugin {
   return {
-    name: 'mailroom-csp',
+    name: 'letterdock-csp',
     transformIndexHtml: {
       order: 'pre',
       handler(html, ctx) {

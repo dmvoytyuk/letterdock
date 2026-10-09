@@ -1,4 +1,4 @@
-/* Mailroom renderer styles. Tokens follow docs/DESIGN-SPEC.md 1.6; look follows docs/mockup. */
+/* Letterdock renderer styles. Tokens follow docs/DESIGN-SPEC.md 1.6; look follows docs/mockup. */
 :root {
   color-scheme: light;
   --bg-app: #f3f3f3;

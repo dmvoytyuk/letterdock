@@ -12,7 +12,7 @@ import { isSafeExternalUrl, isExecutableName } from '../../src/shared/safety';
 
 let dir: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'mailroom-test-'));
+  dir = mkdtempSync(join(tmpdir(), 'letterdock-test-'));
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

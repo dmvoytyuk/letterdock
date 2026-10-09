@@ -340,6 +340,6 @@ describe('sanitize integration', () => {
     expect(doc).not.toMatch(/script-src|allow-scripts/);
     expect(doc).toContain('height:auto!important;min-height:0!important');
     expect(doc).toContain('<meta name="color-scheme" content="dark">');
-    expect(buildSrcdoc('<p>x</p>', true)).toContain('img-src data: mailroom-img:');
+    expect(buildSrcdoc('<p>x</p>', true)).toContain('img-src data: letterdock-img:');
   });
 });

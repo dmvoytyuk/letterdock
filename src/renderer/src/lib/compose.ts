@@ -60,7 +60,7 @@ export function signatureHtml(signature: string | null | undefined): string {
   const sig = signature?.trim();
   if (!sig) return '';
   const body = /<[a-z][\s\S]*>/i.test(sig) ? sig : escapeHtml(sig).replace(/\r\n|\r|\n/g, '<br>');
-  return `<div class="mailroom-signature">-- <br>${body}</div>`;
+  return `<div class="letterdock-signature">-- <br>${body}</div>`;
 }
 
 /** Link text typed by the user to a safe URL, or null if it is not an http, https or mailto link. */

@@ -283,7 +283,7 @@ function AccountSettings({ accountId }: { accountId: string }) {
             role="radio"
             aria-checked={autoColor}
             aria-label="Automatic"
-            title="Automatic: Mailroom picks a color"
+            title="Automatic: Letterdock picks a color"
             className={`swatch auto ${autoColor ? 'sel' : ''}`}
             style={{ ['--ac' as string]: 'var(--ctrl)' }}
             onClick={() => {
@@ -467,9 +467,9 @@ export function DefaultAppRow({
 }) {
   const text =
     status === 'default'
-      ? 'Mailroom is your default email app.'
+      ? 'Letterdock is your default email app.'
       : status === 'other'
-        ? 'Mailroom is not your default email app.'
+        ? 'Letterdock is not your default email app.'
         : "We can't tell which app opens email links.";
   return (
     <div className="dapp" role="group" aria-labelledby="dapp-title">
@@ -480,11 +480,11 @@ export function DefaultAppRow({
           <span>{text}</span>
         </div>
         <div className="hint dc">
-          Windows only lets you choose this yourself. Press the button, then pick Mailroom in the list that opens.
+          Windows only lets you choose this yourself. Press the button, then pick Letterdock in the list that opens.
         </div>
       </div>
       <Button variant={status === 'default' ? 'secondary' : 'primary'} onClick={onOpenWindowsSettings}>
-        {status === 'default' ? 'Open Windows Default apps' : 'Make Mailroom the default email app'}
+        {status === 'default' ? 'Open Windows Default apps' : 'Make Letterdock the default email app'}
       </Button>
       <span className="sr-only" role="status">{announce ?? ''}</span>
     </div>
@@ -503,7 +503,7 @@ function useDefaultApp(): { status: DefaultAppState; announce: string } {
           if (!alive) return;
           const next: DefaultAppState = r.isDefault === true ? 'default' : r.isDefault === false ? 'other' : 'unknown';
           if (last.current !== null && last.current !== 'default' && next === 'default') {
-            setAnnounce('Mailroom is now your default email app.');
+            setAnnounce('Letterdock is now your default email app.');
           }
           last.current = next;
           setStatus(next);
@@ -540,7 +540,7 @@ function General() {
     <>
       <h1>General</h1>
       <h2>STARTUP</h2>
-      <Checkbox checked={settings.launchAtLogin} label="Start Mailroom when I sign in to Windows" onChange={(v) => void set({ launchAtLogin: v })} />
+      <Checkbox checked={settings.launchAtLogin} label="Start Letterdock when I sign in to Windows" onChange={(v) => void set({ launchAtLogin: v })} />
       <Checkbox
         checked={settings.startMinimizedToTray}
         disabled={!settings.launchAtLogin}
@@ -548,11 +548,11 @@ function General() {
         onChange={(v) => void set({ startMinimizedToTray: v })}
       />
       <p className="hint indent">
-        Start hidden when Windows starts. This only works together with &ldquo;Start Mailroom when I sign in to Windows&rdquo;.
+        Start hidden when Windows starts. This only works together with &ldquo;Start Letterdock when I sign in to Windows&rdquo;.
       </p>
       <Checkbox checked={settings.closeToTray} label="Keep running in the background when I close the window" onChange={(v) => void set({ closeToTray: v })} />
       <p className="hint indent">
-        Mailroom keeps checking for mail and shows notifications. To close it fully, use Quit in the menu of its icon near the clock.
+        Letterdock keeps checking for mail and shows notifications. To close it fully, use Quit in the menu of its icon near the clock.
       </p>
 
       <h2>DEFAULT EMAIL APP</h2>
@@ -1025,7 +1025,7 @@ function Advanced() {
       <p className="lead">Most people never need to change these.</p>
       <h2>MICROSOFT SIGN-IN KEY</h2>
       <p className="hint" style={{ marginBottom: 8 }}>
-        Mailroom has its own key for &ldquo;Sign in with Microsoft&rdquo;. If you registered your own app, you can use its key instead. Your key stays on this PC.
+        Letterdock has its own key for &ldquo;Sign in with Microsoft&rdquo;. If you registered your own app, you can use its key instead. Your key stays on this PC.
       </p>
       {usingBuiltIn ? (
         <div style={{ marginBottom: 12 }}>
@@ -1083,7 +1083,7 @@ function About() {
   return (
     <>
       <h1>About</h1>
-      <p className="lead">Mailroom is a free, open-source email client for Windows. Unlimited accounts. Your mail stays on your PC.</p>
+      <p className="lead">Letterdock is a free, open-source email client for Windows. Unlimited accounts. Your mail stays on your PC.</p>
       {info ? (
         <dl className="rdetails" style={{ fontSize: 13 }}>
           <dt>Version</dt><dd>{info.version}</dd>

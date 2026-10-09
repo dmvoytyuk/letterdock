@@ -200,7 +200,7 @@ describe('offline queue', () => {
   });
 
   it('survives an app restart in between', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'mailroom-restart-'));
+    const dir = await mkdtemp(join(tmpdir(), 'letterdock-restart-'));
     dirs.push(dir);
     const dbFile = join(dir, 'mail.db');
     const secrets = new Map<string, string>();

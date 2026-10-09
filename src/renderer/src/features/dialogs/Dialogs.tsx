@@ -153,7 +153,7 @@ export function RemoveAccountDialogHost() {
   return (
     <Dialog title={`Remove ${account.displayName}?`} size="sm" onClose={close} busy={busy} initialFocus=".foot .btn:not(.danger)">
       <p>
-        Remove {account.displayName} from Mailroom? Mail on the server is not deleted. The copy on this PC and the saved password are removed.
+        Remove {account.displayName} from Letterdock? Mail on the server is not deleted. The copy on this PC and the saved password are removed.
       </p>
       {error ? <Banner tone="danger" className="dlg-banner">{error.message}</Banner> : null}
       <div className="foot">

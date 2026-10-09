@@ -23,7 +23,7 @@ export class AppTray {
       tray.setToolTip(trayTooltip(this.unread));
       tray.setContextMenu(
         Menu.buildFromTemplate([
-          { label: 'Open Mailroom', click: actions.open },
+          { label: 'Open Letterdock', click: actions.open },
           { label: 'New mail', click: actions.newMail },
           { label: 'Check mail now', click: actions.checkMail },
           { type: 'separator' },

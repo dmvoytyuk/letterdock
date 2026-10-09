@@ -14,7 +14,7 @@ import { isMainChannel } from '../../src/shared/channels';
 
 describe('findMailtoArg', () => {
   it('finds the link among normal arguments', () => {
-    expect(findMailtoArg(['Mailroom.exe', '--flag', 'mailto:bob@x.com?subject=Hi'])).toBe(
+    expect(findMailtoArg(['Letterdock.exe', '--flag', 'mailto:bob@x.com?subject=Hi'])).toBe(
       'mailto:bob@x.com?subject=Hi',
     );
     expect(findMailtoArg(['MAILTO:Bob@x.com'])).toBe('MAILTO:Bob@x.com');
@@ -30,7 +30,7 @@ describe('findMailtoArg', () => {
 });
 
 describe('computeMailtoStatus', () => {
-  const base = { registeredCommand: true, currentHandlerName: 'Mailroom', appName: 'Mailroom' };
+  const base = { registeredCommand: true, currentHandlerName: 'Letterdock', appName: 'Letterdock' };
   it('is never registered in dev runs', () => {
     expect(computeMailtoStatus({ ...base, isPackaged: false })).toEqual({ registered: false });
   });
@@ -90,7 +90,7 @@ describe('print document', () => {
     expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<body>'));
     expect(PRINT_CSP).toContain("default-src 'none'");
     expect(PRINT_CSP).toContain("script-src 'none'");
-    expect(PRINT_CSP).toContain('img-src data: mailroom-img:');
+    expect(PRINT_CSP).toContain('img-src data: letterdock-img:');
     expect(PRINT_CSP).not.toMatch(/https?:/);
     expect(doc).toContain('color-scheme:light');
     expect(doc).toContain('background:#fff!important');
@@ -127,12 +127,12 @@ describe('print document', () => {
     expect(fmtSize(18 * 1024)).toBe('18 KB');
     expect(fmtSize(2.5 * 1024 * 1024)).toBe('2.5 MB');
   });
-  it('keeps mailroom-img images', () => {
+  it('keeps letterdock-img images', () => {
     const doc = buildPrintDocument({
       ...input,
-      bodyHtml: '<img src="mailroom-img://i/aHR0cHM6Ly94">',
+      bodyHtml: '<img src="letterdock-img://i/aHR0cHM6Ly94">',
     });
-    expect(doc).toContain('mailroom-img://i/aHR0cHM6Ly94');
+    expect(doc).toContain('letterdock-img://i/aHR0cHM6Ly94');
   });
 });
 

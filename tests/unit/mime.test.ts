@@ -140,7 +140,7 @@ describe('quoting and signature', () => {
   it('initial html: new has only the signature; reply has signature then quote', () => {
     expect(initialHtml({ mode: 'new', signature: null })).toBe('<p><br></p>');
     const reply = initialHtml({ mode: 'reply', signature: 'Me', source: body() });
-    expect(reply.indexOf('mailroom-signature')).toBeLessThan(reply.indexOf('mailroom-quote'));
+    expect(reply.indexOf('letterdock-signature')).toBeLessThan(reply.indexOf('letterdock-quote'));
     const fwd = initialHtml({ mode: 'forward', signature: null, source: body() });
     expect(fwd).toContain('Forwarded message');
     expect(fwd).toContain('Subject: Plans');
@@ -189,7 +189,7 @@ describe('buildRaw', () => {
     expect(p.inReplyTo).toBe('<o@x>');
     expect(p.html).toContain('Hi <b>there</b>');
     expect(p.text).toContain('Hi there');
-    expect(p.headers.get('x-mailer')).toBe('Mailroom');
+    expect(p.headers.get('x-mailer')).toBe('Letterdock');
 
     const withBcc = await simpleParser(withBccHeader(raw, [{ address: 'hidden@example.com' }]));
     expect(JSON.stringify(withBcc.headers.get('bcc'))).toContain('hidden@example.com');

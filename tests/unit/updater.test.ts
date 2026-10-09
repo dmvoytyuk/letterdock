@@ -244,7 +244,7 @@ describe('update messages', () => {
 
   it('writes the status line for Settings', () => {
     expect(updateLine({ state: 'upToDate', currentVersion: '0.2.6', checkedAt: 1 })).toBe(
-      'Mailroom is up to date (0.2.6)',
+      'Letterdock is up to date (0.2.6)',
     );
     expect(
       updateLine({
@@ -263,17 +263,17 @@ describe('update messages', () => {
 describe('electron-builder publish config', () => {
   const yml = readFileSync(join(__dirname, '../../electron-builder.yml'), 'utf8');
 
-  it('publishes to GitHub voydapps/mailroom', () => {
+  it('publishes to GitHub voydapps/letterdock', () => {
     expect(yml).toMatch(
-      /^publish:\r?\n\s+provider: github\r?\n\s+owner: voydapps\r?\n\s+repo: mailroom\b/m,
+      /^publish:\r?\n\s+provider: github\r?\n\s+owner: voydapps\r?\n\s+repo: letterdock\b/m,
     );
     expect(yml).not.toContain('example.invalid');
   });
 
   it('names installers exactly like the release workflow uploads them', () => {
-    expect(yml).toMatch(/artifactName: Mailroom-Setup-\$\{version\}\.\$\{ext\}/);
+    expect(yml).toMatch(/artifactName: Letterdock-Setup-\$\{version\}\.\$\{ext\}/);
     const wf = readFileSync(join(__dirname, '../../.github/workflows/release.yml'), 'utf8');
-    expect(wf).toContain('release/Mailroom-Setup-*.exe');
+    expect(wf).toContain('release/Letterdock-Setup-*.exe');
     expect(wf).toContain('release/latest.yml');
     expect(wf).toContain('--publish never');
   });

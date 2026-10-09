@@ -130,7 +130,7 @@ export class ContactService {
   /**
    * Addresses that belong to the user: the configured accounts' own email addresses, nothing else.
    * The login name is NOT used: it may be another person's or a different identity, and the app cannot
-   * know. Mailroom has no alias list yet. It is recomputed from the accounts table whenever it changes,
+   * know. Letterdock has no alias list yet. It is recomputed from the accounts table whenever it changes,
    * so nothing about "own" is ever stored in the contact rows.
    */
   private ownAddresses(): Set<string> {
