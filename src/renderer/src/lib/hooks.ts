@@ -11,7 +11,8 @@ import { toast, toastError } from '../store/toasts';
 import { useUpdates } from '../store/updates';
 import { useConvSignal } from '../store/conversations';
 import { handleScheduledEvent, useScheduled } from '../store/scheduled';
-import { backOnlineText, reportDroppedChanges, reportQueueFailure } from './queueFailures';
+import { handleRulesEvent, useRules } from '../store/rules';
+import { backOnlineText, reportDroppedChanges, reportFolderConflict, reportQueueFailure } from './queueFailures';
 
 // ---------- theme ----------
 export const useThemeState = create<{ dark: boolean }>(() => ({ dark: false }));
@@ -76,6 +77,7 @@ export function useAppEvents(): void {
     void useApp.getState().loadAll();
     void useOutbox.getState().refetch();
     void useScheduled.getState().refetch();
+    void useRules.getState().refetchRules();
     call('updates.status')
       .then((s) => useUpdates.getState().setStatus(s))
       .catch(() => undefined);
@@ -83,6 +85,7 @@ export function useAppEvents(): void {
       useApp.getState().handleEvent(e);
       handleOutboxEvent(e);
       handleScheduledEvent(e);
+      handleRulesEvent(e);
       if (e.type === 'update:status') {
         useUpdates.getState().setStatus(e.status);
       } else if (e.type === 'action:failed') {
@@ -91,6 +94,9 @@ export function useAppEvents(): void {
         scheduleRefresh();
       } else if (e.type === 'pending:dropped') {
         reportDroppedChanges(e);
+      } else if (e.type === 'folder:conflict') {
+        // A folder change from the offline queue met a difference on the server.
+        reportFolderConflict(e);
       } else if (e.type === 'ui:compose') {
         call('compose.openWindow', { mode: 'new', mailto: e.mailto }).catch((err) =>
           toastError((err as { message?: string }).message ?? 'Could not open the message.'),
@@ -121,6 +127,7 @@ export function useAppEvents(): void {
         if (relevant) scheduleRefresh();
       } else if (e.type === 'engine:restarted') {
         void useScheduled.getState().refetch();
+        void useRules.getState().refetchRules();
         scheduleRefresh();
       } else if (e.type === 'ui:openMessage') {
         const ui = useUi.getState();

@@ -390,9 +390,76 @@ const drafts = (): Record<string, SendReq> => LS.get('drafts', {});
 const saveDrafts = (d: Record<string, SendReq>) => LS.set('drafts', d);
 
 // ---------- rules (simple fake; they never run on the fake mail) ----------
-const readRules = (): Rule[] => LS.get<Rule[]>('rules', []);
+/** Three rules to look at: one with two actions, one for every account and off, one whose folder is gone. Clear `fake.rules` in localStorage to make them again. */
+function seedRules(): Rule[] {
+  const t = Date.now();
+  const receipts = folders.find((f) => f.accountId === 'a1' && f.name === 'Receipts')!;
+  const base = { enabled: true, matchMode: 'all' as const, trigger: 'inbox' as const, createdAt: t - 5 * 86_400_000, warning: null };
+  const noAct = { markRead: false, flag: false, delete: false, stop: false };
+  return [
+    { ...base, id: 11, position: 1, name: 'Receipts', accountId: 'a1', conditions: [{ field: 'from', value: 'shop@acme.com' }], actions: { ...noAct, moveToFolderId: receipts.id, moveToFolderPath: 'Receipts', markRead: true } },
+    { ...base, id: 12, position: 2, name: 'Newsletters', enabled: false, accountId: null, matchMode: 'any' as const, conditions: [{ field: 'subject', value: 'newsletter' }, { field: 'from', value: 'news@' }], actions: { ...noAct, flag: true } },
+    {
+      ...base,
+      id: 13,
+      position: 3,
+      name: 'Old projects',
+      enabled: false,
+      accountId: 'a2',
+      conditions: [{ field: 'toCc', value: 'projects@northfield.example' }, { field: 'hasAttachment' }],
+      actions: { ...noAct, moveToFolderId: 9999, moveToFolderPath: 'Projects/2025', stop: true },
+      warning: { kind: 'folderMissing' as const, message: "Folder 'Projects/2025' is missing. Edit the rule to choose another.", folderPath: 'Projects/2025' },
+    },
+  ] as Rule[];
+}
+function seedActivity(): RuleActivityItem[] {
+  const t = Date.now();
+  const e = (id: number, minutesAgo: number, o: Partial<RuleActivityItem>): RuleActivityItem => ({
+    id,
+    ts: t - minutesAgo * 60_000,
+    ruleId: 11,
+    ruleName: 'Receipts',
+    ruleDeleted: false,
+    accountId: 'a1',
+    count: 1,
+    subject: null,
+    sender: null,
+    summary: 'Moved to Receipts, marked as read',
+    runNow: false,
+    undone: false,
+    canUndo: true,
+    warning: false,
+    ...o,
+  });
+  return [
+    e(1, 12, { subject: 'Order #4411 shipped', sender: 'shop@acme.com' }),
+    e(2, 26 * 60, { ruleId: 12, ruleName: 'Newsletters', count: 12, summary: 'Flagged', runNow: true }),
+    e(3, 27 * 60, { subject: 'Order #4388', sender: 'shop@acme.com', undone: true }),
+    e(4, 3 * 24 * 60, { subject: 'Your receipt', sender: 'shop@acme.com', canUndo: false }),
+    e(5, 4 * 24 * 60, { ruleId: null, ruleName: 'Spring sale', ruleDeleted: true, subject: 'Hello', sender: 'promo@brand.example', summary: 'Moved to Trash' }),
+    e(6, 5 * 24 * 60, { ruleId: 13, ruleName: 'Old projects', accountId: 'a2', count: 0, subject: null, sender: null, summary: "Switched off: the folder 'Projects/2025' is missing", warning: true, canUndo: false }),
+  ];
+}
+const runTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
+const ruleSummaryFake = (r: Rule): string =>
+  [r.actions.moveToFolderId ? `Moved to ${r.actions.moveToFolderPath ?? 'a folder'}` : '', r.actions.markRead ? 'marked as read' : '', r.actions.flag ? 'flagged' : '', r.actions.delete ? 'moved to Trash' : '']
+    .filter(Boolean)
+    .join(', ') || 'Checked';
+const readRules = (): Rule[] => {
+  const stored = LS.get<Rule[] | null>('rules', null);
+  if (stored) return stored;
+  const seeded = seedRules();
+  LS.set('rules', seeded);
+  return seeded;
+};
 const writeRules = (l: Rule[]) => LS.set('rules', l.map((r, i) => ({ ...r, position: i + 1 })));
-const readActivity = (): RuleActivityItem[] => LS.get<RuleActivityItem[]>('rulesActivity', []);
+const readActivity = (): RuleActivityItem[] => {
+  const stored = LS.get<RuleActivityItem[] | null>('rulesActivity', null);
+  if (stored) return stored;
+  const seeded = seedActivity();
+  LS.set('rulesActivity', seeded);
+  return seeded;
+};
 
 // ---------- send later (kept in localStorage so the compose window and the main window share it) ----------
 interface FakeScheduled extends ScheduledItem {
@@ -1058,20 +1125,72 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       emit({ type: 'rules:changed' });
       return delay(readRules(), 80);
     }
-    case 'rules.countMatches':
-      return delay({ matches: 12, total: 248 }, 200);
+    case 'rules.countMatches': {
+      // A number that depends on the text, so the live count visibly changes while typing.
+      const q = r as unknown as { rule: { conditions: { value?: string }[] }; folderId?: number };
+      const text = q.rule.conditions.map((c) => c.value ?? '').join('');
+      const hash = [...text].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) % 997, 7);
+      const folder = q.folderId ? folderOf(q.folderId) : undefined;
+      return delay({ matches: text ? hash % 40 : 0, total: folder ? Math.max(folder.totalCount, 1) : 248 }, 200);
+    }
     case 'rules.runNow': {
       const runId = r!.runId as string;
-      const progress = (done: number, state: 'running' | 'finished'): AppEvent => ({ type: 'rules:progress', runId, state, done, total: 248, matched: Math.round(done / 20), moved: Math.round(done / 20), trashed: 0, markedRead: 0, flagged: 0, activityIds: [] });
-      [0, 100, 200, 248].forEach((done, i) => setTimeout(() => emit(progress(done, done === 248 ? 'finished' : 'running')), 300 * (i + 1)));
+      const ruleId = r!.ruleId as number | 'all';
+      const rule = ruleId === 'all' ? undefined : readRules().find((x) => x.id === ruleId);
+      const total = 248;
+      let activityIds: number[] = [];
+      const progress = (done: number, state: 'running' | 'finished'): AppEvent => ({
+        type: 'rules:progress',
+        runId,
+        state,
+        done,
+        total,
+        matched: Math.round(done / 20),
+        moved: rule?.actions.moveToFolderId ? Math.round(done / 20) : 0,
+        trashed: 0,
+        markedRead: rule?.actions.markRead ? Math.round(done / 20) : 0,
+        flagged: rule?.actions.flag ? Math.round(done / 20) : 0,
+        activityIds: state === 'finished' ? activityIds : [],
+      });
+      runTimers.set(runId, []);
+      [0, 60, 130, 200, 248].forEach((done, i) => {
+        const h = setTimeout(() => {
+          if (done === 248) {
+            const id = Date.now() % 1_000_000;
+            activityIds = [id];
+            LS.set(
+              'rulesActivity',
+              [
+                { id, ts: Date.now(), ruleId: rule?.id ?? null, ruleName: rule?.name ?? 'All rules', ruleDeleted: false, accountId: rule?.accountId ?? 'a1', count: 12, subject: null, sender: null, summary: rule ? ruleSummaryFake(rule) : 'Moved to Receipts', runNow: true, undone: false, canUndo: true, warning: false },
+                ...readActivity(),
+              ].slice(0, 50),
+            );
+            emit({ type: 'rulesActivity:changed' });
+          }
+          emit(progress(done, done === 248 ? 'finished' : 'running'));
+        }, 700 * (i + 1));
+        runTimers.get(runId)!.push(h);
+      });
       return delay({ runId }, 50);
     }
-    case 'rules.cancelRun':
+    case 'rules.cancelRun': {
+      const runId = r!.runId as string;
+      (runTimers.get(runId) ?? []).forEach(clearTimeout);
+      runTimers.delete(runId);
+      emit({ type: 'rules:progress', runId, state: 'cancelled', done: 130, total: 248, matched: 6, moved: 6, trashed: 0, markedRead: 6, flagged: 0, activityIds: [] });
       return delay(undefined, 30);
+    }
     case 'rulesActivity.list':
       return delay(readActivity(), 80);
-    case 'rulesActivity.undo':
-      return err('INVALID_INPUT', "Can't undo. The message was changed since.");
+    case 'rulesActivity.undo': {
+      const list = readActivity();
+      const it = list.find((x) => x.id === r!.id);
+      if (!it) return err('NOT_FOUND', 'That entry is no longer in the list.');
+      if (!it.canUndo || it.undone) return err('INVALID_INPUT', "Can't undo. The message was changed since.");
+      LS.set('rulesActivity', list.map((x) => (x.id === it.id ? { ...x, undone: true } : x)));
+      emit({ type: 'rulesActivity:changed' });
+      return delay({ restored: it.count }, 150);
+    }
     case 'rulesActivity.clear':
       LS.set('rulesActivity', []);
       emit({ type: 'rulesActivity:changed' });

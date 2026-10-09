@@ -26,6 +26,7 @@ import { reportActionError, toast, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { matchShortcut, type ShortcutId } from '../../lib/shortcuts';
 import { ConversationPane, ConversationView } from './ConversationView';
+import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 
 type BodyState =
   | { status: 'loading' }
@@ -361,6 +362,9 @@ function Toolbar({
             },
             ...(colorToggle ? [{ label: colorToggle.label, icon: colorToggle.icon, onSelect: colorToggle.run }] : []),
             { label: 'View source', onSelect: onSource },
+            ...(header.from && canMakeRuleFrom(header)
+              ? [{ label: 'Create rule from this sender...', icon: 'rules' as const, onSelect: () => createRuleFromSender(header.accountId, header.from) }]
+              : []),
           ],
     );
   const moreButton = (

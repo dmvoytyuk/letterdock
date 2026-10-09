@@ -7,6 +7,8 @@ import { AddAccountDialog } from './features/account/AddAccountDialog';
 import { CheatsheetDialog, FolderDialogHost, RemoveAccountDialogHost } from './features/dialogs/Dialogs';
 import { MailDialogsHost } from './features/dialogs/MailDialogs';
 import { ScheduledDialogsHost } from './features/scheduled/ScheduledPane';
+import { RuleEditorHost } from './features/rules/RuleEditorDialog';
+import { RunRuleHost } from './features/rules/RunRuleDialog';
 import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { Banner, Button, MenuHost, ToastHost } from './components/ui';
 import { useApp } from './store/app';
@@ -91,6 +93,8 @@ export function App() {
         <CheatsheetDialog />
         <MailDialogsHost />
         <ScheduledDialogsHost />
+        <RuleEditorHost />
+        <RunRuleHost />
         <MenuHost />
         <ToastHost />
       </div>

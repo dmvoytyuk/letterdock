@@ -13,6 +13,7 @@ import { asAppError, call } from '../../lib/api';
 import { addressList, fullDate, initials, senderName } from '../../lib/format';
 import { toastError } from '../../store/toasts';
 import { CardBody, MessageView, SourceDialog } from './ReadingPane';
+import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 
 /** At most this many cards open by themselves when a conversation is opened (DESIGN-SPEC 3.10.4). */
 const MAX_AUTO_OPEN = 8;
@@ -497,6 +498,9 @@ function cardMenu(h: MessageHeader, onSource: () => void, onUnread: () => void):
     { label: 'Print', icon: 'print', onSelect: () => void printMessage(h.id) },
     { label: 'View source', onSelect: onSource },
     { label: 'Open in new window', icon: 'open-window', onSelect: () => openInWindow(h) },
+    ...(h.from && canMakeRuleFrom(h)
+      ? ([{ label: 'Create rule from this sender...', icon: 'rules', onSelect: () => createRuleFromSender(h.accountId, h.from) }] as MenuEntry[])
+      : []),
     'sep',
     {
       label: 'Delete this message only',

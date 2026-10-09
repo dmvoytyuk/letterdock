@@ -25,12 +25,14 @@ import { reportActionError, toast, toastError } from '../../store/toasts';
 import { useUpdates } from '../../store/updates';
 import { updateLine } from '../../lib/updateText';
 import { ShortcutTable } from '../dialogs/Dialogs';
+import { RulesPage } from '../rules/RulesPage';
 
 const NAV: [SettingsSection, string][] = [
   ['accounts', 'Accounts'],
   ['general', 'General'],
   ['appearance', 'Appearance'],
   ['mail', 'Mail'],
+  ['rules', 'Rules'],
   ['notifications', 'Notifications'],
   ['keys', 'Advanced'],
   ['shortcuts', 'Shortcuts'],
@@ -60,7 +62,7 @@ export function SettingsPage() {
         ))}
       </nav>
       <div className="scont">
-        <div className="sin">
+        <div className={`sin ${section === 'rules' ? 'wide' : ''}`}>
           {section === 'accounts' ? (
             accountId ? <AccountSettings accountId={accountId} /> : <AccountsList />
           ) : section === 'general' ? (
@@ -69,6 +71,8 @@ export function SettingsPage() {
             <Appearance />
           ) : section === 'mail' ? (
             <MailSettings />
+          ) : section === 'rules' ? (
+            <RulesPage />
           ) : section === 'notifications' ? (
             <Notifications />
           ) : section === 'keys' ? (

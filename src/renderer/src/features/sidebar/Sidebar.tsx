@@ -13,6 +13,7 @@ import { markAllRead, moveMessages, newMessage } from '../../lib/actions';
 import { getDrag } from '../../lib/dnd';
 import { useOutbox } from '../../store/outbox';
 import { useScheduled } from '../../store/scheduled';
+import { openRunRules } from '../rules/ruleActions';
 
 const ROLE_ORDER: FolderRole[] = ['inbox', 'drafts', 'sent', 'archive', 'all', 'junk', 'trash'];
 const ROLE_ICON: Record<FolderRole, IconName> = {
@@ -586,6 +587,12 @@ function AccountBlock({
         onSelect: () => {
           call('sync.folder', { folderId: f.id }).catch((e) => reportActionError(e));
         },
+      },
+      {
+        label: 'Run rules on this folder...',
+        icon: 'rules',
+        disabled: !f.selectable,
+        onSelect: () => openRunRules('all', f.id),
       },
       {
         label: 'New subfolder',

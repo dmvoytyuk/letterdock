@@ -103,3 +103,31 @@ export function backOnlineText(): string {
     ? `Back online. Syncing ${waiting} ${waiting === 1 ? 'change' : 'changes'}...`
     : 'Back online. Syncing...';
 }
+
+// ---------- folder conflicts ----------
+type FolderConflict = Extract<AppEvent, { type: 'folder:conflict' }>;
+
+/** The words and tone of the notice for a folder change that met a difference on the server. */
+export function folderConflictNotice(e: FolderConflict): { text: string; tone: 'info' | 'danger' } {
+  const name = `'${e.folderName}'`;
+  const account = accountName(e.accountId);
+  const verb = { create: 'create', rename: 'rename', delete: 'delete', empty: 'empty' }[e.op];
+  switch (e.reason) {
+    case 'exists':
+      return e.resolvedName
+        ? { text: `Folder ${name} already existed on the server, so yours is now '${e.resolvedName}'.`, tone: 'info' }
+        : { text: `A folder named ${name} already exists on ${account}, so the change was not made.`, tone: 'info' };
+    case 'gone':
+      return e.op === 'delete'
+        ? { text: `Folder ${name} was already gone from the server. It is removed from this PC too.`, tone: 'info' }
+        : { text: `Folder ${name} is gone from the server, so the change was dropped and the folder is removed from this PC.`, tone: 'info' };
+    default:
+      return { text: `${account} refused to ${verb} the folder ${name}, so the change was undone.`, tone: 'danger' };
+  }
+}
+
+export function reportFolderConflict(e: FolderConflict): void {
+  const n = folderConflictNotice(e);
+  if (n.tone === 'danger') toastError(n.text);
+  else toast(n.text, { duration: 7000 });
+}

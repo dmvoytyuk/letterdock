@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { AccountId, FolderId, ListScope, MessageId } from '../../../shared/ipc';
+import type { AccountId, FolderId, ListScope, MessageId, Rule, RuleCondition } from '../../../shared/ipc';
 
 // Settings saved by the app under its old name are still read once (the data folder is migrated
 // as a whole, including this storage).
@@ -32,7 +32,7 @@ export type View =
 
 export type Page = 'mail' | 'settings';
 export type SettingsSection =
-  'accounts' | 'general' | 'appearance' | 'mail' | 'notifications' | 'keys' | 'shortcuts' | 'about';
+  'accounts' | 'general' | 'appearance' | 'mail' | 'rules' | 'notifications' | 'keys' | 'shortcuts' | 'about';
 export type Density = 'compact' | 'comfortable' | 'roomy';
 export type LayoutMode = 'wide' | 'medium' | 'narrow';
 
@@ -49,6 +49,19 @@ export interface AddAccountRequest {
   reauthAccountId?: AccountId;
   /** Which button the user picked on the Welcome screen (changes the hint only). */
   hintProvider?: 'gmail' | 'microsoft';
+}
+
+/** What the rule editor opens with (DESIGN-SPEC 3.12.2, 3.12.3). */
+export interface RuleEditorRequest {
+  /** Edit this rule. */
+  rule?: Rule;
+  /** A new rule, started from a message ("Create rule from this sender..."). */
+  prefill?: { name: string; accountId: AccountId | null; conditions: RuleCondition[] };
+}
+/** The "Run rule now" dialog (DESIGN-SPEC 3.12.4). */
+export interface RunRulesRequest {
+  ruleId: number | 'all';
+  folderId?: FolderId | 'allInboxes';
 }
 
 export type FolderDialog =
@@ -101,6 +114,12 @@ interface UiState {
   confirmPermanent: MessageId[] | null;
   /** Trash or Junk folder waiting for the "empty it?" confirmation. */
   emptyFolderId: FolderId | null;
+  /** The rule editor, when open. `{}` is a new empty rule. */
+  ruleEditor: RuleEditorRequest | null;
+  /** The "Run rule now" dialog, when open. */
+  runRules: RunRulesRequest | null;
+  /** Which tab of Settings > Rules is shown. */
+  rulesTab: 'rules' | 'activity';
 
   set: (p: Partial<UiState>) => void;
   setView: (v: View) => void;
@@ -149,6 +168,9 @@ export const useUi = create<UiState>()(
       moveDialog: null,
       confirmPermanent: null,
       emptyFolderId: null,
+      ruleEditor: null,
+      runRules: null,
+      rulesTab: 'rules',
 
       set: (p) => set(p),
       setView: (view) => set({ view, page: 'mail', drawerOpen: false, readerOpen: false }),

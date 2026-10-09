@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKE, type MouseEvent as RME } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Account, DraftSyncState, Folder } from '../../../../shared/ipc';
+import type { Account, Address, DraftSyncState, Folder } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import {
   AccountBadge,
@@ -35,6 +35,7 @@ import { reportActionError, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { SidebarToggle } from '../sidebar/SidebarToggle';
 import { SearchEmpty, SearchHeader, SearchNotes } from './SearchBits';
+import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 import { ConversationParticipants, participantText } from './ConversationBits';
 
 type Flat =
@@ -974,6 +975,16 @@ function DraftSyncHint({ sync }: { sync: DraftSyncState | undefined }) {
   return null;
 }
 
+/** The sender a rule is made from. In a conversation whose newest message is yours, the other person. */
+function ruleSender(m: ListItem): Address | null {
+  const c = m.conv;
+  if (c && c.latest.fromMe) {
+    const other = c.participants.find((p) => !p.isMe);
+    return other ? { name: other.name ?? undefined, address: other.address } : null;
+  }
+  return m.from;
+}
+
 function messageMenu(m: ListItem, ids: number[]): MenuEntry[] {
   const multi = ids.length > 1;
   const st = useList.getState();
@@ -1061,5 +1072,15 @@ function messageMenu(m: ListItem, ids: number[]): MenuEntry[] {
         if (m.from) useUi.getState().startSearch(`from:${m.from.address}`, null);
       },
     },
+    // Not for Sent, Drafts, Outbox or Scheduled mail, and not with several rows selected (DESIGN-SPEC 3.12.3).
+    ...(!multi && !isDraft && canMakeRuleFrom(m) && ruleSender(m)
+      ? ([
+          {
+            label: 'Create rule from this sender...',
+            icon: 'rules',
+            onSelect: () => createRuleFromSender(m.accountId, ruleSender(m)),
+          },
+        ] as MenuEntry[])
+      : []),
   ];
 }
