@@ -291,6 +291,7 @@ export class AccountService {
     const a = this.ctx.accounts.get(accountId);
     if (!a) throw new AppException('NOT_FOUND', 'Account not found.');
     await this.sessions.remove(accountId);
+    await this.ctx.scheduler?.forgetAccount(accountId);
     const outboxFiles = this.ctx.db
       .prepare('SELECT raw_path FROM outbox WHERE account_id = ?')
       .all(accountId) as { raw_path: string }[];

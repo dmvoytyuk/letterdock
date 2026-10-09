@@ -543,6 +543,73 @@ export interface SaveDraftRes {
   savedAt: EpochMs;
 }
 
+// ---------- send later (DESIGN-SPEC 3.11) ----------
+export type ScheduledStatus = 'scheduled' | 'sending' | 'held' | 'failed';
+export interface ScheduledItem {
+  id: number;
+  accountId: AccountId;
+  /** The compose session this message came from (`compose.prepare({ draftId })` reopens it after cancel). */
+  draftId: string;
+  subject: string;
+  to: Address[];
+  cc: Address[];
+  /** First words of the text, for the list row. */
+  snippet: string;
+  hasAttachments: boolean;
+  sendAt: EpochMs;
+  createdAt: EpochMs;
+  /**
+   * 'scheduled': waits. 'sending': handed to the Outbox, on its way. 'held': more than 24 hours
+   * late, not sent by itself (send now, change the time or cancel). 'failed': could not be handed over.
+   */
+  status: ScheduledStatus;
+  /** Why a due message is not leaving right now: no connection, or the account needs a sign-in. */
+  waiting: 'offline' | 'signIn' | null;
+  lastError: string | null;
+  attempt: number;
+  /** How long past `sendAt` it is now (0 while in the future). Held: "Due 3 days ago". */
+  overdueMs: number;
+}
+export interface ScheduledDetail {
+  item: ScheduledItem;
+  /** The frozen message body (raw HTML like `MessageBody.html`: the renderer must sanitize it). */
+  html: string;
+  bcc: Address[];
+  attachments: { filename: string; size: number; contentType: string }[];
+}
+export interface ScheduleSendReq {
+  /** The compose session. */
+  draftId: string;
+  sendAt: EpochMs;
+  /**
+   * The message as it is in the editor now. Same checks as `compose.send`. Omit it to schedule the
+   * saved text of `draftId` again (undo of "Cancel send").
+   */
+  draft?: SendReq;
+}
+export interface ScheduledCancelRes {
+  /** Now a normal draft (in Drafts). Open it with `compose.openWindow({ mode: 'new', draftId })`. */
+  draftId: string;
+  /** The time it was scheduled for (for "Undo" and "Same time"). */
+  sendAt: EpochMs;
+}
+export interface ScheduledCount {
+  /** All scheduled messages (including held ones). */
+  total: number;
+  /** Waiting or on their way (not held). The status bar number. */
+  scheduled: number;
+  held: number;
+  /** Soonest time of a waiting message. */
+  nextSendAt: EpochMs | null;
+  perAccount: { accountId: AccountId; total: number; scheduled: number; held: number }[];
+}
+export interface ScheduledNextDue {
+  /** Messages (not held) due within the next 24 hours, overdue ones included. */
+  count: number;
+  nextSendAt: EpochMs | null;
+}
+export const MAX_SCHEDULED = 100;
+
 // ---------- search ----------
 export interface SearchReq {
   query: string;
@@ -767,6 +834,21 @@ export interface IpcMethods {
   /** Undo send / remove a failed message. Rejects with CANCELLED if it is already being sent. */
   'outbox.cancel': { req: { outboxId: number }; res: OutboxCancelRes };
 
+  // send later (DESIGN-SPEC 3.11). Scheduled mail is kept on this PC only.
+  'scheduled.create': { req: ScheduleSendReq; res: ScheduledItem };
+  'scheduled.reschedule': { req: { id: number; sendAt: EpochMs }; res: ScheduledItem };
+  /** Hand it to the Outbox now, without the undo delay. */
+  'scheduled.sendNow': { req: { id: number }; res: ScheduledItem };
+  /** Remove the schedule; the message becomes a normal draft (this is also what "Edit" does). */
+  'scheduled.cancel': { req: { id: number }; res: ScheduledCancelRes };
+  /** Delete it for good: it will not be sent and no draft is kept. */
+  'scheduled.delete': { req: { id: number }; res: void };
+  'scheduled.list': { req: { accountId?: AccountId }; res: ScheduledItem[] };
+  'scheduled.get': { req: { id: number }; res: ScheduledDetail };
+  'scheduled.count': { req: void; res: ScheduledCount };
+  /** For the quit prompt: messages due within 24 hours. */
+  'scheduled.nextDue': { req: void; res: ScheduledNextDue };
+
   // search
   'search.local': { req: SearchReq; res: SearchRes };
   'search.server': { req: ServerSearchReq; res: ServerSearchRes };
@@ -860,6 +942,15 @@ export type AppEvent =
     }
   /** Conversations changed (new mail, move, flag, merge). Re-fetch these rows. */
   | { type: 'conversations:changed'; accountId: AccountId; threadIds: string[] }
+  /** Scheduled messages changed (added, rescheduled, sent, held, ...). Re-fetch `scheduled.list` / `scheduled.count`. */
+  | { type: 'scheduled:changed' }
+  /**
+   * Messages that were due while Letterdock was closed (or the PC slept) are being sent now. Show
+   * the persistent toast "Letterdock was closed when N scheduled messages were due...".
+   */
+  | { type: 'scheduled:due'; count: number; ids: number[] }
+  /** A scheduled message could not be sent on time. It is in the Outbox as a failed item. */
+  | { type: 'scheduled:failed'; accountId: AccountId; subject: string; outboxId: number; error: AppError }
   | { type: 'outbox:changed' }
   | { type: 'send:result'; outboxId: number; ok: boolean; error?: AppError }
   | { type: 'update:status'; status: UpdateStatus }

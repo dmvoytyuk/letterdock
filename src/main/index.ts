@@ -3,15 +3,23 @@ import { join } from 'node:path';
 import {
   app,
   BrowserWindow,
+  dialog,
   nativeTheme,
   net,
   Notification,
+  powerMonitor,
   protocol,
   safeStorage,
   session,
   shell,
 } from 'electron';
-import type { Account, AppEvent, AppSettings, PrepareComposeReq } from '../shared/ipc';
+import type {
+  Account,
+  AppEvent,
+  AppSettings,
+  PrepareComposeReq,
+  ScheduledNextDue,
+} from '../shared/ipc';
 import type { EngineInit } from '../shared/internal';
 import { appIconPath } from './appIcon';
 import {
@@ -21,6 +29,7 @@ import {
   shouldStartHidden,
 } from './background';
 import { AppTray } from './tray';
+import { QUIT_BUTTONS, quitPromptText, shouldAskBeforeQuit } from './quitGuard';
 import { APP_NAME, readEnv, resolveAppUserModelId } from './buildConfig';
 import { LEGACY_APP_NAME, MIGRATION_MARKER, migrateUserData } from './legacyMigration';
 import { nodeCleanupDeps, removeLegacyInstall, stopLegacyProcessesSync } from './legacyCleanup';
@@ -139,6 +148,46 @@ async function boot(): Promise<void> {
   let isQuitting = false;
   /** Set once drafts are saved and the engine is stopped; then before-quit lets the app exit. */
   let quitReady = false;
+  /** Windows is signing out or shutting down: never ask, never hold it up. */
+  let sessionEnding = false;
+  /** The user answered the scheduled-messages prompt (or none was needed): quitting goes on. */
+  let quitConfirmed = false;
+  let asking = false;
+
+  /**
+   * Quit prompt (DESIGN-SPEC 3.11.5): when scheduled messages are due within 24 hours, ask before
+   * Letterdock closes, because it cannot send them while it is closed. Resolves true = go on.
+   */
+  const confirmQuit = async (): Promise<boolean> => {
+    if (quitConfirmed || sessionEnding) return true;
+    if (asking) return false;
+    asking = true;
+    try {
+      let due: ScheduledNextDue | null = null;
+      try {
+        due = await engineRef?.request<ScheduledNextDue>('scheduled.nextDue') ?? null;
+      } catch {
+        due = null; // the engine is not answering: do not trap the user in the app
+      }
+      if (!shouldAskBeforeQuit({ quitConfirmed, sessionEnding, due })) return true;
+      const text = quitPromptText(due!.count);
+      const opts = {
+        type: 'warning' as const,
+        title: 'Letterdock',
+        message: text.message,
+        detail: text.detail,
+        buttons: [...QUIT_BUTTONS],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      };
+      const parent = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? mainWindow : null;
+      const res = parent ? await dialog.showMessageBox(parent, opts) : await dialog.showMessageBox(opts);
+      return res.response === 1;
+    } finally {
+      asking = false;
+    }
+  };
 
   // ---- notifications ----
   const accountNames = new Map<string, string>();
@@ -284,6 +333,7 @@ async function boot(): Promise<void> {
     // reaches the database, then the engine stops. Close-to-tray must not keep the window alive.
     prepareInstall: async () => {
       isQuitting = true;
+      quitConfirmed = true; // the installer restarts Letterdock, so scheduled mail is not lost
       await waitForPendingSaves(3000);
       tray.destroy();
       engine.stop();
@@ -352,11 +402,20 @@ async function boot(): Promise<void> {
       if (mainCloseAction(settings.get(), isQuitting, tray.available) === 'hide') {
         e.preventDefault();
         w.hide();
+      } else if (!isQuitting && !quitConfirmed && !sessionEnding) {
+        // Closing this window ends the app (no tray): ask about scheduled messages first.
+        e.preventDefault();
+        void confirmQuit().then((ok) => {
+          if (!ok) return;
+          quitConfirmed = true;
+          if (!w.isDestroyed()) w.close();
+        });
       }
     });
     // Windows is signing out or shutting down: never hold that up.
     w.on('session-end', () => {
       isQuitting = true;
+      sessionEnding = true;
     });
     w.on('closed', () => {
       appWindows.delete(w);
@@ -412,6 +471,10 @@ async function boot(): Promise<void> {
   const firstMailto = findMailtoArg(process.argv.slice(1));
   if (firstMailto) openMailto(firstMailto);
 
+  // The PC woke up or was unlocked: the clock may have jumped, so look at scheduled mail again.
+  powerMonitor.on('resume', () => void engine.request('scheduled.recheck', { reason: 'resume' }).catch(() => undefined));
+  powerMonitor.on('unlock-screen', () => void engine.request('scheduled.recheck', { reason: 'unlock' }).catch(() => undefined));
+
   // Tell the engine when the network goes up or down.
   let online = net.isOnline();
   setInterval(() => {
@@ -426,6 +489,15 @@ async function boot(): Promise<void> {
   });
   updater.start();
   app.on('before-quit', (e) => {
+    if (!quitConfirmed && !sessionEnding && !quitReady) {
+      e.preventDefault();
+      void confirmQuit().then((ok) => {
+        if (!ok) return;
+        quitConfirmed = true;
+        app.quit();
+      });
+      return;
+    }
     isQuitting = true;
     if (!quitReady) {
       // A draft that was just saved must reach the database before the engine process is stopped.

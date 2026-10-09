@@ -65,4 +65,6 @@ export interface MainToEngineMethods {
   };
   /** Reconnect an account after its OAuth tokens were renewed. */
   'accounts.reconnect': { req: { accountId: string }; res: void };
+  /** The PC woke up from sleep or was unlocked: check the scheduled messages again. */
+  'scheduled.recheck': { req: { reason: 'resume' | 'unlock' }; res: void };
 }

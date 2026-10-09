@@ -1,4 +1,4 @@
-import type { AppEvent, AppSettings } from '../shared/ipc';
+import type { AppError, AppEvent, AppSettings } from '../shared/ipc';
 import type { Credential, OAuthSessionInfo } from '../shared/internal';
 import type { ContactService } from './contacts/contactService';
 import type { Db } from './db/connection';
@@ -193,6 +193,18 @@ export interface DraftsApi {
   discardRow(messageId: number): Promise<void>;
 }
 
+/** The send-later scheduler, as the compose code sees it (implemented by ScheduledService). */
+export interface SchedulerApi {
+  /** Picked files that scheduled messages still need (the cleanup must keep them). */
+  protectedTokens(): Set<string>;
+  /** A message that came from a scheduled send left the Outbox: sent (ok) or failed for good. */
+  onOutboxFinished(outboxId: number, scheduledId: number | undefined, ok: boolean, error?: AppError): void;
+  /** Look for messages that are due now (an account came online, the network came back, the PC woke up). */
+  recheck(): Promise<void>;
+  /** The account is being removed: delete its scheduled messages' files. */
+  forgetAccount(accountId: string): Promise<void>;
+}
+
 export interface EngineContext {
   dataDir: string;
   db: Db;
@@ -214,6 +226,10 @@ export interface EngineContext {
   pendingOps?: PendingOpsApi;
   /** Set by the compose service. */
   drafts?: DraftsApi;
+  /** Set by the scheduled-send service. */
+  scheduler?: SchedulerApi;
+  /** Pause between two scheduled messages that are sent one after the other. Default 2000. */
+  scheduledSpacingMs?: number;
   /** Wait before a saved draft is uploaded (saves in quick succession become one upload). Default 1500. */
   draftPushDelayMs?: number;
   /** Wait before a failed draft upload is tried again. Default 30000. */

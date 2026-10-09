@@ -18,6 +18,7 @@ import type {
   MessageHeader,
   OutboxItem,
   PreloadApi,
+  ScheduledItem,
   SendReq,
   UpdateStatus,
 } from '../../../shared/ipc';
@@ -337,6 +338,14 @@ const readOutbox = (): StoredOutbox[] => LS.get<StoredOutbox[]>('outbox', []);
 const writeOutbox = (l: StoredOutbox[]) => LS.set('outbox', l);
 const drafts = (): Record<string, SendReq> => LS.get('drafts', {});
 const saveDrafts = (d: Record<string, SendReq>) => LS.set('drafts', d);
+
+// ---------- send later (kept in localStorage so the compose window and the main window share it) ----------
+interface FakeScheduled extends ScheduledItem {
+  req: SendReq;
+}
+const readScheduled = (): FakeScheduled[] => LS.get<FakeScheduled[]>('scheduled', []);
+const writeScheduled = (l: FakeScheduled[]) => LS.set('scheduled', l);
+const strip = ({ req: _req, ...item }: FakeScheduled): ScheduledItem => ({ ...item, overdueMs: Math.max(0, Date.now() - item.sendAt) });
 
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
 function armOutbox(): void {
@@ -907,6 +916,80 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       delete d[(r as { draftId: string }).draftId];
       saveDrafts(d);
       return delay(undefined, 30);
+    }
+    case 'scheduled.create': {
+      const q = r as unknown as { draftId: string; sendAt: number; draft?: SendReq };
+      const req = q.draft ?? drafts()[q.draftId];
+      if (!req) return err('NOT_FOUND', 'This draft is no longer available.');
+      const list = readScheduled();
+      if (list.length >= 100) return err('INVALID_INPUT', 'You have 100 scheduled messages. Send or cancel some first.');
+      if (q.sendAt <= Date.now()) return err('INVALID_INPUT', 'Pick a time in the future.');
+      const item: FakeScheduled = { id: Date.now() % 1_000_000_000, accountId: req.accountId, draftId: req.draftId, subject: req.subject, to: req.to, cc: req.cc, snippet: req.html.replace(/<[^>]+>/g, ' ').trim().slice(0, 120), hasAttachments: req.attachmentTokens.length > 0, sendAt: q.sendAt, createdAt: Date.now(), status: 'scheduled', waiting: null, lastError: null, attempt: 0, overdueMs: 0, req };
+      writeScheduled([...list, item]);
+      const d = drafts();
+      delete d[req.draftId];
+      saveDrafts(d);
+      emit({ type: 'scheduled:changed' });
+      return delay(strip(item), 100);
+    }
+    case 'scheduled.reschedule': {
+      const list = readScheduled();
+      const it = list.find((x) => x.id === r!.id);
+      if (!it) return err('NOT_FOUND', 'That scheduled message is no longer there.');
+      it.sendAt = r!.sendAt as number;
+      it.status = 'scheduled';
+      writeScheduled(list);
+      emit({ type: 'scheduled:changed' });
+      return delay(strip(it), 80);
+    }
+    case 'scheduled.sendNow': {
+      const list = readScheduled();
+      const it = list.find((x) => x.id === r!.id);
+      if (!it) return err('NOT_FOUND', 'That scheduled message is no longer there.');
+      writeScheduled(list.filter((x) => x.id !== it.id));
+      emit({ type: 'scheduled:changed' });
+      return delay({ ...strip(it), status: 'sending' } satisfies ScheduledItem, 80);
+    }
+    case 'scheduled.cancel': {
+      const list = readScheduled();
+      const it = list.find((x) => x.id === r!.id);
+      if (!it) return err('NOT_FOUND', 'That scheduled message is no longer there.');
+      writeScheduled(list.filter((x) => x.id !== it.id));
+      const d = drafts();
+      d[it.req.draftId] = it.req;
+      saveDrafts(d);
+      emit({ type: 'scheduled:changed' });
+      return delay({ draftId: it.req.draftId, sendAt: it.sendAt }, 80);
+    }
+    case 'scheduled.delete': {
+      writeScheduled(readScheduled().filter((x) => x.id !== r!.id));
+      emit({ type: 'scheduled:changed' });
+      return delay(undefined, 60);
+    }
+    case 'scheduled.list':
+      return delay(readScheduled().filter((x) => !r?.accountId || x.accountId === r.accountId).sort((a, b) => a.sendAt - b.sendAt).map(strip), 80);
+    case 'scheduled.get': {
+      const it = readScheduled().find((x) => x.id === r!.id);
+      if (!it) return err('NOT_FOUND', 'That scheduled message is no longer there.');
+      return delay({ item: strip(it), html: it.req.html, bcc: it.req.bcc, attachments: [] }, 80);
+    }
+    case 'scheduled.count': {
+      const list = readScheduled();
+      const held = list.filter((x) => x.status === 'held' || x.status === 'failed').length;
+      const next = list.filter((x) => x.status === 'scheduled').map((x) => x.sendAt).sort((a, b) => a - b)[0] ?? null;
+      const per = new Map<string, { total: number; scheduled: number; held: number }>();
+      for (const x of list) {
+        const p = per.get(x.accountId) ?? { total: 0, scheduled: 0, held: 0 };
+        p.total++;
+        if (x.status === 'held' || x.status === 'failed') p.held++;
+        else p.scheduled++;
+        per.set(x.accountId, p);
+      }
+      return delay({ total: list.length, scheduled: list.length - held, held, nextSendAt: next, perAccount: [...per].map(([accountId, v]) => ({ accountId, ...v })) }, 60);
+    }
+    case 'scheduled.nextDue': {
+      const due = readScheduled().filter((x) => x.status === 'scheduled' && x.sendAt <= Date.now() + 86_400_000);
+      return delay({ count: due.length, nextSendAt: due.map((x) => x.sendAt).sort((a, b) => a - b)[0] ?? null }, 60);
     }
     case 'compose.saveDraft': {
       const q = r as unknown as SendReq;

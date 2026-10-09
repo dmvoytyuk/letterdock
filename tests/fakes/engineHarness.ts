@@ -28,6 +28,10 @@ export interface HarnessOptions {
   smtp?: FakeSmtpServer;
   settings?: Partial<AppSettings>;
   sendRetryDelaysMs?: number[];
+  /** The engine's clock (a test can move it forward). Default: the real time. */
+  now?: () => number;
+  /** Pause between scheduled messages that leave one after the other. Default 20 ms. */
+  scheduledSpacingMs?: number;
 }
 
 export interface Harness {
@@ -96,6 +100,8 @@ export async function createHarness(
     actionRetryDelaysMs: [],
     smtpTrustedCa: opts.smtp?.ca,
     sendRetryDelaysMs: opts.sendRetryDelaysMs ?? [30, 30, 30],
+    now: opts.now,
+    scheduledSpacingMs: opts.scheduledSpacingMs ?? 20,
   });
 
   const h: Harness = {

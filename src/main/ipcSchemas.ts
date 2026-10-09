@@ -212,6 +212,16 @@ export const schemas: Schemas = {
   'outbox.retry': z.object({ outboxId: id }),
   'outbox.cancel': z.object({ outboxId: id }),
 
+  'scheduled.create': z.object({ draftId: str(100), sendAt: z.number().int(), draft: sendReq.optional() }),
+  'scheduled.reschedule': z.object({ id, sendAt: z.number().int() }),
+  'scheduled.sendNow': z.object({ id }),
+  'scheduled.cancel': z.object({ id }),
+  'scheduled.delete': z.object({ id }),
+  'scheduled.list': z.object({ accountId: accountId.optional() }),
+  'scheduled.get': z.object({ id }),
+  'scheduled.count': none,
+  'scheduled.nextDue': none,
+
   'search.local': z.object({
     query: str(1000),
     accountId: accountId.optional(),

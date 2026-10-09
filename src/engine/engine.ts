@@ -14,6 +14,7 @@ import { FolderService } from './folders/folderService';
 import { SessionManager } from './imap/sessionManager';
 import type { Logger } from './logger';
 import { ComposeService } from './smtp/composeService';
+import { ScheduledService } from './smtp/scheduledService';
 import { SearchService } from './search/searchService';
 import { ActionService } from './messages/actionService';
 import { MessageService } from './messages/messageService';
@@ -39,6 +40,8 @@ export interface EngineOptions {
   smtpOverrides?: Record<string, unknown>;
   actionRetryDelaysMs?: number[];
   sendRetryDelaysMs?: number[];
+  /** Pause between two scheduled messages that go out one after the other (default 2000). */
+  scheduledSpacingMs?: number;
 }
 
 type Handlers = { [C in EngineChannel]: (req: IpcReq<C>) => Promise<IpcRes<C>> | IpcRes<C> };
@@ -48,6 +51,7 @@ export interface Engine {
   sessions: SessionManager;
   actions: ActionService;
   compose: ComposeService;
+  scheduled: ScheduledService;
   handle(channel: string, payload: unknown): Promise<unknown>;
   /** The settings changed (the settings() callback now returns the new values). */
   applySettings(): Promise<void>;
@@ -77,6 +81,7 @@ export function createEngine(opts: EngineOptions): Engine {
     smtpOverrides: opts.smtpOverrides,
     actionRetryDelaysMs: opts.actionRetryDelaysMs,
     sendRetryDelaysMs: opts.sendRetryDelaysMs,
+    scheduledSpacingMs: opts.scheduledSpacingMs,
     recentMoves: new Map(),
   } as unknown as EngineContext;
   ctx.contacts = new ContactService(ctx);
@@ -87,6 +92,7 @@ export function createEngine(opts: EngineOptions): Engine {
   const folderSvc = new FolderService(ctx, sessions, actions);
   const search = new SearchService(ctx, sessions);
   const compose = new ComposeService(ctx, sessions, messages, actions);
+  const scheduled = new ScheduledService(ctx, sessions, compose);
   const conversations = new ConversationService(ctx, messages, actions);
   const threadBackfill = new ThreadBackfill(ctx);
   ctx.hub.threadSource = {
@@ -140,6 +146,16 @@ export function createEngine(opts: EngineOptions): Engine {
     'contacts.suggest': (r) => ctx.contacts.suggest(r.query, r.accountId, r.limit ?? 8),
     'contacts.forget': (r) => ctx.contacts.forget(r.address),
 
+    'scheduled.create': (r) => scheduled.create(r),
+    'scheduled.reschedule': (r) => scheduled.reschedule(r.id, r.sendAt),
+    'scheduled.sendNow': (r) => scheduled.sendNow(r.id),
+    'scheduled.cancel': (r) => scheduled.cancel(r.id),
+    'scheduled.delete': (r) => scheduled.delete(r.id),
+    'scheduled.list': (r) => scheduled.list(r?.accountId),
+    'scheduled.get': (r) => scheduled.get(r.id),
+    'scheduled.count': () => scheduled.count(),
+    'scheduled.nextDue': () => scheduled.nextDue(),
+
     'search.local': (r) => search.local(r),
     'search.server': (r) => search.server(r),
 
@@ -163,12 +179,20 @@ export function createEngine(opts: EngineOptions): Engine {
 
     'system.networkChanged': async (r) => {
       await sessions.setOnline(r.online);
-      if (r.online) compose.onOnline();
+      if (r.online) {
+        compose.onOnline();
+        void scheduled.recheck();
+      }
     },
   };
 
   const internal: {
-    [K in 'engine.settings' | 'attachments.prepare' | 'attachments.register' | 'accounts.reconnect']: (
+    [K in
+      | 'engine.settings'
+      | 'attachments.prepare'
+      | 'attachments.register'
+      | 'accounts.reconnect'
+      | 'scheduled.recheck']: (
       req: MainToEngineMethods[K]['req'],
     ) => Promise<MainToEngineMethods[K]['res']> | MainToEngineMethods[K]['res'];
   } = {
@@ -180,7 +204,12 @@ export function createEngine(opts: EngineOptions): Engine {
       for (const f of r.files) out.push(await compose.registerFile(f.path, f.filename, f.contentType));
       return out;
     },
-    'accounts.reconnect': (r) => sessions.restart(r.accountId),
+    'accounts.reconnect': async (r) => {
+      await sessions.restart(r.accountId);
+      void scheduled.recheck();
+    },
+    // The PC woke up or was unlocked: clocks may have jumped, so look at the schedule again.
+    'scheduled.recheck': () => void scheduled.recheck(),
   };
 
   let cacheTimer: ReturnType<typeof setInterval> | null = null;
@@ -200,6 +229,7 @@ export function createEngine(opts: EngineOptions): Engine {
     sessions,
     actions,
     compose,
+    scheduled,
     applySettings: () => cleanBodyCache(),
     threadsReady: () => threadBackfill.whenDone(),
     async handle(channel, payload) {
@@ -222,7 +252,10 @@ export function createEngine(opts: EngineOptions): Engine {
       setTimeout(() => void cleanBodyCache(), 30_000).unref();
       cacheTimer = setInterval(() => void cleanBodyCache(), 60 * 60_000);
       cacheTimer.unref();
+      // Messages that were on their way when the app stopped must not be re-sent by the Outbox.
+      scheduled.recoverOnStart();
       compose.start();
+      scheduled.start();
       threadBackfill.start();
       // One-time learning from the headers that are already stored (runs in small chunks).
       void ctx.contacts.backfill().catch((e) =>
@@ -232,6 +265,7 @@ export function createEngine(opts: EngineOptions): Engine {
     async shutdown() {
       if (cacheTimer) clearInterval(cacheTimer);
       threadBackfill.stop();
+      scheduled.stop();
       ctx.contacts.stop();
       await compose.shutdown().catch(() => undefined);
       actions.stop();

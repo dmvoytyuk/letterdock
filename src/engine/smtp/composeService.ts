@@ -68,7 +68,9 @@ const FILE_KEEP_MS = 14 * 24 * 3600 * 1000;
 const DRAFT_PUSH_DELAY_MS = 1500;
 const DRAFT_RETRY_MS = 30_000;
 
-interface OutboxMeta {
+export interface OutboxMeta {
+  /** Set when the message comes from a scheduled send (DESIGN-SPEC 3.11). */
+  scheduledId?: number;
   req: SendReq;
   mode: ComposeMode;
   sourceMessageId: MessageId | null;
@@ -147,7 +149,9 @@ export class ComposeService implements DraftsApi {
   }
 
   private async gcFiles(): Promise<void> {
+    const keep = this.ctx.scheduler?.protectedTokens() ?? new Set<string>();
     for (const f of this.repo.filesOlderThan(this.ctx.now() - FILE_KEEP_MS)) {
+      if (keep.has(f.token)) continue; // a scheduled message still needs it
       this.repo.deleteFile(f.token);
       await rm(dirname(f.path), { recursive: true, force: true }).catch(() => undefined);
     }
@@ -210,7 +214,7 @@ export class ComposeService implements DraftsApi {
     return { tokenId: token, filename, size, contentType: type };
   }
 
-  private attachmentsFor(tokens: string[]): DraftAttachment[] {
+  attachmentsFor(tokens: string[]): DraftAttachment[] {
     const out: DraftAttachment[] = [];
     for (const t of tokens) {
       const f = this.repo.file(t);
@@ -918,6 +922,120 @@ export class ComposeService implements DraftsApi {
     return { outboxId: id, state: 'queued', sendAt };
   }
 
+  // ---------- send later (ScheduledService, DESIGN-SPEC 3.11) ----------
+
+  /** Check a message like Send does and build the finished mail now. This freezes From, signature, quote and attachments. */
+  async buildForSchedule(req: SendReq): Promise<{ account: Account; raw: Buffer; meta: OutboxMeta }> {
+    const { account } = this.validate(req);
+    const d = this.repo.draft(req.draftId);
+    const messageId = d?.message_id ?? generateMessageId(account.email);
+    const inReplyTo = d?.in_reply_to ?? null;
+    const references = d?.references_h ?? null;
+    const raw = await this.build(req, account, messageId, inReplyTo, references);
+    const meta: OutboxMeta = {
+      req,
+      mode: (d?.mode as ComposeMode) ?? 'new',
+      sourceMessageId: d?.source_message_pk ?? null,
+      messageId,
+      inReplyTo,
+      references,
+    };
+    return { account, raw, meta };
+  }
+
+  /** The text saved for a compose session (autosave or undo send), if there is one. */
+  savedContent(draftId: string): SendReq | null {
+    const d = this.repo.draft(draftId);
+    return d?.content_json ? parseContent(d.content_json) : null;
+  }
+
+  /**
+   * Scheduling takes the message out of Drafts (local row and server copy). The picked files stay:
+   * the schedule uses them for Edit / Cancel.
+   */
+  detachDraft(draftId: string): void {
+    const d = this.repo.draft(draftId);
+    if (!d) return;
+    this.forgetLocal(d);
+    if (d.server_folder_id !== null) void this.removeServerDraft(d).catch(() => undefined);
+  }
+
+  /** A cancelled schedule is a normal draft again: shown in Drafts and uploaded in the background. */
+  reattachDraft(meta: OutboxMeta): string {
+    const req = meta.req;
+    this.repo.upsertDraft({
+      draft_id: req.draftId,
+      account_id: req.accountId,
+      mode: meta.mode,
+      source_message_pk: meta.sourceMessageId,
+      in_reply_to: meta.inReplyTo,
+      references_h: meta.references,
+      message_id: meta.messageId,
+      content_json: JSON.stringify(req),
+      server_folder_id: null,
+      updated_at: this.ctx.now(),
+      local_message_pk: null,
+      server_dirty: 0,
+      rev: 0,
+    });
+    this.saveDraftNow(req);
+    return req.draftId;
+  }
+
+  /** Hand a scheduled message to the Outbox. It leaves at once (no undo-send delay). */
+  async enqueueScheduled(a: {
+    scheduledId: number;
+    accountId: string;
+    subject: string;
+    meta: OutboxMeta;
+    raw: Buffer;
+  }): Promise<number> {
+    const now = this.ctx.now();
+    const meta: OutboxMeta = { ...a.meta, scheduledId: a.scheduledId };
+    const id = this.repo.insertOutbox({
+      accountId: a.accountId,
+      subject: a.subject,
+      sendAfter: now,
+      metaJson: JSON.stringify(meta),
+      createdAt: now,
+    });
+    const rawPath = join(this.ctx.dataDir, 'outbox', `${id}.eml`);
+    try {
+      await mkdir(dirname(rawPath), { recursive: true });
+      await writeFile(rawPath, a.raw);
+    } catch (e) {
+      this.repo.deleteOutbox(id);
+      throw new AppException('INTERNAL', 'Could not queue the message.', { details: String(e) });
+    }
+    this.repo.setOutboxPath(id, rawPath);
+    this.ctx.hub.emit({ type: 'outbox:changed' });
+    this.schedule(id, now);
+    return id;
+  }
+
+  /** Remove Outbox rows that belong to scheduled sends (startup: the scheduler decides what to do with them). */
+  removeScheduledOutbox(filter: (scheduledId: number, row: OutboxRow) => boolean): void {
+    for (const row of this.repo.listOutbox()) {
+      let sid: number | undefined;
+      try {
+        sid = (JSON.parse(row.meta_json ?? '{}') as OutboxMeta).scheduledId;
+      } catch {
+        continue;
+      }
+      if (sid === undefined || !filter(sid, row)) continue;
+      const t = this.timers.get(row.id);
+      if (t) clearTimeout(t);
+      this.timers.delete(row.id);
+      this.repo.deleteOutbox(row.id);
+      void rm(row.raw_path, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Forget picked files (their schedule is gone). */
+  async dropPickedFiles(tokens: string[]): Promise<void> {
+    await this.dropFiles(tokens);
+  }
+
   list(): OutboxItem[] {
     return this.repo.listOutbox().map((r) => ({
       id: r.id,
@@ -1054,6 +1172,7 @@ export class ComposeService implements DraftsApi {
       if (d.server_folder_id !== null) void this.removeServerDraft(d).catch(() => undefined);
     }
     this.ctx.hub.emit({ type: 'outbox:changed' });
+    this.ctx.scheduler?.onOutboxFinished(row.id, meta.scheduledId, true);
     this.ctx.hub.emit({
       type: 'send:result',
       outboxId: row.id,
@@ -1109,5 +1228,12 @@ export class ComposeService implements DraftsApi {
     this.repo.updateOutbox(row.id, { state: 'failed', attempts, last_error: err.message });
     this.ctx.hub.emit({ type: 'outbox:changed' });
     this.ctx.hub.emit({ type: 'send:result', outboxId: row.id, ok: false, error: err });
+    let scheduledId: number | undefined;
+    try {
+      scheduledId = (JSON.parse(row.meta_json ?? '{}') as OutboxMeta).scheduledId;
+    } catch {
+      /* no meta */
+    }
+    this.ctx.scheduler?.onOutboxFinished(row.id, scheduledId, false, err);
   }
 }

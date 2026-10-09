@@ -218,6 +218,8 @@ export class AccountSession {
     }
     // Drafts saved while we were offline: upload them in the background.
     void this.ctx.drafts?.flush(this.account.id).catch(() => undefined);
+    // Scheduled messages that were waiting for this account can go now.
+    void this.ctx.scheduler?.recheck().catch(() => undefined);
     if (!this.stopped) await this.bootstrap();
   }
 
