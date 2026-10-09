@@ -5,9 +5,6 @@ import { MIN_AHEAD_MS, whenText } from './schedule';
 import { toast, toastError } from '../store/toasts';
 import { useScheduled } from '../store/scheduled';
 
-/** `compose.openWindow` only passes a few fields, so the old time travels in localStorage (read by the compose window). */
-const PAUSED_KEY = 'letterdock.scheduledPaused.';
-
 function report(e: unknown): void {
   const err = asAppError(e);
   toastError(err.code === 'CANCELLED' ? 'This message is already being sent.' : err.message);
@@ -27,12 +24,8 @@ export async function sendNowScheduled(it: ScheduledItem): Promise<void> {
 /** Edit: the schedule is paused, the message is a normal draft and opens in a compose window. */
 export async function editScheduled(it: ScheduledItem): Promise<void> {
   try {
+    // The engine keeps the old send time on the draft (`pausedSendAt`); the compose window reads it.
     const r = await call('scheduled.cancel', { id: it.id });
-    try {
-      localStorage.setItem(PAUSED_KEY + r.draftId, JSON.stringify({ sendAt: r.sendAt }));
-    } catch {
-      /* the strip and "Same time" are only a help */
-    }
     await call('compose.openWindow', { mode: 'new', draftId: r.draftId });
   } catch (e) {
     report(e);

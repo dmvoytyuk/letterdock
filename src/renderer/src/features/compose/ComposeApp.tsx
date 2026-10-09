@@ -26,25 +26,6 @@ import { FormatBar, RichEditor, type RichEditorHandle, type ToolbarState } from 
 
 const AUTOSAVE_MS = 10_000;
 
-/** "Edit" on a scheduled message leaves its old time here for the compose window it opens. */
-const PAUSED_KEY = 'letterdock.scheduledPaused.';
-function readPaused(draftId: string): number | null {
-  try {
-    const v = localStorage.getItem(PAUSED_KEY + draftId);
-    const at = v ? (JSON.parse(v) as { sendAt?: number }).sendAt : undefined;
-    return typeof at === 'number' ? at : null;
-  } catch {
-    return null;
-  }
-}
-function clearPaused(draftId: string): void {
-  try {
-    localStorage.removeItem(PAUSED_KEY + draftId);
-  } catch {
-    /* ignore */
-  }
-}
-
 /** Entry component of the compose window: loads what it needs, then shows the form. */
 export function ComposeApp({ request }: { request: PrepareComposeReq }) {
   useThemeEffect();
@@ -151,10 +132,10 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
   const [linkDlg, setLinkDlg] = useState<{ hasSelection: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
   // Send later (DESIGN-SPEC 3.11): the date and time dialog, how many are scheduled already, and the
-  // time of a message that was being edited ("Edit" on a scheduled message hands it over in localStorage).
+  // time of a message that was being edited (the engine keeps it on the draft as `pausedSendAt`).
   const [pickOpen, setPickOpen] = useState(false);
   const [scheduledTotal, setScheduledTotal] = useState(0);
-  const [pausedFor] = useState<number | null>(() => readPaused(draft.draftId));
+  const [pausedFor] = useState<number | null>(() => draft.pausedSendAt ?? null);
   const [doneText, setDoneText] = useState('Message sent. You can close this window.');
   const sendBtn = useRef<SendButtonHandle>(null);
   const pendingSendAt = useRef<number | null>(null);
@@ -223,11 +204,12 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
   const isMeaningful = () => reopened || snapRef.current() !== initialSnap.current;
 
   useEffect(() => {
-    clearPaused(draft.draftId);
+    // The strip below was read once into state; the engine can forget the old time now.
+    if (pausedFor !== null) call('compose.clearPaused', { draftId: draft.draftId }).catch(() => undefined);
     call('scheduled.count')
       .then((c) => setScheduledTotal(c.total))
       .catch(() => undefined);
-  }, [draft.draftId]);
+  }, [draft.draftId, pausedFor]);
 
   useEffect(() => {
     // The editor fills itself in its own effect, which runs before this one.

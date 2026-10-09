@@ -11,9 +11,8 @@ interface OutboxState {
 }
 
 /** Outbox ids that already got an "Undo send" toast, and subjects for error messages. */
-// Keyed by id and send time: the engine can reuse an id after "Undo send" removed the row.
-const toasted = new Set<string>();
-const keyOf = (it: OutboxItem) => `${it.id}:${it.sendAt}`;
+// Ids are never reused (AUTOINCREMENT), so the id alone is a safe key.
+const toasted = new Set<number>();
 const subjects = new Map<number, string>();
 const undoShown = new Set<number>();
 let baseline = false;
@@ -27,12 +26,12 @@ export const useOutbox = create<OutboxState>((set) => ({
       for (const it of items) subjects.set(it.id, it.subject);
       if (!baseline) {
         // Mail that was already waiting when the window opened gets no "Undo" toast.
-        for (const it of items) toasted.add(keyOf(it));
+        for (const it of items) toasted.add(it.id);
         baseline = true;
       } else {
         for (const it of items) {
-          if (toasted.has(keyOf(it))) continue;
-          toasted.add(keyOf(it));
+          if (toasted.has(it.id)) continue;
+          toasted.add(it.id);
           const wait = it.sendAt - Date.now();
           if (it.state === 'queued' && it.attempts === 0 && wait > 1500) showUndoSend(it, wait);
         }

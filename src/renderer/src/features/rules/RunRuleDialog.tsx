@@ -53,10 +53,7 @@ function RunRuleDialog({ request, onClose }: { request: RunRulesRequest; onClose
     let alive = true;
     const h = setTimeout(() => {
       setTotal(null);
-      call('rules.countMatches', {
-        rule: { accountId, matchMode: 'all', conditions: [{ field: 'hasAttachment' }] },
-        ...(resolvedFolder === 'allInboxes' ? {} : { folderId: resolvedFolder }),
-      })
+      call('folders.count', { folderId: resolvedFolder, accountId })
         .then((r) => alive && setTotal(r.total))
         .catch(() => alive && setTotal(null));
     }, 200);
