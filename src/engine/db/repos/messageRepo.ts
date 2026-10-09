@@ -7,7 +7,9 @@ import type {
   ListScope,
   MessageHeader,
   MessageId,
+  PageCursor,
 } from '../../../shared/ipc';
+import { AppException } from '../../../shared/errors';
 import type { ContactSource } from '../../contacts/contactService';
 import { ftsText } from '../../messages/bodyUtils';
 import { normalizeSubject } from '../../messages/threading';
@@ -555,23 +557,51 @@ export class MessageRepo {
 
   list(req: ListMessagesReq): {
     items: MessageHeader[];
-    nextCursor: { date: number; id: number } | null;
+    nextCursor: PageCursor | null;
     total: number | null;
   } {
     const limit = Math.min(Math.max(req.limit || 50, 1), 200);
+    const sort = req.sort ?? 'date';
+    const asc = (req.direction ?? (sort === 'date' ? 'desc' : 'asc')) === 'asc';
     const f = scopeFilter(req.scope, !!req.unreadOnly);
     const params: Record<string, unknown> = { ...f.params, limit: limit + 1 };
     let where = f.where;
+    let order: string;
+    // The key is the same SQL text for the WHERE of the next page and for the cursor, so the
+    // comparison is like with like. Equal keys: newest first, whatever the direction.
+    const keyExpr =
+      sort === 'sender'
+        ? "SUBSTR(LOWER(COALESCE(NULLIF(m.from_name, ''), m.from_addr, '')), 1, 200)"
+        : "SUBSTR(COALESCE(m.subject_norm, LOWER(m.subject), ''), 1, 200)";
+    if (sort === 'date') {
+      order = asc ? 'm.date_ms ASC, m.id ASC' : 'm.date_ms DESC, m.id DESC';
+      if (req.cursor) {
+        where += asc
+          ? ' AND (m.date_ms > :cDate OR (m.date_ms = :cDate AND m.id > :cId))'
+          : ' AND (m.date_ms < :cDate OR (m.date_ms = :cDate AND m.id < :cId))';
+      }
+    } else {
+      order = `${keyExpr} ${asc ? 'ASC' : 'DESC'}, m.date_ms DESC, m.id DESC`;
+      if (req.cursor) {
+        if (typeof req.cursor.key !== 'string') {
+          throw new AppException(
+            'INVALID_INPUT',
+            'The page position does not match the sort order.',
+          );
+        }
+        where += ` AND (${keyExpr} ${asc ? '>' : '<'} :cKey OR (${keyExpr} = :cKey AND (m.date_ms < :cDate OR (m.date_ms = :cDate AND m.id < :cId))))`;
+        params.cKey = req.cursor.key;
+      }
+    }
     if (req.cursor) {
-      where += ' AND (m.date_ms < :cDate OR (m.date_ms = :cDate AND m.id < :cId))';
       params.cDate = req.cursor.date;
       params.cId = req.cursor.id;
     }
     const rows = this.db
       .prepare(
-        `SELECT m.* ${f.from} WHERE ${where} ORDER BY m.date_ms DESC, m.id DESC LIMIT :limit`,
+        `SELECT m.*, ${keyExpr} AS sort_key ${f.from} WHERE ${where} ORDER BY ${order} LIMIT :limit`,
       )
-      .all(params) as MessageRow[];
+      .all(params) as (MessageRow & { sort_key: string })[];
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     const last = page[page.length - 1];
@@ -584,7 +614,14 @@ export class MessageRepo {
     }
     return {
       items: page.map(rowToHeader),
-      nextCursor: hasMore && last ? { date: last.date_ms, id: last.id } : null,
+      nextCursor:
+        hasMore && last
+          ? {
+              date: last.date_ms,
+              id: last.id,
+              ...(sort !== 'date' ? { key: last.sort_key ?? '' } : {}),
+            }
+          : null,
       total,
     };
   }

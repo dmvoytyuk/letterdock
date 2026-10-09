@@ -144,14 +144,14 @@ async function fetchPage(
   unreadOnly: boolean,
   grouped: boolean,
 ): Promise<Page> {
+  // `nextCursor` goes back unchanged, together with the same sort and direction (it carries the sort key).
+  const { sort, direction } = useUi.getState().listSort;
   if (grouped) {
-    // `nextCursor` goes back unchanged, together with the same sort and direction (it carries the sort key).
-    const { sort, direction } = useUi.getState().listSort;
     const res = await call('conversations.list', { scope, cursor, limit, unreadOnly, sort, direction });
     const folderId = scopeFolderId(scope);
     return { ...res, items: res.items.map((r) => conversationItem(r, folderId)) };
   }
-  return call('messages.list', { scope, cursor, limit, unreadOnly });
+  return call('messages.list', { scope, cursor, limit, unreadOnly, sort, direction });
 }
 
 /** Cursor for "the page after this row". A conversation pages by its newest message id. */
@@ -310,9 +310,11 @@ export const useList = create<ListState>((set, get) => ({
           set({ loadingMore: false, endReached: true });
           return;
         }
-        // Sender and Subject sorts page by a sort key the UI never builds: read the list again from the
-        // top, one page longer. The date order can continue after the last row.
-        if (s.grouped && useUi.getState().listSort.sort !== 'date') {
+        // Sender and Subject sorts page by a sort key the UI never builds, and oldest-first puts the
+        // older mail at the top: read the list again from the top, one page longer. Newest-first date
+        // order can continue after the last row.
+        const ls = useUi.getState().listSort;
+        if (ls.sort !== 'date' || ls.direction === 'asc') {
           const before = get().items.length;
           await get().refresh(PAGE);
           if (mine !== seq) return;

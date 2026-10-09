@@ -179,9 +179,11 @@ export const schemas: Schemas = {
 
   'messages.list': z.object({
     scope,
-    cursor: z.object({ date: z.number(), id }).nullable(),
+    cursor: z.object({ date: z.number(), id, key: str(500).optional() }).nullable(),
     limit: z.number().int().min(1).max(200),
     unreadOnly: z.boolean().optional(),
+    sort: z.enum(['date', 'sender', 'subject']).optional(),
+    direction: z.enum(['asc', 'desc']).optional(),
   }),
   'messages.get': z.object({ messageId: id }),
   'messages.getHeaders': z.object({ messageIds: z.array(id).max(500) }),

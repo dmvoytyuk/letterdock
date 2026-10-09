@@ -183,8 +183,8 @@ export interface PageCursor {
   date: EpochMs;
   id: MessageId;
   /**
-   * `conversations.list` with sort 'sender' or 'subject' only: the sort key of the last row of the
-   * page. Pass `nextCursor` back as it is. Never built by the UI.
+   * `conversations.list` / `messages.list` with sort 'sender' or 'subject' only: the sort key of the
+   * last row of the page. Pass `nextCursor` back as it is. Never built by the UI.
    */
   key?: string;
 }
@@ -309,9 +309,17 @@ export interface ConversationActRes extends ApplyActionRes {
 
 export interface ListMessagesReq {
   scope: ListScope;
-  cursor: PageCursor | null; // null = first page
+  /** null = first page. Pass `nextCursor` back as it is, with the same `sort` and `direction`. */
+  cursor: PageCursor | null;
   limit: number; // 1..200, default 50
   unreadOnly?: boolean;
+  /**
+   * 'date' (default): message date. 'sender': display name, else address. 'subject': without
+   * Re:/Fwd: prefixes. Equal keys: newest first.
+   */
+  sort?: ConversationSort;
+  /** Default: 'desc' for date (newest first), 'asc' for sender and subject (A to Z). */
+  direction?: 'asc' | 'desc';
 }
 export interface ListMessagesRes {
   items: MessageHeader[];

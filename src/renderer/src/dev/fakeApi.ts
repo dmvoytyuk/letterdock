@@ -878,16 +878,35 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     }
     case 'messages.list': {
       const scope = r!.scope as { kind: string; folderId?: number; accountId?: string };
-      const cursor = r!.cursor as { date: number; id: number } | null;
+      const cursor = r!.cursor as { date: number; id: number; key?: string } | null;
       const limit = (r!.limit as number) ?? 50;
-      let list = messages.filter(scopeFilter(scope));
-      if (r!.unreadOnly) list = list.filter((m) => !m.seen);
-      if (cursor) list = list.filter((m) => m.date < cursor.date || (m.date === cursor.date && m.id < cursor.id));
-      const page = list.slice(0, limit);
-      const more = list.length > limit;
+      const sort = (r!.sort as 'date' | 'sender' | 'subject' | undefined) ?? 'date';
+      const dir = (r!.direction as 'asc' | 'desc' | undefined) ?? (sort === 'date' ? 'desc' : 'asc');
+      const keyOf = (m: MessageHeader): string =>
+        sort === 'sender' ? fold(m.from?.name || m.from?.address || '') : sort === 'subject' ? fold(plainSubject(m.subject)) : '';
+      // Same order as the engine: by key (A to Z unless 'desc'), equal keys newest first.
+      const list = messages
+        .filter(scopeFilter(scope))
+        .filter((m) => !r!.unreadOnly || !m.seen)
+        .sort((a, b) => {
+          if (sort === 'date') {
+            const d = a.date - b.date || a.id - b.id;
+            return dir === 'asc' ? d : -d;
+          }
+          const ka = keyOf(a);
+          const kb = keyOf(b);
+          const c = ka < kb ? -1 : ka > kb ? 1 : 0;
+          if (c) return dir === 'asc' ? c : -c;
+          return b.date - a.date || b.id - a.id;
+        });
+      const at = cursor ? list.findIndex((m) => m.date === cursor.date && m.id === cursor.id) : -1;
+      const after = cursor ? list.slice(at + 1) : list;
+      const page = after.slice(0, limit);
+      const more = after.length > limit;
+      const last = page[page.length - 1];
       return delay({
         items: page,
-        nextCursor: more ? { date: page[page.length - 1]!.date, id: page[page.length - 1]!.id } : null,
+        nextCursor: more && last ? { date: last.date, id: last.id, ...(sort !== 'date' ? { key: keyOf(last) } : {}) } : null,
         canLoadOlderFromServer: false,
         total: cursor ? null : list.length,
       });

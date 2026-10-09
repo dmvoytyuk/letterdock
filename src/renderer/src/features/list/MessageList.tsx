@@ -99,7 +99,6 @@ export function MessageList({ className }: { className?: string }) {
   const folderMap = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const groupSetting = useApp((s) => !!s.settings?.groupConversations);
   const listSort = useUi((s) => s.listSort);
-  const grouped = useList((s) => s.grouped);
   const unified = isUnified(view);
   const alwaysBadge = useUi((s) => s.showAccountBadge);
   // "Always" means on every row, even with one account. Otherwise only in combined views with 2+ accounts.
@@ -127,7 +126,7 @@ export function MessageList({ className }: { className?: string }) {
   const flat = useMemo<Flat[]>(() => {
     const out: Flat[] = [];
     const now = Date.now();
-    if ((search && searchSort === 'rank') || (grouped && !search && listSort.sort !== 'date')) {
+    if ((search && searchSort === 'rank') || (!search && listSort.sort !== 'date')) {
       // Best-match order, or sorted by sender or subject: no date groups (DESIGN-SPEC 3.5).
       items.forEach((m, index) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index, label: '' }));
       return out;
@@ -153,7 +152,7 @@ export function MessageList({ className }: { className?: string }) {
       }
     }
     return out;
-  }, [items, collapsed, search, searchSort, grouped, listSort.sort]);
+  }, [items, collapsed, search, searchSort, listSort.sort]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -342,7 +341,7 @@ export function MessageList({ className }: { className?: string }) {
             pressed={selectMode}
             onClick={() => useList.getState().setSelectMode(!selectMode)}
           />
-          {grouped ? <SortButton /> : null}
+          <SortButton />
           <FilterButton />
           <IconButton
             icon="more"
@@ -536,7 +535,6 @@ const SORT_NAMES: Record<ConversationSort, string> = { date: 'Date', sender: 'Se
 
 /**
  * Order of the conversation list: Date, Sender or Subject, and the direction (DESIGN-SPEC 3.5, 3.10.2).
- * Only conversations can be sorted this way: `messages.list` has no sort in the contract.
  */
 function SortButton() {
   const { sort, direction } = useUi((s) => s.listSort);
