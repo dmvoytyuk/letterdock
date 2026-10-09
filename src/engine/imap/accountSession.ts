@@ -596,6 +596,10 @@ export class AccountSession {
             syncFolder(this.ctx, c, fresh, this.account.syncDays),
           );
           this.lastSyncAt = this.ctx.now();
+          // Rules sort the new mail first, so mail that is moved, read or deleted does not notify.
+          await this.ctx.rules?.onNewMail(fresh, res).catch((e) =>
+            this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'rules failed on new mail'),
+          );
           const fresh2 = newMailToAnnounce(this.ctx, fresh, res);
           if (fresh2.length > 0) {
             this.ctx.hub.emit({

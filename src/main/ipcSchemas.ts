@@ -37,6 +37,28 @@ const sendReq = z.object({
   attachmentTokens: z.array(str(200)).max(100),
 });
 
+const ruleCondition = z.object({
+  field: z.enum(['from', 'toCc', 'subject', 'hasAttachment']),
+  value: str(500).optional(),
+});
+const ruleActions = z.object({
+  moveToFolderId: id.nullable().optional(),
+  moveToFolderPath: str(1000).nullable().optional(),
+  markRead: z.boolean(),
+  flag: z.boolean(),
+  delete: z.boolean(),
+  stop: z.boolean(),
+});
+const ruleDraft = z.object({
+  name: str(60),
+  enabled: z.boolean(),
+  accountId: accountId.nullable(),
+  matchMode: z.enum(['all', 'any']),
+  conditions: z.array(ruleCondition).min(1).max(6),
+  actions: ruleActions,
+  trigger: z.enum(['inbox', 'anyFolder']),
+});
+
 const prepareCompose = z.object({
   mode: z.enum(['new', 'reply', 'replyAll', 'forward']),
   sourceMessageId: id.optional(),
@@ -221,6 +243,25 @@ export const schemas: Schemas = {
   'scheduled.get': z.object({ id }),
   'scheduled.count': none,
   'scheduled.nextDue': none,
+
+  'rules.list': none,
+  'rules.create': ruleDraft.extend({ position: z.number().int().min(1).max(1000).optional(), id: id.optional() }),
+  'rules.update': z.object({ id, patch: ruleDraft.partial() }),
+  'rules.delete': z.object({ id }),
+  'rules.reorder': z.object({ ids: z.array(id).max(100) }),
+  'rules.countMatches': z.object({
+    rule: ruleDraft.pick({ accountId: true, matchMode: true, conditions: true }),
+    folderId: id.optional(),
+  }),
+  'rules.runNow': z.object({
+    ruleId: z.union([id, z.literal('all')]),
+    folderId: z.union([id, z.literal('allInboxes')]),
+    runId: str(100).min(1),
+  }),
+  'rules.cancelRun': z.object({ runId: str(100).min(1) }),
+  'rulesActivity.list': none,
+  'rulesActivity.undo': z.object({ id }),
+  'rulesActivity.clear': none,
 
   'search.local': z.object({
     query: str(1000),

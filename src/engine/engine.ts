@@ -19,6 +19,7 @@ import { SearchService } from './search/searchService';
 import { ActionService } from './messages/actionService';
 import { MessageService } from './messages/messageService';
 import { ConversationService } from './messages/conversationService';
+import { RulesService } from './messages/rulesService';
 import { ThreadBackfill } from './messages/threadBackfill';
 import { ContactService } from './contacts/contactService';
 import { pruneBodyCache } from './messages/bodyCache';
@@ -42,6 +43,8 @@ export interface EngineOptions {
   sendRetryDelaysMs?: number[];
   /** Pause between two scheduled messages that go out one after the other (default 2000). */
   scheduledSpacingMs?: number;
+  /** Messages per batch when rules run on a folder (default 500). */
+  rulesBatchSize?: number;
 }
 
 type Handlers = { [C in EngineChannel]: (req: IpcReq<C>) => Promise<IpcRes<C>> | IpcRes<C> };
@@ -52,6 +55,7 @@ export interface Engine {
   actions: ActionService;
   compose: ComposeService;
   scheduled: ScheduledService;
+  rules: RulesService;
   handle(channel: string, payload: unknown): Promise<unknown>;
   /** The settings changed (the settings() callback now returns the new values). */
   applySettings(): Promise<void>;
@@ -82,6 +86,7 @@ export function createEngine(opts: EngineOptions): Engine {
     actionRetryDelaysMs: opts.actionRetryDelaysMs,
     sendRetryDelaysMs: opts.sendRetryDelaysMs,
     scheduledSpacingMs: opts.scheduledSpacingMs,
+    rulesBatchSize: opts.rulesBatchSize,
     recentMoves: new Map(),
   } as unknown as EngineContext;
   ctx.contacts = new ContactService(ctx);
@@ -93,6 +98,7 @@ export function createEngine(opts: EngineOptions): Engine {
   const search = new SearchService(ctx, sessions);
   const compose = new ComposeService(ctx, sessions, messages, actions);
   const scheduled = new ScheduledService(ctx, sessions, compose);
+  const rules = new RulesService(ctx, actions);
   const conversations = new ConversationService(ctx, messages, actions);
   const threadBackfill = new ThreadBackfill(ctx);
   ctx.hub.threadSource = {
@@ -155,6 +161,18 @@ export function createEngine(opts: EngineOptions): Engine {
     'scheduled.get': (r) => scheduled.get(r.id),
     'scheduled.count': () => scheduled.count(),
     'scheduled.nextDue': () => scheduled.nextDue(),
+
+    'rules.list': () => rules.list(),
+    'rules.create': (r) => rules.create(r),
+    'rules.update': (r) => rules.update(r.id, r.patch),
+    'rules.delete': (r) => rules.delete(r.id),
+    'rules.reorder': (r) => rules.reorder(r.ids),
+    'rules.countMatches': (r) => rules.countMatches(r),
+    'rules.runNow': (r) => rules.runNow(r),
+    'rules.cancelRun': (r) => rules.cancelRun(r.runId),
+    'rulesActivity.list': () => rules.activityList(),
+    'rulesActivity.undo': (r) => rules.undoActivity(r.id),
+    'rulesActivity.clear': () => rules.clearActivity(),
 
     'search.local': (r) => search.local(r),
     'search.server': (r) => search.server(r),
@@ -230,6 +248,7 @@ export function createEngine(opts: EngineOptions): Engine {
     actions,
     compose,
     scheduled,
+    rules,
     applySettings: () => cleanBodyCache(),
     threadsReady: () => threadBackfill.whenDone(),
     async handle(channel, payload) {

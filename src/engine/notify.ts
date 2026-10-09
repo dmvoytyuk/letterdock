@@ -49,7 +49,8 @@ export function newMailToAnnounce(
   const out: MessageHeader[] = [];
   for (const id of res.newUnread) {
     const row = ctx.messages.row(id);
-    if (!row || row.flag_seen === 1 || row.flag_deleted === 1) continue;
+    // A rule may have read, deleted or moved it between the sync and now.
+    if (!row || row.flag_seen === 1 || row.flag_deleted === 1 || row.folder_id !== folder.id) continue;
     if (row.internal_ms < floor) continue;
     if (row.message_id && ctx.recentMoves.has(`${row.account_id}|${row.message_id}`)) continue;
     const [h] = ctx.messages.headers([id]);

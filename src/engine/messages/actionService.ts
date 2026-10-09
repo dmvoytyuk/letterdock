@@ -272,6 +272,15 @@ export class ActionService implements PendingOpsApi {
     return this.applyInternal(req.messageIds, req.action, true);
   }
 
+  /**
+   * Changes made by rules (and by undoing them): the same optimistic change and queue as the user's
+   * own actions, but no undo token.
+   */
+  async applyQuiet(ids: MessageId[], action: MessageAction): Promise<ApplyActionRes> {
+    await this.settle(ids);
+    return this.applyInternal(ids, action, false);
+  }
+
   private async applyInternal(
     ids: MessageId[],
     action: MessageAction,

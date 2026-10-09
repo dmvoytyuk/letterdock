@@ -610,6 +610,120 @@ export interface ScheduledNextDue {
 }
 export const MAX_SCHEDULED = 100;
 
+// ---------- rules (DESIGN-SPEC 3.12) ----------
+export const MAX_RULES = 50;
+export const MAX_RULE_CONDITIONS = 6;
+export type RuleConditionField = 'from' | 'toCc' | 'subject' | 'hasAttachment';
+export interface RuleCondition {
+  field: RuleConditionField;
+  /** Text to look for (case and accent insensitive, literal). Absent for 'hasAttachment'. */
+  value?: string;
+}
+export interface RuleActions {
+  /** Move to this folder (needs a rule for one account). Excludes `delete`. */
+  moveToFolderId?: FolderId | null;
+  /** Path of that folder; the engine fills it in and keeps it up to date. */
+  moveToFolderPath?: string | null;
+  markRead: boolean;
+  flag: boolean;
+  /** Move to Trash (never permanent). Excludes `moveToFolderId`. */
+  delete: boolean;
+  /** Do not run the rules below this one on a message that matched. */
+  stop: boolean;
+}
+/** 'inbox': new mail arriving in the Inbox. 'anyFolder': new mail in any folder except Spam, Trash, Drafts, Sent. */
+export type RuleTrigger = 'inbox' | 'anyFolder';
+export interface RuleDraft {
+  /** 1 to 60 characters. */
+  name: string;
+  enabled: boolean;
+  /** One account, or null for every account. */
+  accountId: AccountId | null;
+  matchMode: 'all' | 'any';
+  /** 1 to 6. */
+  conditions: RuleCondition[];
+  /** At least one of move / markRead / flag / delete. */
+  actions: RuleActions;
+  trigger: RuleTrigger;
+}
+export interface RuleWarning {
+  kind: 'folderMissing';
+  /** Plain words for the row: "Folder 'Receipts' is missing. Edit the rule to choose another." */
+  message: string;
+  folderPath: string | null;
+}
+export interface Rule extends RuleDraft {
+  id: number;
+  /** 1-based order; rules run from top to bottom. */
+  position: number;
+  createdAt: EpochMs;
+  /** Set when the engine switched the rule off because its target folder is gone. */
+  warning: RuleWarning | null;
+}
+export interface CreateRuleReq extends RuleDraft {
+  /** Put the rule at this place (1-based). Default: the end. Used to undo "Delete rule". */
+  position?: number;
+  /** Bring back a deleted rule under its old id, so the activity list links to it again. */
+  id?: number;
+}
+export interface CountMatchesReq {
+  rule: Pick<RuleDraft, 'accountId' | 'matchMode' | 'conditions'>;
+  /** Count in this folder. Default: the Inbox of the rule's account (every Inbox when it has none). */
+  folderId?: FolderId;
+}
+export interface CountMatchesRes {
+  /** Messages that match. */
+  matches: number;
+  /** Messages looked at ("12 of the 248 messages in this Inbox"). */
+  total: number;
+}
+export interface RunRulesReq {
+  /** One rule (even a switched-off one) or every enabled rule. */
+  ruleId: number | 'all';
+  /** A folder, or `'allInboxes'` (the Inboxes of the rule's account, or of all accounts). */
+  folderId: FolderId | 'allInboxes';
+  /** Made by the UI. Progress events and `rules.cancelRun` use it. */
+  runId: string;
+}
+/** Progress of a Run now. The last event has state 'finished', 'cancelled' or 'failed'. */
+export interface RulesProgress {
+  runId: string;
+  state: 'running' | 'finished' | 'cancelled' | 'failed';
+  /** Messages checked so far, and in all. */
+  done: number;
+  total: number;
+  matched: number;
+  moved: number;
+  trashed: number;
+  markedRead: number;
+  flagged: number;
+  /** Activity entries made by this run (last event only). Undo with `rulesActivity.undo`. */
+  activityIds: number[];
+  error?: AppError;
+}
+export interface RuleActivityItem {
+  id: number;
+  ts: EpochMs;
+  /** null once the rule was deleted. */
+  ruleId: number | null;
+  ruleName: string;
+  ruleDeleted: boolean;
+  accountId: AccountId;
+  /** Messages in this entry (a Run now or a burst is one entry). */
+  count: number;
+  /** Subject and sender of the message (null for an entry with several messages). */
+  subject: string | null;
+  sender: string | null;
+  /** "Moved to Receipts, marked as read". */
+  summary: string;
+  runNow: boolean;
+  undone: boolean;
+  /** false: the message changed since (or is gone). Show "Can't undo. The message was changed since." */
+  canUndo: boolean;
+  /** An information line (for example a rule that was switched off), not a change to undo. */
+  warning: boolean;
+}
+
 // ---------- search ----------
 export interface SearchReq {
   query: string;
@@ -849,6 +963,22 @@ export interface IpcMethods {
   /** For the quit prompt: messages due within 24 hours. */
   'scheduled.nextDue': { req: void; res: ScheduledNextDue };
 
+  // rules (DESIGN-SPEC 3.12): sort new mail on this PC; changes go through the normal action queue
+  'rules.list': { req: void; res: Rule[] };
+  'rules.create': { req: CreateRuleReq; res: Rule };
+  'rules.update': { req: { id: number; patch: Partial<RuleDraft> }; res: Rule };
+  /** Returns the deleted rule (pass it to `rules.create` to undo). */
+  'rules.delete': { req: { id: number }; res: Rule };
+  'rules.reorder': { req: { ids: number[] }; res: Rule[] };
+  'rules.countMatches': { req: CountMatchesReq; res: CountMatchesRes };
+  /** Starts the run and answers at once; progress comes as `rules:progress` events. */
+  'rules.runNow': { req: RunRulesReq; res: { runId: string } };
+  'rules.cancelRun': { req: { runId: string }; res: void };
+  'rulesActivity.list': { req: void; res: RuleActivityItem[] };
+  /** Reverse what the rule did to the message(s) of this entry. */
+  'rulesActivity.undo': { req: { id: number }; res: { restored: number } };
+  'rulesActivity.clear': { req: void; res: void };
+
   // search
   'search.local': { req: SearchReq; res: SearchRes };
   'search.server': { req: ServerSearchReq; res: ServerSearchRes };
@@ -951,6 +1081,11 @@ export type AppEvent =
   | { type: 'scheduled:due'; count: number; ids: number[] }
   /** A scheduled message could not be sent on time. It is in the Outbox as a failed item. */
   | { type: 'scheduled:failed'; accountId: AccountId; subject: string; outboxId: number; error: AppError }
+  /** The rule list changed (also when a rule was switched off because its folder is gone). Re-fetch `rules.list`. */
+  | { type: 'rules:changed' }
+  /** The activity list changed. Re-fetch `rulesActivity.list`. */
+  | { type: 'rulesActivity:changed' }
+  | ({ type: 'rules:progress' } & RulesProgress)
   | { type: 'outbox:changed' }
   | { type: 'send:result'; outboxId: number; ok: boolean; error?: AppError }
   | { type: 'update:status'; status: UpdateStatus }

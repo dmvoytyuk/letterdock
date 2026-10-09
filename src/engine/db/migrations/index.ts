@@ -6,6 +6,7 @@ import contacts from './005_contacts.sql?raw';
 import localDrafts from './006_local_drafts.sql?raw';
 import conversations from './007_conversations.sql?raw';
 import scheduledSend from './008_scheduled_send.sql?raw';
+import rules from './009_rules.sql?raw';
 
 export interface Migration {
   version: number;
@@ -22,4 +23,5 @@ export const MIGRATIONS: Migration[] = [
   { version: 6, sql: localDrafts },
   { version: 7, sql: conversations },
   { version: 8, sql: scheduledSend },
+  { version: 9, sql: rules },
 ];

@@ -292,6 +292,7 @@ export class AccountService {
     if (!a) throw new AppException('NOT_FOUND', 'Account not found.');
     await this.sessions.remove(accountId);
     await this.ctx.scheduler?.forgetAccount(accountId);
+    const hadRules = this.ctx.rules?.hasRulesFor(accountId) ?? false;
     const outboxFiles = this.ctx.db
       .prepare('SELECT raw_path FROM outbox WHERE account_id = ?')
       .all(accountId) as { raw_path: string }[];
@@ -300,6 +301,7 @@ export class AccountService {
     this.ctx.accounts.remove(accountId); // cascades folders, messages, bodies, attachments
     this.ctx.messages.ftsDeleteMany(ids);
     this.ctx.contacts.removeAccount(accountId);
+    if (hadRules) this.ctx.rules?.afterAccountRemoved(); // its rules went with it (cascade)
     this.ctx.pendingOps?.forgetAccount(accountId);
     await this.ctx.secrets.delete(accountId).catch(() => undefined);
     await rm(join(this.ctx.dataDir, 'attachments', accountId), { recursive: true, force: true });

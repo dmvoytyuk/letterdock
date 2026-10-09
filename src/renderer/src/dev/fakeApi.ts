@@ -18,6 +18,8 @@ import type {
   MessageHeader,
   OutboxItem,
   PreloadApi,
+  Rule,
+  RuleActivityItem,
   ScheduledItem,
   SendReq,
   UpdateStatus,
@@ -338,6 +340,11 @@ const readOutbox = (): StoredOutbox[] => LS.get<StoredOutbox[]>('outbox', []);
 const writeOutbox = (l: StoredOutbox[]) => LS.set('outbox', l);
 const drafts = (): Record<string, SendReq> => LS.get('drafts', {});
 const saveDrafts = (d: Record<string, SendReq>) => LS.set('drafts', d);
+
+// ---------- rules (simple fake; they never run on the fake mail) ----------
+const readRules = (): Rule[] => LS.get<Rule[]>('rules', []);
+const writeRules = (l: Rule[]) => LS.set('rules', l.map((r, i) => ({ ...r, position: i + 1 })));
+const readActivity = (): RuleActivityItem[] => LS.get<RuleActivityItem[]>('rulesActivity', []);
 
 // ---------- send later (kept in localStorage so the compose window and the main window share it) ----------
 interface FakeScheduled extends ScheduledItem {
@@ -917,6 +924,62 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       saveDrafts(d);
       return delay(undefined, 30);
     }
+    case 'rules.list':
+      return delay(readRules(), 80);
+    case 'rules.create': {
+      const list = readRules();
+      if (list.length >= 50) return err('INVALID_INPUT', 'You have 50 rules. Delete one to add another.');
+      const q = r as unknown as Rule;
+      const rule: Rule = { ...q, id: q.id ?? Date.now() % 1_000_000_000, position: list.length + 1, createdAt: Date.now(), warning: null };
+      const at = Math.min(Math.max((r!.position as number | undefined) ?? list.length + 1, 1), list.length + 1) - 1;
+      list.splice(at, 0, rule);
+      writeRules(list);
+      emit({ type: 'rules:changed' });
+      return delay(readRules()[at], 80);
+    }
+    case 'rules.update': {
+      const list = readRules();
+      const i = list.findIndex((x) => x.id === r!.id);
+      if (i < 0) return err('NOT_FOUND', 'That rule is no longer there.');
+      const patch = r!.patch as Partial<Rule>;
+      list[i] = { ...list[i]!, ...patch, actions: { ...list[i]!.actions, ...(patch.actions ?? {}) }, warning: null };
+      writeRules(list);
+      emit({ type: 'rules:changed' });
+      return delay(readRules()[i], 80);
+    }
+    case 'rules.delete': {
+      const list = readRules();
+      const rule = list.find((x) => x.id === r!.id);
+      if (!rule) return err('NOT_FOUND', 'That rule is no longer there.');
+      writeRules(list.filter((x) => x.id !== rule.id));
+      emit({ type: 'rules:changed' });
+      return delay(rule, 80);
+    }
+    case 'rules.reorder': {
+      const list = readRules();
+      const ids = r!.ids as number[];
+      writeRules(ids.map((id) => list.find((x) => x.id === id)).filter((x): x is Rule => !!x));
+      emit({ type: 'rules:changed' });
+      return delay(readRules(), 80);
+    }
+    case 'rules.countMatches':
+      return delay({ matches: 12, total: 248 }, 200);
+    case 'rules.runNow': {
+      const runId = r!.runId as string;
+      const progress = (done: number, state: 'running' | 'finished'): AppEvent => ({ type: 'rules:progress', runId, state, done, total: 248, matched: Math.round(done / 20), moved: Math.round(done / 20), trashed: 0, markedRead: 0, flagged: 0, activityIds: [] });
+      [0, 100, 200, 248].forEach((done, i) => setTimeout(() => emit(progress(done, done === 248 ? 'finished' : 'running')), 300 * (i + 1)));
+      return delay({ runId }, 50);
+    }
+    case 'rules.cancelRun':
+      return delay(undefined, 30);
+    case 'rulesActivity.list':
+      return delay(readActivity(), 80);
+    case 'rulesActivity.undo':
+      return err('INVALID_INPUT', "Can't undo. The message was changed since.");
+    case 'rulesActivity.clear':
+      LS.set('rulesActivity', []);
+      emit({ type: 'rulesActivity:changed' });
+      return delay(undefined, 40);
     case 'scheduled.create': {
       const q = r as unknown as { draftId: string; sendAt: number; draft?: SendReq };
       const req = q.draft ?? drafts()[q.draftId];

@@ -33,8 +33,16 @@ export class EventHub {
     private readonly intervalMs = 250,
   ) {}
 
+  private observers: ((e: AppEvent) => void)[] = [];
+
+  /** Look at every event that is emitted (the rules watch for folder changes). */
+  observe(cb: (e: AppEvent) => void): void {
+    this.observers.push(cb);
+  }
+
   emit(e: AppEvent): void {
     this.send(e);
+    for (const o of this.observers) o(e);
   }
 
   changed(c: {
@@ -210,6 +218,15 @@ export interface SchedulerApi {
   forgetAccount(accountId: string): Promise<void>;
 }
 
+/** The rules, as the sync code sees them (implemented by RulesService). */
+export interface RulesApi {
+  /** A sync stored new mail in this folder. Runs the rules on it BEFORE the notification is decided. */
+  onNewMail(folder: FolderRow, res: { kind: string; added: number[] }): Promise<void>;
+  hasRulesFor(accountId: string): boolean;
+  /** An account was removed: its rules went with it. */
+  afterAccountRemoved(): void;
+}
+
 export interface EngineContext {
   dataDir: string;
   db: Db;
@@ -231,6 +248,10 @@ export interface EngineContext {
   pendingOps?: PendingOpsApi;
   /** Set by the compose service. */
   drafts?: DraftsApi;
+  /** Set by the rules service. */
+  rules?: RulesApi;
+  /** Messages per batch when rules run on a folder. Default 500. */
+  rulesBatchSize?: number;
   /** Set by the scheduled-send service. */
   scheduler?: SchedulerApi;
   /** Pause between two scheduled messages that are sent one after the other. Default 2000. */
