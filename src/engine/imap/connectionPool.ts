@@ -5,6 +5,41 @@ import type { Logger } from '../logger';
 
 export type Priority = 'user' | 'sync' | 'background';
 
+/** What the server said when it refused the last command (never message content or credentials). */
+export interface CommandFailure {
+  status?: string;
+  text?: string;
+  code?: string;
+  command?: string;
+}
+
+const lastFailure = new WeakMap<ImapFlow, CommandFailure>();
+
+function noteCommandFailure(client: ImapFlow | undefined, entry: unknown): void {
+  const err = (entry as { err?: Record<string, unknown> } | null)?.err;
+  if (!client || !err || typeof err !== 'object') return;
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  const f: CommandFailure = {
+    status: str(err.responseStatus),
+    text: str(err.responseText),
+    code: str(err.serverResponseCode),
+    command: str(err.executedCommand),
+  };
+  if (f.status || f.text || f.code) lastFailure.set(client, f);
+}
+
+/** The server's answer to the command that just failed (and forget it). */
+export function takeCommandFailure(client: ImapFlow): CommandFailure | undefined {
+  const f = lastFailure.get(client);
+  lastFailure.delete(client);
+  return f;
+}
+
+/** Forget an old answer before sending a command whose refusal we want to read. */
+export function clearCommandFailure(client: ImapFlow): void {
+  lastFailure.delete(client);
+}
+
 export function createImapClient(
   account: Pick<Account, 'imap' | 'username'>,
   cred: Credential,
@@ -18,14 +53,21 @@ export function createImapClient(
     cred.kind === 'password'
       ? { user: account.username, pass: cred.password }
       : { user: account.username, accessToken: cred.accessToken };
-  const client = new ImapFlow({
+  const client: ImapFlow = new ImapFlow({
     host: account.imap.host,
     port: account.imap.port,
     secure: account.imap.security === 'ssl',
     // STARTTLS is mandatory when security is 'starttls' (no downgrade to cleartext).
     doSTARTTLS: account.imap.security === 'starttls' ? true : undefined,
     auth,
-    logger: false,
+    // imapflow swallows a refused command (it returns false). Keep the server's answer so the
+    // caller can say why. Nothing else is logged.
+    logger: {
+      debug: () => undefined,
+      info: () => undefined,
+      error: () => undefined,
+      warn: (entry: unknown) => noteCommandFailure(client, entry),
+    },
     ...(autoIdleDelayMs !== undefined ? { autoIdleDelay: autoIdleDelayMs } : {}),
     connectionTimeout: 20_000,
     greetingTimeout: 16_000,

@@ -27,6 +27,7 @@ import { FolderOps } from '../folders/folderOps';
 import type { MessageRow } from '../db/repos/messageRepo';
 import type { SessionManager } from '../imap/sessionManager';
 import { chunk, toSequenceSet } from '../imap/syncDiff';
+import { clearCommandFailure, takeCommandFailure, type CommandFailure } from '../imap/connectionPool';
 import {
   PendingQueue,
   shouldKeep,
@@ -41,6 +42,16 @@ import {
 
 const UNDO_KEEP_MS = UNDO_WINDOW_MS + 30_000;
 const SERVER_BATCH = 500;
+
+/** "Try again later" answers (Gmail sends these under load): the change must wait, not be undone. */
+const TRANSIENT_CODES = /^(UNAVAILABLE|SERVERBUG|THROTTLED|LIMIT|INUSE|EXPUNGEISSUED|TRYAGAIN|CONTACTADMIN)$/i;
+const TRANSIENT_TEXT =
+  /temporar|try again|throttl|too many|unavailable|rate limit|bandwidth|system error|internal (server )?error|server error|busy/i;
+
+function isTransientRefusal(f: CommandFailure | undefined): boolean {
+  if (!f) return false;
+  return TRANSIENT_CODES.test(f.code ?? '') || TRANSIENT_TEXT.test(f.text ?? '');
+}
 
 interface MoveEntry {
   id: MessageId;
@@ -694,16 +705,87 @@ export class ActionService implements PendingOpsApi {
 
   /**
    * imapflow does not throw when a command is refused: it returns `false`. Turn that into an error:
-   * a lost connection is temporary (the change waits), a refusal by the server is final.
+   * a lost connection or a "try again later" answer is temporary (the change waits), any other
+   * refusal by the server is final.
    */
   private requireOk(c: ImapFlow, result: unknown, what: string): void {
     if (result !== false) return;
+    this.refuse(c, what, takeCommandFailure(c));
+  }
+
+  /** Throw the right error for a refused command, and log what the server said. */
+  private refuse(c: ImapFlow, what: string, f: CommandFailure | undefined): never {
     if (!c.usable) {
       throw new AppException('HOST_UNREACHABLE', 'The connection to the server was lost.');
     }
-    throw new AppException('SERVER_REJECTED', `The server did not accept the ${what}.`, {
-      retryable: false,
-    });
+    const reason = [f?.code ? `[${f.code}]` : '', f?.text ?? ''].filter(Boolean).join(' ');
+    const transient = isTransientRefusal(f);
+    this.ctx.log.warn(
+      { what, status: f?.status, code: f?.code, text: f?.text, command: f?.command, transient },
+      'server refused a command',
+    );
+    throw new AppException(
+      'SERVER_REJECTED',
+      `The server did not accept the ${what}.${reason ? ` It said: ${reason}` : ''}`,
+      { retryable: transient, ...(reason ? { details: reason } : {}) },
+    );
+  }
+
+  /**
+   * Send one command for a set of UIDs. When the server refuses it, find out why before giving up:
+   * - some of the messages are gone from the folder (moved or deleted by another client, or by an
+   *   earlier change): leave them out, remember them in `vanished`, and send the command again;
+   * - the target folder is missing ([TRYCREATE]): create it once and send again;
+   * - anything else is a real refusal.
+   * Returns the answer of the command, or undefined when every message turned out to be gone.
+   */
+  private async sendToUids<R>(
+    c: ImapFlow,
+    uids: number[],
+    what: string,
+    vanished: Set<number>,
+    send: (set: string) => Promise<R | false>,
+    createPath?: string,
+  ): Promise<R | undefined> {
+    let remaining = [...uids];
+    let created = false;
+    for (;;) {
+      if (remaining.length === 0) return undefined;
+      clearCommandFailure(c);
+      const res = await send(toSequenceSet(remaining));
+      if (res !== false) return res;
+      const f = takeCommandFailure(c);
+      if (!c.usable) this.refuse(c, what, f);
+      const found = await c.search({ uid: toSequenceSet(remaining) }, { uid: true });
+      if (found === false) this.refuse(c, what, takeCommandFailure(c) ?? f);
+      const present = new Set(found);
+      const still = remaining.filter((u) => present.has(u));
+      if (still.length < remaining.length) {
+        for (const u of remaining) if (!present.has(u)) vanished.add(u);
+        this.ctx.log.info(
+          { what, gone: remaining.length - still.length, left: still.length, code: f?.code, text: f?.text },
+          'messages are gone from the server folder; skipped',
+        );
+        remaining = still;
+        continue;
+      }
+      if (createPath && !created && /TRYCREATE|NONEXISTENT/i.test(f?.code ?? '')) {
+        created = true;
+        try {
+          await c.mailboxCreate(createPath);
+        } catch {
+          /* already there, or not allowed: the next try tells */
+        }
+        continue;
+      }
+      this.refuse(c, what, f);
+    }
+  }
+
+  /** Mark the messages the server no longer has as "not there". */
+  private markVanished(l: Located, vanished: Set<number>): void {
+    if (vanished.size === 0) return;
+    for (const [k, v] of l.resolved) if (v !== null && vanished.has(v)) l.resolved.set(k, null);
   }
 
   /**
@@ -776,13 +858,24 @@ export class ActionService implements PendingOpsApi {
     err: AppError,
     ids: MessageId[],
     revert: () => void,
+    kindOverride?: 'delete',
   ): Outcome {
     if (shouldKeep(err, ops)) {
       this.ctx.log.info({ code: err.code, ops: ops.length }, 'change kept for later');
       this.queue.noteFailure(ops, err.message);
       return 'stalled';
     }
-    this.ctx.log.warn({ code: err.code, ops: ops.length }, 'server refused a change; reverting');
+    this.ctx.log.warn(
+      {
+        code: err.code,
+        ops: ops.length,
+        kind: ops[0]!.kind,
+        folders: this.opFolders(ops),
+        uids: this.opUids(ops),
+        reason: err.details ?? err.message,
+      },
+      'server refused a change; reverting',
+    );
     revert();
     this.queue.removeMany(ops);
     const first = ops[0]!;
@@ -792,15 +885,41 @@ export class ActionService implements PendingOpsApi {
       error: err,
       accountId: first.accountId,
       kind:
-        first.kind === 'flag'
+        kindOverride ??
+        (first.kind === 'flag'
           ? first.p.col === 'flag_seen'
             ? 'read'
             : 'flag'
           : first.kind === 'move' || first.kind === 'delete'
             ? first.kind
-            : undefined,
+            : undefined),
     });
     return 'done';
+  }
+
+  /** Folder paths an op batch is about (for the log). */
+  private opFolders(ops: readonly PendingOp[]): string[] {
+    const ids = new Set<number>();
+    for (const o of ops) {
+      if (o.kind === 'move') {
+        ids.add(o.p.srcFolderId);
+        ids.add(o.p.destFolderId);
+      } else if (o.kind === 'flag' || o.kind === 'delete') ids.add(o.p.folderId);
+    }
+    return [...ids].map((id) => this.ctx.folders.row(id)?.path ?? `#${id}`);
+  }
+
+  /** Server uids an op batch is about (for the log). */
+  private opUids(ops: readonly PendingOp[]): number[] {
+    const out: number[] = [];
+    for (const o of ops) {
+      if (o.kind === 'move') out.push(o.p.origUid);
+      else if (o.kind === 'flag' || o.kind === 'delete') {
+        const r = this.ctx.messages.row(o.p.msgId);
+        if (r) out.push(r.uid);
+      }
+    }
+    return out.slice(0, 20);
   }
 
   // ----- flags -----
@@ -841,13 +960,15 @@ export class ActionService implements PendingOpsApi {
             const uids = items
               .map((i) => l.resolved.get(i.row.uid))
               .filter((u): u is number => typeof u === 'number');
+            const vanished = new Set<number>();
             for (const part of chunk(uids, SERVER_BATCH)) {
-              const set = toSequenceSet(part);
-              const ok = value
-                ? await c.messageFlagsAdd(set, [imapFlag], { uid: true })
-                : await c.messageFlagsRemove(set, [imapFlag], { uid: true });
-              this.requireOk(c, ok, 'change');
+              await this.sendToUids(c, part, 'change', vanished, (set) =>
+                value
+                  ? c.messageFlagsAdd(set, [imapFlag], { uid: true })
+                  : c.messageFlagsRemove(set, [imapFlag], { uid: true }),
+              );
             }
+            this.markVanished(l, vanished);
             return l;
           }),
         );
@@ -935,13 +1056,23 @@ export class ActionService implements PendingOpsApi {
           const live = entries
             .map((e) => l.resolved.get(e.origUid))
             .filter((u): u is number => typeof u === 'number');
+          const destPath = this.queue.serverPath(accountId, dest.path, dest.delimiter);
+          const vanished = new Set<number>();
           for (const part of chunk(live, SERVER_BATCH)) {
-            const res = (await c.messageMove(toSequenceSet(part), this.queue.serverPath(accountId, dest.path, dest.delimiter), {
-              uid: true,
-            })) as { uidMap?: Map<number, number> } | false;
-            this.requireOk(c, res, 'move');
+            const res = await this.sendToUids(
+              c,
+              part,
+              'move',
+              vanished,
+              (set) =>
+                c.messageMove(set, destPath, { uid: true }) as Promise<
+                  { uidMap?: Map<number, number> } | false
+                >,
+              destPath,
+            );
             if (res && res.uidMap) for (const [from, to] of res.uidMap) uidMap.set(from, to);
           }
+          this.markVanished(l, vanished);
           return l;
         }),
       );
@@ -951,6 +1082,7 @@ export class ActionService implements PendingOpsApi {
         toAppError(e),
         entries.map((x) => x.id),
         () => this.revertMove(g),
+        dest.role === 'trash' ? 'delete' : undefined,
       );
     }
     const gone = entries.filter((e) => loc.resolved.get(e.origUid) == null);
@@ -1067,9 +1199,11 @@ export class ActionService implements PendingOpsApi {
             const uids = items
               .map((i) => l.resolved.get(i.row.uid))
               .filter((u): u is number => typeof u === 'number');
+            const vanished = new Set<number>();
             for (const part of chunk(uids, SERVER_BATCH)) {
-              const ok = await c.messageDelete(toSequenceSet(part), { uid: true });
-              this.requireOk(c, ok, 'delete');
+              await this.sendToUids(c, part, 'delete', vanished, (set) =>
+                c.messageDelete(set, { uid: true }),
+              );
             }
           }),
         );

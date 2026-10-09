@@ -186,6 +186,15 @@ export interface FakeImapServer {
   dropOnCommands(commands: string[]): void;
   /** Make the server answer these commands (e.g. "UID MOVE") with NO until `allowCommands()`. */
   rejectCommands(commands: string[], text?: string): void;
+  /**
+   * Answer the next `times` uses of these commands with NO (Gmail-like: with an optional response
+   * code such as UNAVAILABLE or TRYCREATE), then behave normally again. `before` runs first, e.g. to
+   * remove a message "behind the client's back".
+   */
+  rejectNext(
+    commands: string[],
+    o?: { times?: number; text?: string; code?: string; before?: () => void },
+  ): void;
   allowCommands(): void;
   connectionCount(): number;
   close(): Promise<void>;
@@ -284,6 +293,35 @@ export async function startFakeImap(opts: FakeImapOptions = {}): Promise<FakeIma
         server.setCommandHandler(key, (conn, parsed, data, callback) => {
           conn.send(
             { tag: parsed.tag, command: 'NO', attributes: [{ type: 'TEXT', value: text }] },
+            `${key} REJECTED`,
+            parsed,
+            data,
+          );
+          callback();
+        });
+      }
+    },
+    rejectNext(commands, o = {}) {
+      let left = o.times ?? 1;
+      for (const name of commands) {
+        const key = name.toUpperCase();
+        if (!originals.has(key)) originals.set(key, server.getCommandHandler(key));
+        const original = originals.get(key);
+        server.setCommandHandler(key, (conn, parsed, data, callback) => {
+          if (left <= 0 && original) return original(conn, parsed, data, callback);
+          left--;
+          o.before?.();
+          conn.send(
+            {
+              tag: parsed.tag,
+              command: 'NO',
+              attributes: [
+                ...(o.code
+                  ? [{ type: 'SECTION', section: [{ type: 'ATOM', value: o.code }] }]
+                  : []),
+                { type: 'TEXT', value: o.text ?? 'Some messages no longer exist.' },
+              ],
+            },
             `${key} REJECTED`,
             parsed,
             data,
