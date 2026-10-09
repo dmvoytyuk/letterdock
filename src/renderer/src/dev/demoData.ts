@@ -226,13 +226,31 @@ export function buildDemo(now: number): Demo {
   const w3 = add('a1', 'inbox', DAY / MIN + 4 * H, P.ben, `Re: ${weekend}`, 'Let us meet at 9 at the trailhead parking. Mia is in. Tom is checking his shifts.');
   const w4 = add('a1', 'inbox', 38, P.ben, `Re: ${weekend}`, 'Tom is in too! The weather looks good, around 18 degrees. Bring a jacket just in case.', { seen: false });
   bodies.set(w1, { text: txt('Hey Anna,', ['Are you free on Saturday? I am thinking of a hike at Cedar Ridge, then lunch at the little place by the lake.', 'Tom and Mia might join.'], 'Ben') });
-  bodies.set(w3, { text: txt('Hi Anna,', ['Let us meet at 9 at the trailhead parking. Mia is in. Tom is checking his shifts and will tell us tonight.'], 'Ben') });
-  bodies.set(w4, { text: txt('Hi Anna,', ['Tom is in too! The weather looks good, around 18 degrees.', 'Bring a jacket just in case. I will bring a thermos of tea.'], 'See you Saturday,\nBen') });
+  // Replies carry the older mail as quoted text (plain text with "> " lines): the reading pane folds it behind a "..." button.
+  bodies.set(w3, {
+    text:
+      txt('Hi Anna,', ['Let us meet at 9 at the trailhead parking. Mia is in. Tom is checking his shifts and will tell us tonight.'], 'Ben') +
+      '\n\nOn Sun, 11 Oct 2026 at 08:20, Anna Rossi <anna@example.com> wrote:\n> Saturday works for me. What time would you leave?\n> I can bring sandwiches.\n>\n> Anna\n',
+  });
+  bodies.set(w4, {
+    text:
+      txt('Hi Anna,', ['Tom is in too! The weather looks good, around 18 degrees.', 'Bring a jacket just in case. I will bring a thermos of tea.'], 'See you Saturday,\nBen') +
+      '\n\nOn Mon, 12 Oct 2026 at 18:30, Ben Carter <ben.carter@example.net> wrote:\n> Let us meet at 9 at the trailhead parking. Mia is in.\n> Tom is checking his shifts and will tell us tonight.\n',
+  });
 
   const q3 = 'Q3 report: final numbers';
   add('a2', 'inbox', 20 * H, P.tom, q3, 'Hi Anna, the final Q3 numbers are in the shared sheet. Please check the travel line before we send it on.');
   add('a2', 'sent', 18 * H, me('a2'), `Re: ${q3}`, 'Thanks Tom. The travel line looks right to me. I will send the summary to Priya this afternoon.', { to: [P.tom] });
-  add('a2', 'inbox', 52, P.tom, `Re: ${q3}`, 'Great, thank you. Priya is happy with it. We can present on Thursday.', { answered: false });
+  const q3c = add('a2', 'inbox', 52, P.tom, `Re: ${q3}`, 'Great, thank you. Priya is happy with it. We can present on Thursday.', { answered: false });
+  // A Gmail-style reply: the quote is a .gmail_quote block (folded behind a "..." button).
+  bodies.set(q3c, {
+    html:
+      '<div dir="ltr">Hi Anna,<br><br>Great, thank you. Priya is happy with it. We can present on Thursday.<br><br>Best,<br>Tom</div><br>' +
+      '<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On Mon, 12 Oct 2026 at 15:10, Anna Rossi &lt;anna.rossi@example.org&gt; wrote:<br></div>' +
+      '<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">' +
+      '<div dir="ltr">Thanks Tom. The travel line looks right to me. I will send the summary to Priya this afternoon.</div></blockquote></div>',
+    text: null,
+  });
   add('a2', 'inbox', 70, P.priya, 'Invoice #1187 for October', 'Hi Anna, please find the invoice for October attached. Payment is due in 14 days.', { seen: false, att: pdf('invoice-1187.pdf') });
   add('a1', 'inbox', 120, P.pine, 'Spring menu is here: try the rosemary loaf', 'Warm rosemary loaf, lemon buns and our new honey oat bread. Baked every morning from 6 am.', { seen: false, body: { html: pinewoodHtml, text: null } });
   add('a1', 'inbox', 180, P.lib, 'Your hold is ready for pickup', 'Hello Anna, the book you reserved, The Quiet Orchard, is waiting at the front desk.', { body: { html: libraryHtml, text: null, remoteImages: true } });

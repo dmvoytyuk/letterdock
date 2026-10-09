@@ -1543,7 +1543,7 @@ export function installFakeApi(): void {
 const SCENARIOS = [
   'upToDate', 'upToDateOne', 'syncing', 'syncingUnknown', 'syncingMany', 'error', 'errorMany', 'signIn', 'signInOne',
   'offline', 'online', 'pending', 'outboxSending', 'outboxQueued', 'outboxFailed', 'updateDownloading', 'updateReady',
-  'updateIdle', 'reset',
+  'updateIdle', 'reset', 'longThread',
 ];
 
 function setStatus(id: string, patch: Partial<AccountStatus>): void {
@@ -1594,6 +1594,27 @@ function runScenario(name: string): void {
   if (!overlay && name !== 'signIn' && name !== 'signInOne') calm();
   if (!overlay && name !== 'upToDateOne') only(accounts.map((a) => a.id));
   switch (name) {
+    case 'longThread': {
+      // One conversation with 120 messages (Personal, Inbox): to look at the virtual list of cards.
+      const inbox = folders.find((f) => f.accountId === 'a1' && f.role === 'inbox')!;
+      const who = ['Dana Whitfield', 'Marco Rossi', 'Lena Hoffmann'];
+      const added: number[] = [];
+      for (let i = 0; i < 120; i++) {
+        const name = who[i % who.length]!;
+        messages.push({
+          id: mid, accountId: 'a1', folderId: inbox.id, uid: mid, messageIdHeader: `<long${mid}@x>`,
+          subject: i === 0 ? 'Release checklist' : 'Re: Release checklist',
+          from: { name, address: `${name.split(' ')[0]!.toLowerCase()}@example.org` },
+          to: [{ address: accounts[0]!.email }], cc: [], date: Date.now() - (120 - i) * 20 * 60_000,
+          snippet: `Step ${i + 1}: checked the list and ticked the next item.`, seen: i < 118, flagged: false, answered: false,
+          draft: false, hasAttachments: false, size: 2000, bodyCached: true, threadId: `fake:a1:release checklist`,
+        });
+        added.push(mid++);
+      }
+      changed({ added, folderIds: [inbox.id] });
+      emit({ type: 'conversations:changed', accountId: 'a1', threadIds: [] });
+      break;
+    }
     case 'reset':
       writeOutbox([]);
       emit({ type: 'outbox:changed' });

@@ -95,7 +95,7 @@
   font-weight: inherit;
   line-height: inherit;
 }
-.chead {
+.chrow {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -106,8 +106,16 @@
   border-radius: 8px;
   position: relative;
 }
-.ccard.open .chead {
+.ccard.open .chrow {
   min-height: 52px;
+}
+/* The whole header row is one toggle button laid over the content (so the sender name can be a button too). */
+.chead {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  border-radius: 8px;
+  z-index: 1;
 }
 .ccard:not(.open) .chead:hover {
   background: var(--hover);
@@ -117,6 +125,10 @@
   box-shadow:
     inset 0 0 0 2px var(--ring-o),
     inset 0 0 0 3px var(--ring-i);
+}
+.chrow .addr-link {
+  position: relative;
+  z-index: 2;
 }
 .ccard .ud {
   position: absolute;
@@ -248,4 +260,38 @@
 }
 .newpill:hover {
   background: var(--accent-h);
+}
+
+/* ----- cards open and close over 167 ms; a card whose message left closes the same way (DESIGN-SPEC 3.10.4, 3.10.6) ----- */
+.cexp {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 167ms ease;
+}
+.cexp.on {
+  grid-template-rows: 1fr;
+}
+.cexp-in {
+  min-height: 0;
+  overflow: hidden;
+}
+/* A card that is going away: it starts open and closes (its border goes with it). */
+.cleave {
+  margin-bottom: -8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cexp {
+    transition: none;
+  }
+}
+/* over 50 messages: a virtual list of cards (each item is placed by its measured height) */
+.cvirt {
+  width: 100%;
+}
+.cvitem {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-bottom: 8px;
 }

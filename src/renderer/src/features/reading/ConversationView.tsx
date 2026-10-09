@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKE } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKE, type ReactNode } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { AppError, ConversationMessage, GetConversationRes, ListScope, MessageHeader } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import { AccountBadge, Banner, Button, IconButton, Skeleton, openMenuAt, type MenuEntry } from '../../components/ui';
@@ -10,13 +11,66 @@ import { useAccountColor } from '../../lib/hooks';
 import { applyToMessages, applyToRealMessages, deleteMessages, editDraft, noteThreadRead, openCompose, openInWindow, saveAsEml } from '../../lib/actions';
 import { printMessage } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
-import { addressList, fullDate, initials, senderName } from '../../lib/format';
+import { fullDate, initials, senderName } from '../../lib/format';
 import { toastError } from '../../store/toasts';
 import { CardBody, MessageView, SourceDialog } from './ReadingPane';
 import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
+import { AddressButton, AddressLinks } from '../../components/ContactPopover';
 
 /** At most this many cards open by themselves when a conversation is opened (DESIGN-SPEC 3.10.4). */
 const MAX_AUTO_OPEN = 8;
+/** Over this many messages the cards are a virtual list: only the ones near the screen exist (DESIGN-SPEC 3.10.8). */
+export const VIRTUAL_MIN = 50;
+/** Cards open and close over this long (DESIGN-SPEC 1.9 `motion.base`). */
+const MOTION_MS = 167;
+
+const reducedMotion = (): boolean => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * The body of a card: it slides open and closed over 167 ms, or instantly with reduced motion. The content
+ * only exists while the card is open or closing, so collapsed bodies are never fetched (DESIGN-SPEC 3.10.4).
+ */
+function Collapsible({ open, children }: { open: boolean; children: ReactNode }) {
+  const [mounted, setMounted] = useState(open);
+  const [on, setOn] = useState(open);
+  // Opening: the content is there at once, closed for one frame, then open (so the height can change).
+  if (open && !mounted) setMounted(true);
+  useEffect(() => {
+    if (open) {
+      const f = requestAnimationFrame(() => requestAnimationFrame(() => setOn(true)));
+      return () => cancelAnimationFrame(f);
+    }
+    // Closing: the class flips at once (below); the content goes after the slide.
+    const t = setTimeout(
+      () => {
+        setMounted(false);
+        setOn(false);
+      },
+      reducedMotion() ? 0 : MOTION_MS,
+    );
+    return () => clearTimeout(t);
+  }, [open]);
+  if (!mounted) return null;
+  return (
+    <div className={`cexp ${open && on ? 'on' : ''}`}>
+      <div className="cexp-in">{children}</div>
+    </div>
+  );
+}
+
+/** A card whose message left the conversation (moved or deleted elsewhere): it closes over 167 ms and goes. */
+function Leaving({ children }: { children: ReactNode }) {
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    const f = requestAnimationFrame(() => requestAnimationFrame(() => setGone(true)));
+    return () => cancelAnimationFrame(f);
+  }, []);
+  return (
+    <div className={`cexp cleave ${gone ? '' : 'on'}`} aria-hidden="true">
+      <div className="cexp-in">{children}</div>
+    </div>
+  );
+}
 
 type Load =
   | { status: 'loading' }
@@ -78,6 +132,10 @@ export function ConversationView({
   const scroller = useRef<HTMLDivElement>(null);
   const didScroll = useRef(false);
   const [reload, setReload] = useState(0);
+  const [leaving, setLeaving] = useState<ConversationMessage[]>([]);
+  const lastMessages = useRef<ConversationMessage[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [margin, setMargin] = useState(0);
   const scopeKey = JSON.stringify(scope ?? null);
 
   // Messages or conversations changed somewhere: load again (quietly) when this one is meant.
@@ -116,6 +174,14 @@ export function ConversationView({
               }
             }
           }
+          // Cards whose message is gone close over 167 ms (DESIGN-SPEC 3.10.6).
+          const still = new Set(ids);
+          const left = lastMessages.current.filter((m) => !still.has(m.header.id));
+          lastMessages.current = data.messages;
+          if (left.length > 0 && !reducedMotion()) {
+            setLeaving((l) => [...l, ...left]);
+            setTimeout(() => setLeaving((l) => l.filter((m) => !left.includes(m))), MOTION_MS + 60);
+          }
           setLoad({ status: 'ready', data });
         })
         .catch((e) => {
@@ -136,6 +202,54 @@ export function ConversationView({
   const real = useMemo(() => (data ? data.messages.filter((m) => !m.isDraft) : []), [data]);
   const allOpen = real.length > 0 && real.every((m) => open.has(m.header.id));
 
+  // The cards on screen: the messages plus the ones that are still closing.
+  const shown = useMemo(() => {
+    if (!data) return [] as { m: ConversationMessage; leaving: boolean }[];
+    const all = [
+      ...data.messages.map((m) => ({ m, leaving: false })),
+      ...leaving.filter((l) => !data.messages.some((m) => m.header.id === l.header.id)).map((m) => ({ m, leaving: true })),
+    ];
+    return all.sort((a, b) => a.m.header.date - b.m.header.date || a.m.header.id - b.m.header.id);
+  }, [data, leaving]);
+  const virtual = shown.length > VIRTUAL_MIN;
+
+  // Where the list of cards starts inside the scrolling pane (the title block above it can change height).
+  useEffect(() => {
+    const list = listRef.current;
+    const sc = scroller.current;
+    if (!virtual || !list || !sc) return;
+    const measure = () => {
+      const at = Math.round(list.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop);
+      setMargin((m) => (m === at ? m : at));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(sc);
+    ro.observe(list);
+    return () => ro.disconnect();
+  }, [virtual]);
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virt = useVirtualizer({
+    count: virtual ? shown.length : 0,
+    getScrollElement: () => scroller.current,
+    estimateSize: (i) => (open.has(shown[i]?.m.header.id ?? -1) ? 360 : 64),
+    getItemKey: (i) => shown[i]?.m.header.id ?? i,
+    overscan: 12,
+    scrollMargin: margin,
+  });
+  const indexOfCard = useCallback((id: number) => shown.findIndex((x) => x.m.header.id === id), [shown]);
+  /** Bring a card into view. Over 50 messages it may not exist yet, so the virtual list scrolls to it first. */
+  const showCard = useCallback(
+    (id: number, align: 'start' | 'auto') => {
+      if (virtual) {
+        const i = indexOfCard(id);
+        if (i >= 0) virt.scrollToIndex(i, { align });
+        return;
+      }
+      scroller.current?.querySelector<HTMLElement>(`[data-mid="${id}"]`)?.scrollIntoView({ block: align === 'start' ? 'start' : 'nearest' });
+    },
+    [virtual, indexOfCard, virt],
+  );
+
   // Scroll to the first unread open card, or to the newest one (once).
   useEffect(() => {
     if (!data || didScroll.current) return;
@@ -145,10 +259,16 @@ export function ConversationView({
       if (!el) return;
       const firstUnread = data.messages.find((m) => !m.isDraft && !m.header.seen && open.has(m.header.id));
       const target = firstUnread ?? real[real.length - 1];
+      if (virtual && target) {
+        const i = indexOfCard(target.header.id);
+        if (i >= 0) virt.scrollToIndex(i, { align: 'start' });
+        return;
+      }
       const card = target ? el.querySelector<HTMLElement>(`[data-mid="${target.header.id}"]`) : null;
       if (card && el.scrollHeight > el.clientHeight) el.scrollTop = Math.max(0, card.offsetTop - el.offsetTop - 8);
     });
     return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, open, real]);
 
   const toggle = useCallback((id: number) => {
@@ -174,6 +294,24 @@ export function ConversationView({
   // Alt+Down / Alt+Up: next or previous card header.
   const onKeyDown = (e: RKE<HTMLDivElement>) => {
     if (!e.altKey || e.ctrlKey || e.shiftKey || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    if (virtual) {
+      // Over 50 messages the next card may not exist yet: scroll to it, then put the focus on its header.
+      e.preventDefault();
+      const cardEl = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.ccard[data-mid]');
+      const cur = cardEl ? indexOfCard(Number(cardEl.dataset.mid)) : -1;
+      const want = e.key === 'ArrowDown' ? Math.min(shown.length - 1, cur + 1) : Math.max(0, cur < 0 ? 0 : cur - 1);
+      const target = shown[want];
+      if (!target) return;
+      virt.scrollToIndex(want, { align: 'auto' });
+      let tries = 0;
+      const focusIt = () => {
+        const head = scroller.current?.querySelector<HTMLElement>(`.ccard[data-mid="${target.m.header.id}"] .chead`);
+        if (head) head.focus();
+        else if (++tries < 20) requestAnimationFrame(focusIt);
+      };
+      requestAnimationFrame(focusIt);
+      return;
+    }
     const heads = [...(scroller.current?.querySelectorAll<HTMLElement>('.chead') ?? [])];
     if (heads.length === 0) return;
     e.preventDefault();
@@ -201,6 +339,24 @@ export function ConversationView({
   const count = data?.count ?? row?.conv?.count ?? 0;
   const flagged = row?.flagged ?? false;
   const seen = row?.seen ?? true;
+
+  const renderCard = (m: ConversationMessage, isLeaving: boolean): ReactNode => {
+    const card = (
+      <Card
+        key={m.header.id}
+        m={m}
+        open={open.has(m.header.id)}
+        chip={!m.inCurrentFolder && scope !== undefined}
+        focused={focusedId === m.header.id}
+        onToggle={() => toggle(m.header.id)}
+        onFocusCard={() => setFocusedId(m.header.id)}
+        onSource={() => setSource(m.header.id)}
+        threadId={threadId}
+        scroller={scroller}
+      />
+    );
+    return isLeaving ? <Leaving key={m.header.id}>{card}</Leaving> : card;
+  };
 
   return (
     <>
@@ -305,30 +461,36 @@ export function ConversationView({
               Couldn&apos;t load this conversation. {load.error.message}
             </Banner>
           ) : null}
-          {data
-            ? data.messages.map((m) => (
-                <Card
-                  key={m.header.id}
-                  m={m}
-                  open={open.has(m.header.id)}
-                  chip={!m.inCurrentFolder && scope !== undefined}
-                  focused={focusedId === m.header.id}
-                  onToggle={() => toggle(m.header.id)}
-                  onFocusCard={() => setFocusedId(m.header.id)}
-                  onSource={() => setSource(m.header.id)}
-                  threadId={threadId}
-                  scroller={scroller}
-                />
-              ))
-            : null}
+          {data ? (
+            virtual ? (
+              <div ref={listRef} className="cvirt" style={{ height: virt.getTotalSize(), position: 'relative' }}>
+                {virt.getVirtualItems().map((v) => {
+                  const x = shown[v.index];
+                  if (!x) return null;
+                  return (
+                    <div
+                      key={v.key}
+                      data-index={v.index}
+                      ref={virt.measureElement}
+                      className="cvitem"
+                      style={{ transform: `translateY(${v.start - margin}px)` }}
+                    >
+                      {renderCard(x.m, x.leaving)}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              shown.map((x) => renderCard(x.m, x.leaving))
+            )
+          ) : null}
         </div>
         {newIds.length > 0 ? (
           <button
             type="button"
             className="newpill"
             onClick={() => {
-              const el = scroller.current?.querySelector<HTMLElement>(`[data-mid="${newIds[0]}"]`);
-              el?.scrollIntoView({ block: 'start' });
+              if (newIds[0] !== undefined) showCard(newIds[0], 'start');
               setNewIds([]);
             }}
           >
@@ -428,12 +590,27 @@ function Card({
       onFocusCapture={onFocusCard}
     >
       <h3 className="chh">
-        <button type="button" className="chead" aria-expanded={m.isDraft ? undefined : open} aria-controls={`cb-${h.id}`} onClick={activate} onKeyDown={onHeadKey}>
+        <div className="chrow">
+          <button
+            type="button"
+            className="chead"
+            aria-expanded={m.isDraft ? undefined : open}
+            aria-controls={`cb-${h.id}`}
+            aria-label={`${name}, ${cardDate(h.date)}${m.isDraft ? ', draft' : ''}${open ? '' : `, ${h.snippet}`}`}
+            onClick={activate}
+            onKeyDown={onHeadKey}
+          />
           {isUnread ? <i className="ud" aria-hidden="true" /> : null}
           <span className="cav" aria-hidden="true">{initials(name)}</span>
           <span className="cmain">
             <span className="cl1">
-              <span className="cnm">{name}</span>
+              {open && !m.isDraft && !m.fromMe && h.from ? (
+                <AddressButton className="cnm" address={h.from} accountId={h.accountId} allowRule={canMakeRuleFrom(h)}>
+                  {name}
+                </AddressButton>
+              ) : (
+                <span className="cnm">{name}</span>
+              )}
               {m.isDraft ? <span className="fchip">Draft</span> : chip ? <span className="fchip">{chipLabel(m)}</span> : null}
               <span className="cdt">{cardDate(h.date)}</span>
               {m.isDraft ? null : <Icon name={open ? 'chev-up' : 'chev-d'} />}
@@ -445,13 +622,14 @@ function Card({
               </span>
             ) : null}
           </span>
-        </button>
+        </div>
       </h3>
-      {open && !m.isDraft ? (
+      {!m.isDraft ? (
+        <Collapsible open={open}>
         <div id={`cb-${h.id}`} className="cbody">
           <div className="cmeta">
             <span className="cap">
-              To: {h.to.length ? h.to.slice(0, 3).map((a) => a.name || a.address).join(', ') + (h.to.length > 3 ? `, +${h.to.length - 3}` : '') : '(no recipients)'}{' '}
+              To: {h.to.length ? <AddressLinks list={h.to} max={3} accountId={h.accountId} allowRule={canMakeRuleFrom(h)} /> : '(no recipients)'}{' '}
               <button type="button" className="link plain" aria-expanded={details} onClick={() => setDetails((d) => !d)}>
                 {details ? 'Hide details' : 'Details'}
               </button>
@@ -466,16 +644,17 @@ function Card({
           {details ? (
             <dl className="rdetails">
               <dt>From</dt>
-              <dd>{h.from ? addressList([h.from]) : 'Unknown'}</dd>
+              <dd>{h.from ? <AddressLinks list={[h.from]} full accountId={h.accountId} allowRule={canMakeRuleFrom(h)} /> : 'Unknown'}</dd>
               <dt>To</dt>
-              <dd>{addressList(h.to) || '-'}</dd>
-              {h.cc.length ? (<><dt>Cc</dt><dd>{addressList(h.cc)}</dd></>) : null}
+              <dd>{h.to.length ? <AddressLinks list={h.to} full accountId={h.accountId} allowRule={canMakeRuleFrom(h)} /> : '-'}</dd>
+              {h.cc.length ? (<><dt>Cc</dt><dd><AddressLinks list={h.cc} full accountId={h.accountId} allowRule={canMakeRuleFrom(h)} /></dd></>) : null}
               <dt>Date</dt>
               <dd>{fullDate(h.date)}</dd>
             </dl>
           ) : null}
           <CardBody header={h} />
         </div>
+      </Collapsible>
       ) : null}
     </section>
   );
