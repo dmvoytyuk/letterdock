@@ -27,11 +27,15 @@ export type ShortcutId =
   | 'undo'
   | 'print'
   | 'closeWindow'
+  | 'convNext'
+  | 'convPrev'
+  | 'send'
+  | 'sendLater'
   | 'back';
 
 export interface Shortcut {
   id: ShortcutId;
-  group: 'Global' | 'Message list and reading';
+  group: 'Global' | 'Message list and reading' | 'Writing a message';
   label: string;
   /** Display text. Alternatives are separated by " / ". */
   keys: string;
@@ -203,11 +207,39 @@ export const SHORTCUTS: Shortcut[] = [
     match: [k('a', { ctrl: true })],
   },
   {
+    id: 'convNext',
+    group: 'Message list and reading',
+    label: 'Next message in a conversation (reading pane)',
+    keys: 'Alt+Down',
+    match: [k('ArrowDown', { alt: true })],
+  },
+  {
+    id: 'convPrev',
+    group: 'Message list and reading',
+    label: 'Previous message in a conversation (reading pane)',
+    keys: 'Alt+Up',
+    match: [k('ArrowUp', { alt: true })],
+  },
+  {
     id: 'undo',
     group: 'Message list and reading',
     label: 'Undo last delete, archive or move',
     keys: 'Ctrl+Z',
     match: [k('z', { ctrl: true })],
+  },
+  {
+    id: 'send',
+    group: 'Writing a message',
+    label: 'Send',
+    keys: 'Ctrl+Enter',
+    match: [k('Enter', { ctrl: true })],
+  },
+  {
+    id: 'sendLater',
+    group: 'Writing a message',
+    label: 'Open the Send later menu',
+    keys: 'Ctrl+Shift+Enter',
+    match: [k('Enter', { ctrl: true, shift: true })],
   },
 ];
 

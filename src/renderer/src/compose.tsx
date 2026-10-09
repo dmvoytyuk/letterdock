@@ -6,6 +6,7 @@ import type { PrepareComposeReq } from '../../shared/ipc';
 import { ComposeApp } from './features/compose/ComposeApp';
 import './styles/app.css';
 import './styles/compose.css';
+import './styles/scheduled.css';
 
 /** Reads the request main put in the URL hash. */
 export function readComposeRequest(hash: string = location.hash): PrepareComposeReq {

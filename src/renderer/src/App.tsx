@@ -6,6 +6,7 @@ import { SettingsPage } from './features/settings/SettingsPage';
 import { AddAccountDialog } from './features/account/AddAccountDialog';
 import { CheatsheetDialog, FolderDialogHost, RemoveAccountDialogHost } from './features/dialogs/Dialogs';
 import { MailDialogsHost } from './features/dialogs/MailDialogs';
+import { ScheduledDialogsHost } from './features/scheduled/ScheduledPane';
 import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { Banner, Button, MenuHost, ToastHost } from './components/ui';
 import { useApp } from './store/app';
@@ -89,6 +90,7 @@ export function App() {
         <RemoveAccountDialogHost />
         <CheatsheetDialog />
         <MailDialogsHost />
+        <ScheduledDialogsHost />
         <MenuHost />
         <ToastHost />
       </div>

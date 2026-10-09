@@ -3,6 +3,7 @@ import { Icon } from '../../components/Icon';
 import { useApp } from '../../store/app';
 import { useList } from '../../store/list';
 import { useOutbox } from '../../store/outbox';
+import { openScheduledView, scheduledTarget, useScheduled } from '../../store/scheduled';
 import { useUi } from '../../store/ui';
 import { useUpdates } from '../../store/updates';
 import { toast, reportActionError } from '../../store/toasts';
@@ -94,6 +95,7 @@ export function StatusBar() {
   const grouped = useList((s) => s.grouped);
   const selectedCount = useList((s) => s.selectedIds.length);
   const outbox = useOutbox((s) => s.items);
+  const scheduled = useScheduled((s) => s.count);
   const update = useUpdates((s) => s.status);
   const tier = useTier();
   const [busy, setBusy] = useState(false);
@@ -106,9 +108,15 @@ export function StatusBar() {
     folders,
     counts,
     outboxCount: outbox.length,
+    scheduledCount:
+      view.kind === 'scheduled'
+        ? view.accountId === null
+          ? (scheduled?.total ?? 0)
+          : (scheduled?.perAccount.find((p) => p.accountId === view.accountId)?.total ?? 0)
+        : 0,
     list: { scopeKind: listScopeKind, isSearch, loading, total, itemCount, selectedCount, grouped },
   });
-  const rightAll = rightItems(update, outbox, now);
+  const rightAll = rightItems(update, outbox, now, scheduled);
   const right = tier >= 3 ? rightAll.slice(0, 1) : rightAll;
 
   // Mail that is still inside the "Undo send" wait appears when the wait ends.
@@ -341,6 +349,33 @@ function RightView({
             </span>
           ) : null}
         </span>
+      </>
+    );
+  }
+
+  if (item.id === 'scheduled') {
+    const open = () => openScheduledView(scheduledTarget(useScheduled.getState().count));
+    return (
+      <>
+        {div}
+        <button
+          type="button"
+          className={`sb-btn ${glyphOnly ? 'sb-icon' : ''}`}
+          title={`${item.text}. ${item.tip}`}
+          aria-label={`${item.text}. ${item.tip}`}
+          onClick={open}
+        >
+          <span className="sb-gl sb-mute" aria-hidden="true">
+            <Icon name="clock" />
+          </span>
+          {glyphOnly ? null : (
+            <span className="sb-tx">
+              {item.main}
+              {item.main && item.overdue ? ', ' : ''}
+              {item.overdue ? <span className="warnT">{item.overdue}</span> : null}
+            </span>
+          )}
+        </button>
       </>
     );
   }

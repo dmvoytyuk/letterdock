@@ -78,8 +78,8 @@ export function useGlobalShortcuts(): void {
       const list = useList.getState();
       const ids = list.selectedIds.length ? list.selectedIds : list.focusId !== null ? [list.focusId] : [];
       const first = list.items.find((m) => m.id === ids[0]);
-      // The outbox view has no message list on screen: message keys must not touch rows that are hidden.
-      const messageLevel = ui.page === 'mail' && ui.view.kind !== 'outbox';
+      // The outbox and Scheduled views have no message list on screen (Scheduled has its own keys): message keys must not touch rows that are hidden.
+      const messageLevel = ui.page === 'mail' && ui.view.kind !== 'outbox' && ui.view.kind !== 'scheduled';
 
       const run = (fn: () => void) => {
         e.preventDefault();

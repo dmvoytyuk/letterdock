@@ -12,6 +12,7 @@ import { reportActionError, toast } from '../../store/toasts';
 import { markAllRead, moveMessages, newMessage } from '../../lib/actions';
 import { getDrag } from '../../lib/dnd';
 import { useOutbox } from '../../store/outbox';
+import { useScheduled } from '../../store/scheduled';
 
 const ROLE_ORDER: FolderRole[] = ['inbox', 'drafts', 'sent', 'archive', 'all', 'junk', 'trash'];
 const ROLE_ICON: Record<FolderRole, IconName> = {
@@ -246,6 +247,7 @@ function Rail({
   const counts = useApp((s) => s.counts);
   const [active, setActive] = useState('new');
   const outboxItems = useOutbox((s) => s.items);
+  const scheduledCount = useScheduled((s) => s.count);
 
   const onKey = (e: RKE<HTMLElement>) => {
     const t = e.target as HTMLElement;
@@ -326,6 +328,7 @@ function Rail({
             folders={folders}
             counts={counts}
             outbox={outboxItems.filter((i) => i.accountId === a.id).length}
+            scheduled={scheduledCount?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0}
             roving={roving(`acct-${a.id}`)}
           />
         ))}
@@ -350,6 +353,7 @@ function RailAccount({
   folders,
   counts,
   outbox,
+  scheduled,
   roving,
 }: {
   account: Account;
@@ -357,6 +361,7 @@ function RailAccount({
   folders: Folder[];
   counts: ReturnType<typeof useApp.getState>['counts'];
   outbox: number;
+  scheduled: number;
   roving: RovingProps;
 }) {
   const view = useUi((s) => s.view);
@@ -368,7 +373,7 @@ function RailAccount({
     (view.kind === 'account' && view.accountId === a.id) ||
     (view.kind === 'folder' && folders.find((f) => f.id === view.folderId)?.accountId === a.id);
   const state = kind === 'idle' ? '' : syncText(kind, status);
-  const label = [a.displayName, unread ? `${unread} unread` : '', state, outbox ? `${outbox} in Outbox` : '']
+  const label = [a.displayName, unread ? `${unread} unread` : '', state, outbox ? `${outbox} in Outbox` : '', scheduled ? `${scheduled} scheduled` : '']
     .filter(Boolean)
     .join(', ');
   const open = () =>
@@ -386,6 +391,7 @@ function RailAccount({
       };
     });
     if (outbox > 0) items.push({ label: `Outbox (${outbox})`, icon: 'send', onSelect: () => useUi.getState().setView({ kind: 'outbox' }) });
+    if (scheduled > 0) items.push({ label: `Scheduled (${scheduled})`, icon: 'clock', onSelect: () => useUi.getState().setView({ kind: 'scheduled', accountId: a.id }) });
     if (items.length) openMenuAt(el, items);
   };
   return (
@@ -420,6 +426,10 @@ function RailAccount({
         <span className="obadge" aria-hidden="true">
           {outbox > 9 ? '9+' : outbox}
         </span>
+      ) : scheduled > 0 ? (
+        <span className="obadge sch" aria-hidden="true">
+          <Icon name="clock" />
+        </span>
       ) : null}
     </button>
   );
@@ -448,6 +458,8 @@ function AccountBlock({
   const springRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outboxCount = useOutbox((s) => s.items.filter((i) => i.accountId === a.id).length);
   const outboxFailed = useOutbox((s) => s.items.some((i) => i.accountId === a.id && i.state === 'failed'));
+  const scheduledTotal = useScheduled((s) => s.count?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0);
+  const scheduledHeld = useScheduled((s) => s.count?.perAccount.find((p) => p.accountId === a.id)?.held ?? 0);
 
   const mine = useMemo(() => folders.filter((f) => f.accountId === a.id), [folders, a.id]);
   const { main, more } = useMemo(() => orderFolders(mine), [mine]);
@@ -721,6 +733,29 @@ function AccountBlock({
               <Icon name="send" />
               <span className="nm">Outbox</span>
               <span className={`cnt ${outboxFailed ? 'bad-cnt' : ''}`}>{outboxCount}</span>
+            </div>
+          ) : null}
+          {scheduledTotal > 0 ? (
+            <div
+              role="treeitem"
+              aria-level={2}
+              aria-selected={view.kind === 'scheduled' && view.accountId === a.id}
+              aria-label={`Scheduled, ${scheduledTotal} ${scheduledTotal === 1 ? 'message' : 'messages'}${scheduledHeld ? `, ${scheduledHeld} overdue` : ''}`}
+              tabIndex={0}
+              data-nav
+              className={`srow f inset-focus ${view.kind === 'scheduled' && view.accountId === a.id ? 'sel' : ''}`}
+              style={{ paddingLeft: 36 }}
+              onClick={() => useUi.getState().setView({ kind: 'scheduled', accountId: a.id })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  useUi.getState().setView({ kind: 'scheduled', accountId: a.id });
+                }
+              }}
+            >
+              <Icon name="clock" />
+              <span className="nm">Scheduled</span>
+              <span className="cnt tot" aria-hidden="true">{scheduledTotal}</span>
             </div>
           ) : null}
           {more.length > 0 ? (

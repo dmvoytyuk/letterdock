@@ -3,6 +3,8 @@ import { Sidebar } from '../sidebar/Sidebar';
 import { MessageList } from '../list/MessageList';
 import { ReadingPane } from '../reading/ReadingPane';
 import { OutboxPane } from '../outbox/OutboxPane';
+import { ScheduledList, ScheduledReader } from '../scheduled/ScheduledPane';
+import { useScheduled } from '../../store/scheduled';
 import { ResizeHandle } from '../../components/ui';
 import { LIMITS, useUi } from '../../store/ui';
 import { useList } from '../../store/list';
@@ -16,6 +18,8 @@ export function MailPanes() {
   const readerOpen = useUi((s) => s.readerOpen);
   const selectedCount = useList((s) => s.selectedIds.length);
   const outbox = useUi((s) => s.view.kind === 'outbox');
+  const scheduled = useUi((s) => s.view.kind === 'scheduled');
+  const scheduledSelected = useScheduled((s) => s.selectedId !== null);
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(window.innerWidth);
 
@@ -34,7 +38,9 @@ export function MailPanes() {
   const listEff = Math.max(LIMITS.list.min, Math.min(listCap, maxList, LIMITS.list.max));
 
   // Narrow: only the list or only the reading pane is visible.
-  const showReader = mode === 'narrow' && readerOpen && selectedCount >= 1;
+  const showReader = mode === 'narrow' && readerOpen && (scheduled ? scheduledSelected : selectedCount >= 1);
+  const List = scheduled ? ScheduledList : MessageList;
+  const Reader = scheduled ? ScheduledReader : ReadingPane;
 
   // Closing the drawer with Escape or a click outside.
   useEffect(() => {
@@ -73,14 +79,14 @@ export function MailPanes() {
         <OutboxPane />
       ) : mode === 'narrow' ? (
         showReader ? (
-          <ReadingPane />
+          <Reader />
         ) : (
-          <MessageList className="fill" />
+          <List className="fill" />
         )
       ) : (
         <>
           <div style={{ width: listEff, display: 'flex', flex: 'none', minWidth: 0 }}>
-            <MessageList className="fill" />
+            <List className="fill" />
           </div>
           <ResizeHandle
             label="Resize message list"
@@ -90,7 +96,7 @@ export function MailPanes() {
             onChange={(v) => useUi.setState({ listW: v })}
             onReset={() => useUi.setState({ listW: LIMITS.list.def })}
           />
-          <ReadingPane />
+          <Reader />
         </>
       )}
       {drawerOpen ? (

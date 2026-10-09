@@ -26,6 +26,8 @@ export type View =
   | { kind: 'account'; accountId: AccountId }
   | { kind: 'folder'; folderId: FolderId }
   | { kind: 'outbox' }
+  /** Mail waiting to be sent later (DESIGN-SPEC 3.11). `accountId` null = every account. */
+  | { kind: 'scheduled'; accountId: AccountId | null }
   | { kind: 'search'; query: string; accountId: AccountId | null };
 
 export type Page = 'mail' | 'settings';
@@ -178,8 +180,8 @@ export const useUi = create<UiState>()(
       exitSearchOrOutbox: () =>
         set((s) =>
           s.view.kind === 'search'
-            ? { view: s.prevView.kind === 'outbox' ? { kind: 'all' } : s.prevView }
-            : s.view.kind === 'outbox'
+            ? { view: s.prevView.kind === 'outbox' || s.prevView.kind === 'scheduled' ? { kind: 'all' } : s.prevView }
+            : s.view.kind === 'outbox' || s.view.kind === 'scheduled'
               ? { view: { kind: 'all' } }
               : s,
         ),

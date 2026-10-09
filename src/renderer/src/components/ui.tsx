@@ -482,24 +482,36 @@ export type MenuEntry =
       disabled?: boolean;
       onSelect: () => void;
     }
+  /** A label for the group below it. Not selectable. */
+  | { heading: string }
   | 'sep';
 
+interface MenuOptions {
+  /** Fixed width in px (default: as wide as the items need). */
+  width?: number;
+  /** Called when the menu closes by any way (Esc, outside click, a choice). */
+  onClose?: () => void;
+}
 interface MenuState {
-  menu: { x: number; y: number; items: MenuEntry[]; returnFocus: HTMLElement | null } | null;
-  open: (x: number, y: number, items: MenuEntry[]) => void;
+  menu: { x: number; y: number; items: MenuEntry[]; returnFocus: HTMLElement | null; opts: MenuOptions } | null;
+  open: (x: number, y: number, items: MenuEntry[], opts?: MenuOptions) => void;
   close: () => void;
 }
-export const useMenu = create<MenuState>((set) => ({
+export const useMenu = create<MenuState>((set, get) => ({
   menu: null,
-  open: (x, y, items) =>
-    set({ menu: { x, y, items, returnFocus: document.activeElement as HTMLElement | null } }),
-  close: () => set({ menu: null }),
+  open: (x, y, items, opts = {}) =>
+    set({ menu: { x, y, items, returnFocus: document.activeElement as HTMLElement | null, opts } }),
+  close: () => {
+    const m = get().menu;
+    set({ menu: null });
+    m?.opts.onClose?.();
+  },
 }));
 
 /** Open a menu below a button. */
-export function openMenuAt(el: HTMLElement, items: MenuEntry[]): void {
+export function openMenuAt(el: HTMLElement, items: MenuEntry[], opts?: MenuOptions): void {
   const r = el.getBoundingClientRect();
-  useMenu.getState().open(r.left, r.bottom + 2, items);
+  useMenu.getState().open(r.left, r.bottom + 2, items, opts);
 }
 
 export function MenuHost() {
@@ -581,13 +593,22 @@ export function MenuHost() {
       ref={ref}
       className="menu"
       role="menu"
-      style={{ left: pos?.left ?? menu.x, top: pos?.top ?? menu.y, visibility: pos ? 'visible' : 'hidden' }}
+      style={{
+        left: pos?.left ?? menu.x,
+        top: pos?.top ?? menu.y,
+        visibility: pos ? 'visible' : 'hidden',
+        ...(menu.opts.width ? { width: menu.opts.width } : {}),
+      }}
       onKeyDown={onKey}
       onContextMenu={(e) => e.preventDefault()}
     >
       {menu.items.map((it, i) =>
         it === 'sep' ? (
           <div key={i} className="msep" role="separator" />
+        ) : 'heading' in it ? (
+          <div key={i} className="mhead" role="presentation">
+            {it.heading}
+          </div>
         ) : (
           <button
             key={i}
@@ -673,7 +694,7 @@ function ToastView({ id }: { id: number }) {
           {t.secondaryLabel}
         </button>
       ) : null}
-      {t.tone === 'danger' ? (
+      {t.tone === 'danger' || t.duration === 0 ? (
         <IconButton icon="x" label="Dismiss" size="xs" onClick={() => dismiss(id)} />
       ) : null}
       {showDetails && t.details ? (

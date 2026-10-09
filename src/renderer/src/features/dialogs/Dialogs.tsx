@@ -238,7 +238,7 @@ function KeyChips({ keys }: { keys: string }) {
 }
 
 export function ShortcutTable() {
-  const groups = ['Global', 'Message list and reading'] as const;
+  const groups = ['Global', 'Message list and reading', 'Writing a message'] as const;
   return (
     <table className="keys">
       <caption className="sr-only">Keyboard shortcuts</caption>

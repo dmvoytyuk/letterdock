@@ -1887,6 +1887,14 @@ select.inp {
   text-align: left;
   white-space: nowrap;
 }
+.menu .mhead {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--t2);
+  white-space: normal;
+}
 .menu .mi:hover,
 .menu .mi:focus {
   background: var(--hover);

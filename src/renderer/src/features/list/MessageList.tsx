@@ -60,6 +60,11 @@ export function viewTitle(view: View, accounts: Account[], folders: Folder[]): s
     }
     case 'outbox':
       return 'Outbox';
+    case 'scheduled': {
+      if (view.accountId === null) return 'Scheduled · all accounts';
+      const a = accounts.find((x) => x.id === view.accountId);
+      return `${a?.displayName ?? 'Account'} / Scheduled`;
+    }
     case 'search':
       return `Results for "${view.query}"`;
   }

@@ -398,7 +398,46 @@ const readActivity = (): RuleActivityItem[] => LS.get<RuleActivityItem[]>('rules
 interface FakeScheduled extends ScheduledItem {
   req: SendReq;
 }
-const readScheduled = (): FakeScheduled[] => LS.get<FakeScheduled[]>('scheduled', []);
+/** One of each state of the Scheduled view (DESIGN-SPEC 3.11), made once. Clear `fake.scheduled` in localStorage to make them again. */
+function seedScheduled(): FakeScheduled[] {
+  const t = Date.now();
+  const H = 3_600_000;
+  const day = (n: number, hour: number) => {
+    const d = new Date(t);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, hour, 0).getTime();
+  };
+  const make = (
+    id: number,
+    accountId: string,
+    subject: string,
+    to: Address[],
+    sendAt: number,
+    extra: Partial<ScheduledItem> = {},
+    text = 'Hi, here is the text I wrote earlier. It is sent by Letterdock at the time you chose.',
+  ): FakeScheduled => {
+    const req: SendReq = { draftId: `sch-draft-${id}`, accountId, to, cc: [], bcc: [], subject, html: `<p>${text}</p>`, attachmentTokens: extra.hasAttachments ? ['tok'] : [] };
+    return { id, accountId, draftId: req.draftId, subject, to, cc: [], snippet: text, hasAttachments: false, sendAt, createdAt: t - H, status: 'scheduled', waiting: null, lastError: null, attempt: 0, overdueMs: 0, ...extra, req };
+  };
+  const jane = [{ name: 'Jane Cooper', address: 'jane@example.com' }];
+  const evening = day(0, 18) > t + 2 * H ? day(0, 18) : t + 3 * H;
+  return [
+    make(101, 'a1', 'Offsite venue shortlist', jane, evening, { hasAttachments: true }),
+    make(102, 'a1', 'Happy birthday, Marcus!', [{ name: 'Marcus Webb', address: 'marcus@example.com' }], day(1, 8)),
+    make(103, 'a1', 'Contract draft v2', [{ name: 'Priya Nair', address: 'priya@example.com' }], t - 20_000, { status: 'sending' }),
+    make(104, 'a1', 'Parking permit', [{ address: 'office@example.com' }], t - 90_000, { waiting: 'offline' }),
+    make(105, 'a2', 'Q4 numbers for Tom', [{ name: 'Tom Ellery', address: 'tom@example.com' }, { address: 'finance@example.com' }], t - 120_000, { waiting: 'signIn' }),
+    make(106, 'a2', 'See you at 9 tomorrow', [{ name: 'Sofia Marchetti', address: 'sofia@example.com' }], t - 3 * 86_400_000, { status: 'held', overdueMs: 3 * 86_400_000 }),
+    make(107, 'a3', 'Weekly report', [{ name: 'Atlas Cloud Billing', address: 'billing@example.com' }], day(6, 9)),
+    make(108, 'a3', 'Photos from the weekend', jane, t - 40 * 60_000, { status: 'failed', lastError: 'One of the attachments is no longer on this PC.', hasAttachments: true }),
+  ];
+}
+const readScheduled = (): FakeScheduled[] => {
+  const stored = LS.get<FakeScheduled[] | null>('scheduled', null);
+  if (stored) return stored;
+  const seeded = seedScheduled();
+  LS.set('scheduled', seeded);
+  return seeded;
+};
 const writeScheduled = (l: FakeScheduled[]) => LS.set('scheduled', l);
 const strip = ({ req: _req, ...item }: FakeScheduled): ScheduledItem => ({ ...item, overdueMs: Math.max(0, Date.now() - item.sendAt) });
 
@@ -1066,9 +1105,16 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       const list = readScheduled();
       const it = list.find((x) => x.id === r!.id);
       if (!it) return err('NOT_FOUND', 'That scheduled message is no longer there.');
-      writeScheduled(list.filter((x) => x.id !== it.id));
+      it.status = 'sending';
+      it.waiting = null;
+      writeScheduled(list);
       emit({ type: 'scheduled:changed' });
-      return delay({ ...strip(it), status: 'sending' } satisfies ScheduledItem, 80);
+      // On its way, then gone (it is in Sent then).
+      setTimeout(() => {
+        writeScheduled(readScheduled().filter((x) => x.id !== it.id));
+        emit({ type: 'scheduled:changed' });
+      }, 1800);
+      return delay(strip(it), 80);
     }
     case 'scheduled.cancel': {
       const list = readScheduled();

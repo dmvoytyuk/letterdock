@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Account, Address, AppError, ComposeDraft, DraftAttachment, PrepareComposeReq, SendReq } from '../../../../shared/ipc';
+import { MAX_SCHEDULED, type Account, type Address, type AppError, type ComposeDraft, type DraftAttachment, type PrepareComposeReq, type SendReq } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import { AccountBadge, Banner, Button, Dialog, IconButton, MenuHost, ToastHost, openMenuAt, useMenu } from '../../components/ui';
 import { useApp } from '../../store/app';
@@ -19,9 +19,31 @@ import {
 } from '../../lib/compose';
 import { toast, toastError } from '../../store/toasts';
 import { RecipientField, type RecipientKind } from './RecipientField';
+import { SendButton, type SendButtonHandle } from './SendButton';
+import { SchedulePickerDialog } from '../scheduled/SchedulePickerDialog';
+import { whenText } from '../../lib/schedule';
 import { FormatBar, RichEditor, type RichEditorHandle, type ToolbarState } from './RichEditor';
 
 const AUTOSAVE_MS = 10_000;
+
+/** "Edit" on a scheduled message leaves its old time here for the compose window it opens. */
+const PAUSED_KEY = 'letterdock.scheduledPaused.';
+function readPaused(draftId: string): number | null {
+  try {
+    const v = localStorage.getItem(PAUSED_KEY + draftId);
+    const at = v ? (JSON.parse(v) as { sendAt?: number }).sendAt : undefined;
+    return typeof at === 'number' ? at : null;
+  } catch {
+    return null;
+  }
+}
+function clearPaused(draftId: string): void {
+  try {
+    localStorage.removeItem(PAUSED_KEY + draftId);
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Entry component of the compose window: loads what it needs, then shows the form. */
 export function ComposeApp({ request }: { request: PrepareComposeReq }) {
@@ -128,6 +150,14 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [linkDlg, setLinkDlg] = useState<{ hasSelection: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Send later (DESIGN-SPEC 3.11): the date and time dialog, how many are scheduled already, and the
+  // time of a message that was being edited ("Edit" on a scheduled message hands it over in localStorage).
+  const [pickOpen, setPickOpen] = useState(false);
+  const [scheduledTotal, setScheduledTotal] = useState(0);
+  const [pausedFor] = useState<number | null>(() => readPaused(draft.draftId));
+  const [doneText, setDoneText] = useState('Message sent. You can close this window.');
+  const sendBtn = useRef<SendButtonHandle>(null);
+  const pendingSendAt = useRef<number | null>(null);
 
   const editor = useRef<RichEditorHandle>(null);
   const toInput = useRef<HTMLInputElement>(null);
@@ -191,6 +221,13 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
   });
 
   const isMeaningful = () => reopened || snapRef.current() !== initialSnap.current;
+
+  useEffect(() => {
+    clearPaused(draft.draftId);
+    call('scheduled.count')
+      .then((c) => setScheduledTotal(c.total))
+      .catch(() => undefined);
+  }, [draft.draftId]);
 
   useEffect(() => {
     // The editor fills itself in its own effect, which runs before this one.
@@ -330,8 +367,10 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
 
   // ----- sending -----
   const trySend = useCallback(
-    async (skip: { subject?: boolean; attach?: boolean } = {}) => {
+    async (skip: { subject?: boolean; attach?: boolean } = {}, sendAt: number | null = null) => {
       if (sending || sent.current) return;
+      // The two questions below ask again through this function: keep the chosen time.
+      pendingSendAt.current = sendAt;
       setBanner(null);
       setToError(null);
       setFixError(null);
@@ -369,7 +408,13 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
       if (timer.current) clearTimeout(timer.current);
       setSending(true);
       try {
-        await call('compose.send', buildReq());
+        if (sendAt !== null) {
+          // Kept on this PC and sent at that time. The engine takes it out of Drafts: no discard needed.
+          await call('scheduled.create', { draftId: draft.draftId, sendAt, draft: buildReq() });
+          setDoneText(`Message scheduled for ${whenText(sendAt)}. You can close this window.`);
+        } else {
+          await call('compose.send', buildReq());
+        }
         sent.current = true;
         handled.current = true;
         setSentDone(true);
@@ -380,7 +425,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
         setBanner(err.message);
       }
     },
-    [sending, to, cc, bcc, total, subject, atts.length, pending.length, buildReq, withPending],
+    [sending, to, cc, bcc, total, subject, atts.length, pending.length, buildReq, withPending, draft.draftId],
   );
   const trySendRef = useRef(trySend);
   useEffect(() => {
@@ -434,7 +479,10 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const k = e.key.toLowerCase();
-      if (e.ctrlKey && k === 'enter') {
+      if (e.ctrlKey && e.shiftKey && k === 'enter') {
+        e.preventDefault();
+        sendBtn.current?.openMenu();
+      } else if (e.ctrlKey && k === 'enter') {
         e.preventDefault();
         void trySendRef.current();
       } else if (e.altKey && !e.ctrlKey && k === 's') {
@@ -534,9 +582,16 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
       </header>
 
       <div className="ctool" role="toolbar" aria-label="Message actions">
-        <Button variant="primary" icon="send" loading={sending} disabled={sentDone || accountBad} onClick={() => void trySend()} title="Send (Ctrl+Enter)">
-          Send
-        </Button>
+        <SendButton
+          ref={sendBtn}
+          busy={sending}
+          disabled={sentDone || accountBad}
+          sameTime={pausedFor}
+          limitReached={scheduledTotal >= MAX_SCHEDULED}
+          onSend={() => void trySend()}
+          onSendLater={(at) => void trySend({}, at)}
+          onPick={() => setPickOpen(true)}
+        />
         <Button variant="subtle" icon="clip" onClick={() => void pickFiles()} title="Attach files (Ctrl+Shift+H)">
           Attach
         </Button>
@@ -552,6 +607,14 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
         </Button>
       </div>
 
+      {pausedFor !== null ? (
+        <div className="cstrip" role="status">
+          <Icon name="clock" />
+          <span>
+            This message was scheduled for {whenText(pausedFor)}. Scheduling is paused while you edit. Send it now, or use Send later.
+          </span>
+        </div>
+      ) : null}
       {banner ? (
         <Banner tone="danger" onDismiss={() => setBanner(null)} className="cbanner">
           {banner}
@@ -708,7 +771,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
           <p>This message has no subject.</p>
           <div className="foot">
             <Button onClick={() => { setConfirm(null); subjectInput.current?.focus(); }}>Cancel</Button>
-            <Button variant="primary" onClick={() => { setConfirm(null); void trySend({ subject: true }); }}>
+            <Button variant="primary" onClick={() => { setConfirm(null); void trySend({ subject: true }, pendingSendAt.current); }}>
               Send anyway
             </Button>
           </div>
@@ -719,7 +782,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
           <p>You wrote &ldquo;attached&rdquo; but there is no attachment.</p>
           <div className="foot">
             <Button onClick={() => { setConfirm(null); void pickFiles(); }}>Attach a file</Button>
-            <Button variant="primary" onClick={() => { setConfirm(null); void trySend({ attach: true }); }}>
+            <Button variant="primary" onClick={() => { setConfirm(null); void trySend({ attach: true }, pendingSendAt.current); }}>
               Send anyway
             </Button>
           </div>
@@ -736,6 +799,18 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
           </div>
         </Dialog>
       ) : null}
+      {pickOpen ? (
+        <SchedulePickerDialog
+          mode="schedule"
+          initial={pausedFor}
+          total={scheduledTotal}
+          onClose={() => setPickOpen(false)}
+          onConfirm={(at) => {
+            setPickOpen(false);
+            void trySend({}, at);
+          }}
+        />
+      ) : null}
       {linkDlg ? (
         <LinkDialog
           hasSelection={linkDlg.hasSelection}
@@ -751,7 +826,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
       ) : null}
       {sentDone ? (
         <div className="cdrop on-sent" role="status">
-          <div>Message sent. You can close this window.</div>
+          <div>{doneText}</div>
         </div>
       ) : null}
       <MenuHost />

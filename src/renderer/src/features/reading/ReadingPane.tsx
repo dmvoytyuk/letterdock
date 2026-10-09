@@ -1019,14 +1019,11 @@ export function SourceDialog({ id, onClose }: { id: number; onClose: () => void 
 
 
 /**
- * The body of one open card in a conversation (DESIGN-SPEC 3.10.4): the same picture, images and
- * attachments as a single message, without the toolbar and the subject (the card has its own header).
+ * A loaded message body with its own state for images and dark-mode colors, and its attachments.
+ * Used by the cards of a conversation and by the read-only view of a scheduled message.
  */
-export function CardBody({ header }: { header: MessageHeader }) {
-  const epoch = useApp((s) => s.epoch);
+export function BodyPanel({ body, senderAddress, attachments }: { body: MessageBody; senderAddress: string | null; attachments?: React.ReactNode }) {
   const remoteImages = useApp((s) => s.settings?.remoteImages ?? 'block');
-  const [state, setState] = useState<BodyState>({ status: 'loading' });
-  const [attempt, setAttempt] = useState(0);
   const [imagesLoaded, setImagesLoaded] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [colorOverride, setColorOverride] = useState<'original' | 'dark' | null>(null);
@@ -1040,20 +1037,7 @@ export function CardBody({ header }: { header: MessageHeader }) {
         run: () => setColorOverride(colorInfo.dark ? 'original' : 'dark'),
       }
     : null;
-
-  useEffect(() => {
-    let alive = true;
-    call('messages.get', { messageId: header.id })
-      .then((body) => alive && setState({ status: 'ready', body }))
-      .catch((e) => alive && setState({ status: 'error', error: asAppError(e) }));
-    return () => {
-      alive = false;
-    };
-  }, [header.id, attempt, epoch]);
-
-  const body = state.status === 'ready' ? state.body : null;
-  const autoImages = !!body?.senderImagesAllowed && remoteImages === 'allowKnownSenders';
-  const senderAddress = header.from?.address ?? null;
+  const autoImages = !!body.senderImagesAllowed && remoteImages === 'allowKnownSenders';
   const alwaysLoad = async () => {
     if (!senderAddress) return;
     try {
@@ -1065,6 +1049,47 @@ export function CardBody({ header }: { header: MessageHeader }) {
       reportActionError(e);
     }
   };
+  return (
+    <>
+      <BodyView
+        body={body}
+        imagesLoaded={imagesLoaded || autoImages}
+        bannerDismissed={bannerDismissed}
+        senderAddress={senderAddress}
+        onLoadImages={() => setImagesLoaded(true)}
+        onAlways={() => void alwaysLoad()}
+        onDismiss={() => setBannerDismissed(true)}
+        colorOverride={colorOverride}
+        autoFallback={autoFallback}
+        onAutoFallback={() => setAutoFallback(true)}
+        onColorInfo={setColorInfo}
+        onToggleColors={toggleColors?.run ?? null}
+        printRef={printRef}
+        toggleLabel={toggleColors ? { label: toggleColors.label, icon: toggleColors.icon } : null}
+      />
+      {attachments ?? <Attachments list={body.attachments.filter((a) => !a.inline)} />}
+    </>
+  );
+}
+
+/**
+ * The body of one open card in a conversation (DESIGN-SPEC 3.10.4): the same picture, images and
+ * attachments as a single message, without the toolbar and the subject (the card has its own header).
+ */
+export function CardBody({ header }: { header: MessageHeader }) {
+  const epoch = useApp((s) => s.epoch);
+  const [state, setState] = useState<BodyState>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    call('messages.get', { messageId: header.id })
+      .then((body) => alive && setState({ status: 'ready', body }))
+      .catch((e) => alive && setState({ status: 'error', error: asAppError(e) }));
+    return () => {
+      alive = false;
+    };
+  }, [header.id, attempt, epoch]);
 
   if (state.status === 'loading')
     return (
@@ -1091,25 +1116,5 @@ export function CardBody({ header }: { header: MessageHeader }) {
         </Banner>
       </div>
     );
-  return (
-    <>
-      <BodyView
-        body={state.body}
-        imagesLoaded={imagesLoaded || autoImages}
-        bannerDismissed={bannerDismissed}
-        senderAddress={senderAddress}
-        onLoadImages={() => setImagesLoaded(true)}
-        onAlways={() => void alwaysLoad()}
-        onDismiss={() => setBannerDismissed(true)}
-        colorOverride={colorOverride}
-        autoFallback={autoFallback}
-        onAutoFallback={() => setAutoFallback(true)}
-        onColorInfo={setColorInfo}
-        onToggleColors={toggleColors?.run ?? null}
-        printRef={printRef}
-        toggleLabel={toggleColors ? { label: toggleColors.label, icon: toggleColors.icon } : null}
-      />
-      <Attachments list={state.body.attachments.filter((a) => !a.inline)} />
-    </>
-  );
+  return <BodyPanel body={state.body} senderAddress={header.from?.address ?? null} />;
 }

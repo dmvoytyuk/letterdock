@@ -761,6 +761,9 @@ function MailSettings() {
       <p className="hint" style={{ marginTop: -6 }}>
         After you press Send, the message waits this long. Until then you can take it back with Undo.
       </p>
+      <p className="hint" style={{ marginTop: 0 }}>
+        Send later keeps the message on this PC. Letterdock must be running to send it.
+      </p>
       <h2>WRITING</h2>
       <Checkbox
         checked={settings.alwaysShowCcBcc}

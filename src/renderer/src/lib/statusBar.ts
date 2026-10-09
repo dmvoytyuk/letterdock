@@ -1,9 +1,10 @@
 // Text and priorities for the bottom status bar (DESIGN-SPEC 4.8). Pure functions: the component
 // only draws what these return, so the wording and the rules can be tested without a screen.
-import type { Account, AccountId, AccountStatus, Folder, FolderCounts, OutboxItem, UpdateStatus } from '../../../shared/ipc';
+import type { Account, AccountId, AccountStatus, Folder, FolderCounts, OutboxItem, ScheduledCount, UpdateStatus } from '../../../shared/ipc';
 import { syncKindOf, type SyncKind } from '../components/Sync';
 import { totalOfFolder, unreadOfFolder, type SyncProgress } from '../store/app';
 import type { View } from '../store/ui';
+import { whenText } from './schedule';
 
 // ---------- width tiers ----------
 /** 0 = full, 1 = below 1100, 2 = below 900, 3 = below 700, 4 = below 560. */
@@ -138,6 +139,8 @@ export interface MiddleInput {
   folders: Folder[];
   counts: FolderCounts | null;
   outboxCount: number;
+  /** Scheduled messages in the Scheduled view that is open (all accounts, or one). */
+  scheduledCount?: number;
   list: {
     scopeKind: string | null;
     isSearch: boolean;
@@ -169,6 +172,7 @@ export function middleText(i: MiddleInput): string {
   if (i.page === 'settings') return '';
   const { view, list } = i;
   if (view.kind === 'outbox') return i.outboxCount > 0 ? `Outbox · ${messages(i.outboxCount)}` : 'Outbox';
+  if (view.kind === 'scheduled') return (i.scheduledCount ?? 0) > 0 ? `Scheduled · ${messages(i.scheduledCount!)}` : 'Scheduled';
 
   const shown = list.total ?? list.itemCount;
   if (list.isSearch || view.kind === 'search') {
@@ -237,7 +241,9 @@ export function middleText(i: MiddleInput): string {
 export type RightItem =
   | { id: 'ready'; text: string; version: string; tip: string; announce: string }
   | { id: 'downloading'; text: string; percent: number; tip: string; announce: string }
-  | { id: 'outbox'; state: 'failed' | 'sending' | 'queued'; text: string; announce: string };
+  | { id: 'outbox'; state: 'failed' | 'sending' | 'queued'; text: string; announce: string }
+  /** `overdue` is the part that needs a decision ("1 overdue"), drawn in the warning color. */
+  | { id: 'scheduled'; text: string; main: string; overdue: string | null; tip: string; announce: string };
 
 /** Mail still inside the "Undo send" wait is not shown (DESIGN-SPEC 4.8). */
 export function outboxVisible(items: OutboxItem[], now: number): OutboxItem[] {
@@ -250,7 +256,7 @@ export function nextOutboxReveal(items: OutboxItem[], now: number): number | nul
   return waits.length ? Math.min(...waits) : null;
 }
 
-export function rightItems(update: UpdateStatus | null, outbox: OutboxItem[], now: number): RightItem[] {
+export function rightItems(update: UpdateStatus | null, outbox: OutboxItem[], now: number, scheduled: ScheduledCount | null = null): RightItem[] {
   const out: RightItem[] = [];
   if (update?.state === 'ready') {
     out.push({
@@ -279,6 +285,22 @@ export function rightItems(update: UpdateStatus | null, outbox: OutboxItem[], no
     out.push({ id: 'outbox', state: 'sending', text: `Sending ${sending} ${plural(sending, 'message', 'messages')}...`, announce: `Sending ${sending} ${plural(sending, 'message', 'messages')}` });
   } else if (queued > 0) {
     out.push({ id: 'outbox', state: 'queued', text: `${queued} ${plural(queued, 'message', 'messages')} waiting in Outbox`, announce: `${queued} ${plural(queued, 'message', 'messages')} waiting in Outbox` });
+  }
+  // Scheduled mail, lowest priority (DESIGN-SPEC 3.11.6): "3 scheduled", "1 scheduled, 1 overdue".
+  if (scheduled && scheduled.total > 0) {
+    const waiting = scheduled.scheduled;
+    const overdue = scheduled.held > 0 ? `${scheduled.held} overdue` : null;
+    const main = waiting > 0 ? `${waiting} scheduled` : '';
+    const text = [main, overdue].filter(Boolean).join(', ');
+    out.push({
+      id: 'scheduled',
+      text,
+      main,
+      overdue,
+      tip: scheduled.nextSendAt ? `Next: ${whenText(scheduled.nextSendAt, now)}` : 'A scheduled message needs a decision',
+      // No numbers: they change all the time. Said once, when the item first appears.
+      announce: 'Scheduled messages waiting',
+    });
   }
   return out.slice(0, 2);
 }

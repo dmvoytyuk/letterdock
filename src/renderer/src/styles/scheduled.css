@@ -1,0 +1,320 @@
+/* Send later (DESIGN-SPEC 3.11): the split Send button, the date dialog, the Scheduled view. */
+
+/* ---------- split Send button (compose toolbar) ---------- */
+.splitsend {
+  display: inline-flex;
+  height: 32px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--accent);
+  flex: none;
+}
+.splitsend .seg {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.splitsend .seg.main {
+  padding: 0 16px;
+}
+.splitsend .seg.chev {
+  width: 32px;
+}
+.splitsend .seg:hover:not([disabled]) {
+  background: var(--accent-h);
+}
+.splitsend .seg:active:not([disabled]) {
+  background: var(--accent-p);
+}
+.splitsend .seg:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--ring-i),
+    inset 0 0 0 4px var(--ring-o);
+}
+.splitsend .segdiv {
+  width: 1px;
+  background: rgba(255, 255, 255, 0.4);
+}
+:root[data-theme='dark'] .splitsend .segdiv {
+  background: rgba(11, 11, 11, 0.4);
+}
+.splitsend.off {
+  opacity: 0.4;
+}
+.splitsend .seg[disabled] {
+  cursor: default;
+}
+.splitsend .spin {
+  border-color: rgba(255, 255, 255, 0.5);
+  border-top-color: var(--on-accent);
+}
+.cstrip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 16px;
+  background: var(--accent-sub);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 16px;
+  flex: none;
+}
+.cstrip .i {
+  color: var(--accent);
+  flex: none;
+}
+
+/* ---------- date and time dialog ---------- */
+.schform .field {
+  margin-bottom: 12px;
+}
+.schrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.schrow .inp {
+  flex: 1;
+}
+.schsum {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 40px;
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 20px;
+}
+.schsum .i {
+  flex: none;
+  margin-top: 2px;
+  color: var(--t2);
+}
+.schcap {
+  margin: 0 0 4px;
+}
+.schform .banner {
+  margin: 0 0 8px;
+}
+.timelist {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 36px;
+  top: 100%;
+  max-height: 200px;
+  margin-top: 2px;
+  padding: 4px;
+  list-style: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--e2);
+  overflow: auto;
+}
+.timelist li {
+  height: 28px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.timelist li:hover,
+.timelist li.act {
+  background: var(--hover);
+}
+.timelist:focus-visible {
+  outline: 2px solid var(--ring-o);
+  outline-offset: -1px;
+}
+.cal {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  top: 100%;
+  margin-top: 2px;
+  width: 268px;
+  padding: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--e2);
+}
+.calhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.calrow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.calwd {
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--t3);
+  text-align: center;
+}
+.calday {
+  height: 32px;
+  border-radius: 4px;
+  font-size: 13px;
+  display: grid;
+  place-items: center;
+}
+.calday:hover:not([disabled]) {
+  background: var(--hover);
+}
+.calday.out {
+  color: var(--t3);
+}
+.calday[disabled] {
+  color: var(--tdis);
+  opacity: 0.6;
+}
+.calday.on {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.calday:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--ring-o),
+    inset 0 0 0 3px var(--ring-i);
+}
+
+/* ---------- rail badge ---------- */
+.rail-tile .obadge.sch {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  width: 14px;
+}
+.rail-tile .obadge.sch svg.i {
+  width: 10px;
+  height: 10px;
+  stroke-width: 2.6;
+}
+
+/* ---------- Scheduled view ---------- */
+.ghead.static {
+  cursor: default;
+  pointer-events: none;
+}
+.row.sch .l1 .tm,
+.row.sch:hover .l1 .tm {
+  visibility: visible;
+}
+.row.sch:hover .tm,
+.row.sch:hover .ico {
+  visibility: hidden;
+}
+.row.sch .schwhen {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--t2);
+}
+.row.sch .schwhen .i {
+  width: 14px;
+  height: 14px;
+}
+.row.sch .schwhen.warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+.row.sch .schwhen.bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+.row.sch .schwhen.mute,
+.row.sch .schwhen.busy {
+  color: var(--t3);
+}
+.row.sch .snd {
+  font-weight: 600;
+}
+.row.sch .sub2 {
+  color: var(--t2);
+}
+
+/* banner above a scheduled message */
+.schbanner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--accent-sub);
+}
+.schbanner .ic {
+  color: var(--accent);
+  margin-top: 1px;
+  flex: none;
+}
+.schbanner.warn {
+  background: var(--warn-bg);
+}
+.schbanner.warn .ic {
+  color: var(--warn);
+}
+.schbanner.bad {
+  background: var(--danger-bg);
+}
+.schbanner.bad .ic {
+  color: var(--danger);
+}
+.schhead {
+  font-weight: 600;
+  line-height: 20px;
+}
+.schsub {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+}
+.schsub.bad {
+  color: var(--danger);
+}
+.schbanner .acts {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.rdetails.always {
+  margin-top: 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+.row.sch {
+  padding-left: 16px;
+}
+.row.sch.d-compact {
+  height: 56px;
+}
+.row.sch.d-comfortable {
+  height: 68px;
+}
+.row.sch.d-roomy {
+  height: 80px;
+}

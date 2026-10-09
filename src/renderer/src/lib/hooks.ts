@@ -10,6 +10,7 @@ import { handleOutboxEvent, useOutbox } from '../store/outbox';
 import { toast, toastError } from '../store/toasts';
 import { useUpdates } from '../store/updates';
 import { useConvSignal } from '../store/conversations';
+import { handleScheduledEvent, useScheduled } from '../store/scheduled';
 import { backOnlineText, reportDroppedChanges, reportQueueFailure } from './queueFailures';
 
 // ---------- theme ----------
@@ -74,12 +75,14 @@ export function useAppEvents(): void {
   useEffect(() => {
     void useApp.getState().loadAll();
     void useOutbox.getState().refetch();
+    void useScheduled.getState().refetch();
     call('updates.status')
       .then((s) => useUpdates.getState().setStatus(s))
       .catch(() => undefined);
     const off = window.api.on((e) => {
       useApp.getState().handleEvent(e);
       handleOutboxEvent(e);
+      handleScheduledEvent(e);
       if (e.type === 'update:status') {
         useUpdates.getState().setStatus(e.status);
       } else if (e.type === 'action:failed') {
@@ -117,6 +120,7 @@ export function useAppEvents(): void {
         }
         if (relevant) scheduleRefresh();
       } else if (e.type === 'engine:restarted') {
+        void useScheduled.getState().refetch();
         scheduleRefresh();
       } else if (e.type === 'ui:openMessage') {
         const ui = useUi.getState();
