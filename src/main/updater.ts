@@ -10,6 +10,10 @@ export interface UpdaterLike {
   allowPrerelease: boolean;
   allowDowngrade: boolean;
   logger?: unknown;
+  /** Extra headers on every update request (feed pages and files). */
+  requestHeaders?: Record<string, string> | null;
+  /** electron-updater keeps its provider here between checks. Clearing it forces a fresh one. */
+  clientPromise?: unknown;
   on(event: string, listener: (...args: never[]) => void): unknown;
   checkForUpdates(): Promise<unknown>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
@@ -32,12 +36,19 @@ export interface AppUpdaterDeps {
   emit: (status: UpdateStatus) => void;
   /** Runs before quitAndInstall: flush drafts and sends, stop the engine, allow the app to quit. */
   prepareInstall: () => Promise<void>;
+  /** Drops network state the updater could reuse (HTTP cache, kept-alive connections). */
+  resetNetwork?: () => void | Promise<void>;
   now?: () => number;
   startDelayMs?: number;
   intervalMs?: number;
 }
 
 export const FIRST_CHECK_DELAY_MS = 30_000;
+/** GitHub answers its release pages with "max-age=0, must-revalidate". Ask every proxy and cache to revalidate. */
+export const NO_CACHE_HEADERS: Record<string, string> = {
+  'Cache-Control': 'no-cache',
+  Pragma: 'no-cache',
+};
 export const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 interface ReleaseInfo {
@@ -104,6 +115,7 @@ export class AppUpdater {
     u.autoInstallOnAppQuit = true;
     u.allowPrerelease = false;
     u.allowDowngrade = false;
+    u.requestHeaders = { ...u.requestHeaders, ...NO_CACHE_HEADERS };
 
     u.on('checking-for-update', () => {
       this.d.log.info('update check started');
@@ -181,6 +193,14 @@ export class AppUpdater {
     }
     this.set({ state: 'checking', currentVersion: this.d.currentVersion });
     try {
+      // Every check starts clean: a new provider and no reused cache or connection.
+      this.d.updater.clientPromise = null;
+      try {
+        const reset = this.d.resetNetwork?.();
+        if (reset) await reset;
+      } catch (e) {
+        this.d.log.warn({ err: String(e) }, 'could not reset update network state');
+      }
       await this.d.updater.checkForUpdates();
     } catch (e) {
       // electron-updater also emits 'error'; fail() ignores the second report.

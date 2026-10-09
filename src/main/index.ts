@@ -242,6 +242,12 @@ async function boot(): Promise<void> {
     isPackaged: app.isPackaged,
     log,
     autoCheckEnabled: () => settings.get().autoUpdateCheck,
+    // electron-updater makes its requests in this named session.
+    resetNetwork: async () => {
+      const ses = session.fromPartition('electron-updater', { cache: false });
+      await ses.clearCache();
+      await ses.closeAllConnections();
+    },
     emit: (status) => send({ type: 'update:status', status }),
     // Same wait as a normal quit, done BEFORE the installer starts: a draft that was just saved
     // reaches the database, then the engine stops. Close-to-tray must not keep the window alive.

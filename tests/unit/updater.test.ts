@@ -5,6 +5,7 @@ import {
   AppUpdater,
   CHECK_INTERVAL_MS,
   FIRST_CHECK_DELAY_MS,
+  NO_CACHE_HEADERS,
   toUpdateError,
   type UpdaterLike,
 } from '../../src/main/updater';
@@ -60,6 +61,32 @@ afterEach(() => {
 });
 
 describe('AppUpdater', () => {
+  it('sends no-cache headers, keeps existing ones, and starts every check with a fresh provider', async () => {
+    const reset = vi.fn(async () => undefined);
+    const fake = new FakeUpdater() as FakeUpdater & UpdaterLike;
+    fake.requestHeaders = { 'X-Test': '1' };
+    const u = new AppUpdater({
+      updater: fake,
+      currentVersion: '0.2.6',
+      isPackaged: true,
+      log,
+      autoCheckEnabled: () => true,
+      emit: () => undefined,
+      prepareInstall: async () => undefined,
+      resetNetwork: reset,
+    });
+    u.start();
+    expect(fake.requestHeaders).toEqual({ 'X-Test': '1', ...NO_CACHE_HEADERS });
+    fake.clientPromise = Promise.resolve('old provider');
+    fake.checkForUpdates.mockImplementation(async () => {
+      expect(fake.clientPromise).toBeNull();
+      expect(reset).toHaveBeenCalledTimes(1);
+      return null;
+    });
+    await u.check();
+    expect(fake.checkForUpdates).toHaveBeenCalledTimes(1);
+  });
+
   it('is unavailable and never checks in a development build', async () => {
     const { u, fake } = make({ packaged: false });
     u.start();
