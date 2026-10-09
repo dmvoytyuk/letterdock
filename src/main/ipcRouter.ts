@@ -47,7 +47,7 @@ export async function dispatch(
 }
 
 /** Requests that save the user's text. The app waits for these before it quits. */
-const SAVE_CHANNELS = new Set(['compose.saveDraft', 'compose.discard', 'compose.send']);
+const SAVE_CHANNELS = new Set(['compose.saveDraft', 'compose.discard', 'compose.send', 'scheduled.create']);
 const pendingSaves = new Set<Promise<unknown>>();
 
 /** Resolves when the saves in progress are done, or after `timeoutMs`. */
