@@ -268,6 +268,10 @@ export class ActionService implements PendingOpsApi {
   // ---------- entry points ----------
 
   async apply(req: ApplyActionReq): Promise<ApplyActionRes> {
+    if (req.action.type === 'deletePermanent' && req.confirm !== true) {
+      // Nothing is changed until the user said yes (the UI asks, then calls again with confirm).
+      return { succeeded: [], failed: [], requiresConfirm: true, permanent: true };
+    }
     await this.settle(req.messageIds);
     return this.applyInternal(req.messageIds, req.action, true);
   }
@@ -292,9 +296,10 @@ export class ActionService implements PendingOpsApi {
       const row = this.ctx.messages.row(id);
       if (row && row.flag_deleted !== 1 && this.ctx.drafts?.isLocalDraft(row.id)) {
         // A draft that is not on the server yet: delete forgets it; nothing else can be done with it.
-        if (action.type === 'delete') {
+        if (action.type === 'delete' || action.type === 'deletePermanent') {
           await this.ctx.drafts.discardRow(row.id);
           result.succeeded.push(row.id);
+          if (action.type === 'deletePermanent') result.permanent = true;
         } else if (action.type === 'markRead' || action.type === 'flag') {
           result.succeeded.push(row.id);
         } else {
@@ -517,6 +522,12 @@ export class ActionService implements PendingOpsApi {
             dest = await p;
             break;
           }
+          case 'deletePermanent': {
+            const g = permanent.get(src.id) ?? { src, rows: [] };
+            g.rows.push(row);
+            permanent.set(src.id, g);
+            continue;
+          }
           case 'delete': {
             const trash = this.ctx.folders.rowByRole(row.account_id, 'trash');
             if (src.role === 'trash' || !trash) {
@@ -613,6 +624,7 @@ export class ActionService implements PendingOpsApi {
       this.ctx.folders.recomputeCounts(g.src.id);
       this.ctx.hub.changed({ folderIds: [g.src.id], removed: ids });
       result.succeeded.push(...ids);
+      result.permanent = true; // no undo token for these
     }
     if (restored.length > 0 || removedDups.length > 0) {
       for (const f of restoredFolders) this.ctx.folders.recomputeCounts(f);
@@ -1189,6 +1201,20 @@ export class ActionService implements PendingOpsApi {
     // Already gone locally: nothing left to delete.
     this.dropOps(accountId, lost, [], null);
 
+    // Gmail: deleting a message from a label folder only removes that label, the message stays in
+    // All Mail. To really delete it, it goes to Trash first and is deleted there.
+    const trash = this.ctx.folders.rowByRole(accountId, 'trash');
+    if (trash && this.isGmail(accountId)) {
+      for (const [folderId, items] of [...byFolder]) {
+        const from = this.ctx.folders.row(folderId);
+        if (!from || from.role === 'trash' || from.role === 'junk') continue;
+        byFolder.delete(folderId);
+        const moved = await this.gmailToTrash(accountId, from, trash, items);
+        if (moved === 'stalled') return 'stalled';
+        if (moved.length > 0) byFolder.set(trash.id, [...(byFolder.get(trash.id) ?? []), ...moved]);
+      }
+    }
+
     for (const [folderId, items] of byFolder) {
       const folder = this.ctx.folders.row(folderId);
       if (!folder) {
@@ -1239,6 +1265,101 @@ export class ActionService implements PendingOpsApi {
     return 'done';
   }
 
+
+  /**
+   * First half of a permanent delete on Gmail: move the messages to Trash on the server. The local
+   * rows (hidden) and the waiting delete ops follow them, so a failure in the second half (the delete
+   * in Trash) is retried from there and never starts over in the old folder.
+   * Returns the messages now in Trash, or 'stalled' when the connection is down (try again later).
+   */
+  private async gmailToTrash(
+    accountId: string,
+    from: FolderRow,
+    trash: FolderRow,
+    items: { op: DeleteOp; row: MessageRow }[],
+  ): Promise<{ op: DeleteOp; row: MessageRow }[] | 'stalled'> {
+    const uv = items[0]!.op.p.uv;
+    const uidMap = new Map<number, number>();
+    let loc: Located;
+    try {
+      loc = await this.withRetry(() =>
+        this.sessions.get(accountId).run('user', async (c) => {
+          const l = await this.locate(
+            c,
+            from,
+            items.map((i) => ({ uid: i.row.uid, mid: i.row.message_id })),
+            uv,
+          );
+          const live = items
+            .map((i) => l.resolved.get(i.row.uid))
+            .filter((u): u is number => typeof u === 'number');
+          const destPath = this.queue.serverPath(accountId, trash.path, trash.delimiter);
+          const vanished = new Set<number>();
+          for (const part of chunk(live, SERVER_BATCH)) {
+            const res = await this.sendToUids(
+              c,
+              part,
+              'delete',
+              vanished,
+              (set) =>
+                c.messageMove(set, destPath, { uid: true }) as Promise<
+                  { uidMap?: Map<number, number> } | false
+                >,
+              destPath,
+            );
+            if (res && res.uidMap) for (const [a, b] of res.uidMap) uidMap.set(a, b);
+          }
+          this.markVanished(l, vanished);
+          return l;
+        }),
+      );
+    } catch (e) {
+      const ids = items.map((i) => i.row.id);
+      const outcome = this.batchError(
+        items.map((i) => i.op),
+        toAppError(e),
+        ids,
+        () => {
+          this.ctx.messages.setFlagColumn(ids, 'flag_deleted', false);
+          this.ctx.folders.recomputeCounts(from.id);
+          this.ctx.hub.changed({ folderIds: [from.id], added: ids });
+        },
+        'delete',
+      );
+      return outcome === 'stalled' ? 'stalled' : [];
+    }
+    const gone = items.filter((i) => loc.resolved.get(i.row.uid) == null);
+    this.dropOps(
+      accountId,
+      gone.map((i) => i.op),
+      gone.map((i) => i.row.id),
+      null,
+    );
+    const trashUv = this.ctx.folders.syncState(trash.id)?.uidvalidity ?? null;
+    const next: { op: DeleteOp; row: MessageRow }[] = [];
+    const lostTrack: typeof items = [];
+    for (const it of items) {
+      if (gone.includes(it)) continue;
+      const serverUid = loc.resolved.get(it.row.uid)!;
+      const newUid = uidMap.get(serverUid);
+      if (newUid === undefined) {
+        lostTrack.push(it); // the server did not say where it went: it sits in Trash
+        continue;
+      }
+      this.ctx.messages.relocate(it.row.id, trash.id, newUid);
+      it.op.p = { ...it.op.p, folderId: trash.id, uv: trashUv };
+      this.queue.persistPayload(it.op);
+      next.push({ op: it.op, row: this.ctx.messages.row(it.row.id)! });
+    }
+    if (lostTrack.length > 0) {
+      this.ctx.log.warn({ count: lostTrack.length }, 'moved to Trash, but the new uid is unknown; left in Trash');
+      this.dropOps(accountId, lostTrack.map((i) => i.op), lostTrack.map((i) => i.row.id), null);
+    }
+    this.ctx.folders.recomputeCounts(from.id);
+    this.ctx.folders.recomputeCounts(trash.id);
+    this.ctx.hub.touchCounts();
+    return next;
+  }
 
   // ---------- undo ----------
 

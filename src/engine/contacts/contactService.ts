@@ -6,7 +6,7 @@
 //   - header sync    : observe(rows) for every newly added message
 //   - sending        : recordSent(...) after a successful SMTP send
 //   - first start    : backfill() walks the already-synced headers once, in small chunks
-import type { Address, ContactSuggestion } from '../../shared/ipc';
+import type { Address, ContactInfo, ContactSuggestion } from '../../shared/ipc';
 import type { EngineContext } from '../context';
 import { cleanAddress, cleanName, fold, isNoReply, tokenize } from './text';
 
@@ -341,6 +341,41 @@ export class ContactService {
     })();
     this.forgotten.add(address);
     this.entries.delete(address);
+  }
+
+  /** What is known about one address (always answers; an unknown address has zero counts). */
+  get(rawAddress: string): ContactInfo {
+    const address = cleanAddress(rawAddress) ?? rawAddress.trim().toLowerCase();
+    const isOwn = this.ownAddresses().has(address);
+    const forgotten = this.forgotten.has(address);
+    const e = this.entries.get(address);
+    if (!e) {
+      return {
+        address,
+        name: null,
+        known: false,
+        sentCount: 0,
+        receivedCount: 0,
+        lastUsed: 0,
+        accountIds: [],
+        isOwn,
+        forgotten,
+      };
+    }
+    const accountIds = [...e.stats]
+      .sort((a, b) => b.sent - a.sent || b.recv - a.recv || b.lastSeen - a.lastSeen)
+      .map((st) => st.accountId);
+    return {
+      address,
+      name: e.name,
+      known: true,
+      sentCount: e.sent,
+      receivedCount: e.recv,
+      lastUsed: e.sent > 0 ? e.lastSent : e.lastSeen,
+      accountIds,
+      isOwn,
+      forgotten,
+    };
   }
 
   /** An account was removed: its rows are gone from the database (cascade); drop them from memory. */

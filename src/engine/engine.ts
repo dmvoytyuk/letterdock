@@ -123,6 +123,7 @@ export function createEngine(opts: EngineOptions): Engine {
     'folders.create': (r) => folderSvc.create(r),
     'folders.rename': (r) => folderSvc.rename(r),
     'folders.delete': (r) => folderSvc.delete(r),
+    'folders.count': (r) => folderSvc.count(r),
 
     'messages.list': (r) => messages.list(r),
     'messages.get': (r) => messages.get(r.messageId),
@@ -142,6 +143,7 @@ export function createEngine(opts: EngineOptions): Engine {
     'compose.attachData': (r) => compose.attachData(r),
     'compose.prepare': (r) => compose.prepare(r),
     'compose.discard': (r) => compose.discard(r.draftId),
+    'compose.clearPaused': (r) => compose.clearPaused(r.draftId),
     'compose.saveDraft': (r) => compose.saveDraft(r),
     'compose.send': (r) => compose.send(r),
     'drafts.retrySave': (r) => compose.retrySave(r.messageId),
@@ -151,6 +153,7 @@ export function createEngine(opts: EngineOptions): Engine {
 
     'contacts.suggest': (r) => ctx.contacts.suggest(r.query, r.accountId, r.limit ?? 8),
     'contacts.forget': (r) => ctx.contacts.forget(r.address),
+    'contacts.get': (r) => ctx.contacts.get(r.address),
 
     'scheduled.create': (r) => scheduled.create(r),
     'scheduled.reschedule': (r) => scheduled.reschedule(r.id, r.sendAt),
@@ -208,6 +211,7 @@ export function createEngine(opts: EngineOptions): Engine {
     [K in
       | 'engine.settings'
       | 'attachments.prepare'
+      | 'messages.sourceBytes'
       | 'attachments.register'
       | 'accounts.reconnect'
       | 'scheduled.recheck']: (
@@ -217,6 +221,7 @@ export function createEngine(opts: EngineOptions): Engine {
     // Settings are read lazily through opts.settings(); a smaller cache cap trims at once.
     'engine.settings': () => cleanBodyCache(),
     'attachments.prepare': (r) => messages.prepareAttachment(r.attachmentId),
+    'messages.sourceBytes': (r) => messages.sourceBytes(r.messageId),
     'attachments.register': async (r) => {
       const out = [];
       for (const f of r.files) out.push(await compose.registerFile(f.path, f.filename, f.contentType));

@@ -1,5 +1,12 @@
 // Folder create / rename / delete (ARCHITECTURE section 0, item 5).
-import type { CreateFolderReq, DeleteFolderReq, Folder, RenameFolderReq } from '../../shared/ipc';
+import type {
+  CreateFolderReq,
+  DeleteFolderReq,
+  Folder,
+  FolderCountReq,
+  FolderCountRes,
+  RenameFolderReq,
+} from '../../shared/ipc';
 import { AppException } from '../../shared/errors';
 import type { EngineContext } from '../context';
 import type { SessionManager } from '../imap/sessionManager';
@@ -57,6 +64,39 @@ export class FolderService {
 
   list(accountId?: string): Folder[] {
     return this.ctx.folders.list(accountId);
+  }
+
+  /**
+   * Message count of a folder (or of the Inboxes), counted like "Run rules on this folder" does:
+   * no drafts, no hidden (deleted) rows, no rows that only exist on this PC.
+   */
+  count(req: FolderCountReq): FolderCountRes {
+    const accountId = req.accountId ?? null;
+    let ids: number[];
+    if (req.folderId === 'allInboxes') {
+      ids = this.ctx.accounts
+        .list()
+        .filter((a) => accountId === null || a.id === accountId)
+        .map((a) => this.ctx.folders.rowByRole(a.id, 'inbox'))
+        .flatMap((f) => (f ? [f.id] : []));
+    } else {
+      const f = this.ctx.folders.row(req.folderId);
+      if (!f) throw new AppException('NOT_FOUND', 'Folder not found.');
+      if (accountId !== null && f.account_id !== accountId) {
+        throw new AppException('INVALID_INPUT', 'This folder belongs to another account.');
+      }
+      ids = [f.id];
+    }
+    if (ids.length === 0) return { total: 0, unread: 0 };
+    const marks = ids.map(() => '?').join(',');
+    const r = this.ctx.db
+      .prepare(
+        `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN flag_seen = 0 THEN 1 ELSE 0 END), 0) AS unread
+           FROM message
+          WHERE folder_id IN (${marks}) AND flag_deleted = 0 AND flag_draft = 0 AND uid > 0`,
+      )
+      .get(...ids) as { total: number; unread: number };
+    return { total: r.total, unread: r.unread };
   }
 
   private delimiterFor(accountId: string): string | null {

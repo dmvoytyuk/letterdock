@@ -232,6 +232,23 @@ export class MessageService {
     return { source: src.toString('utf8') };
   }
 
+  /**
+   * The raw message for "Save as .eml": the exact bytes from the server (no text conversion). Nothing
+   * keeps a copy of the raw source on this PC, so it needs a connection.
+   */
+  async sourceBytes(id: MessageId): Promise<{ data: Uint8Array; subject: string }> {
+    const row = this.requireRow(id);
+    if (!this.sessions.has(row.account_id) || !this.sessions.get(row.account_id).isReady()) {
+      throw new AppException(
+        'HOST_UNREACHABLE',
+        'You are offline. Connect to the internet to save this message.',
+        { retryable: true },
+      );
+    }
+    const src = await this.fetchSource(row);
+    return { data: new Uint8Array(src), subject: row.subject };
+  }
+
   // ---------- attachments ----------
 
   async prepareAttachment(attachmentId: number): Promise<PreparedAttachment> {

@@ -12,6 +12,7 @@ import type {
   ConversationActRes,
   ConversationMessage,
   ConversationParticipant,
+  ConversationSort,
   ConversationRow,
   FolderRole,
   GetConversationReq,
@@ -114,31 +115,78 @@ export class ConversationService {
   list(req: ListConversationsReq): ListConversationsRes {
     const limit = Math.min(Math.max(req.limit || 50, 1), 200);
     const unreadOnly = !!req.unreadOnly;
+    const sort: ConversationSort = req.sort ?? 'date';
+    const direction = req.direction ?? (sort === 'date' ? 'desc' : 'asc');
     const r = this.resolve(req.scope, unreadOnly);
     const db = this.ctx.db;
     const memberWhere2 = realias(r.memberWhere, 'm2', 'f2');
+    if (sort !== 'date' && req.cursor && typeof req.cursor.key !== 'string') {
+      throw new AppException('INVALID_INPUT', 'The page position does not match the sort order.');
+    }
 
     const params: Record<string, unknown> = { ...r.params, limit: limit + 1 };
-    let having = '';
-    if (req.cursor) {
-      having = 'HAVING (ld < :cDate OR (ld = :cDate AND mx < :cId))';
-      params.cDate = req.cursor.date;
-      params.cId = req.cursor.id;
+    const asc = direction === 'asc';
+    let groups: { a: string; t: string; ld: number; mx: number; k?: string }[];
+    if (sort === 'date') {
+      let having = '';
+      if (req.cursor) {
+        having = asc
+          ? 'HAVING (ld > :cDate OR (ld = :cDate AND mx > :cId))'
+          : 'HAVING (ld < :cDate OR (ld = :cDate AND mx < :cId))';
+        params.cDate = req.cursor.date;
+        params.cId = req.cursor.id;
+      }
+      groups = db
+        .prepare(
+          `SELECT m.account_id AS a, m.thread_id AS t, MAX(m.date_ms) AS ld, MAX(m.id) AS mx
+             FROM message m JOIN folder f ON f.id = m.folder_id
+            WHERE ${r.inclusion}
+              AND EXISTS (SELECT 1 FROM message m2 JOIN folder f2 ON f2.id = m2.folder_id
+                           WHERE m2.account_id = m.account_id AND m2.thread_id = m.thread_id
+                             AND ${memberWhere2})
+            GROUP BY m.account_id, m.thread_id
+            ${having}
+            ORDER BY ld ${asc ? 'ASC' : 'DESC'}, mx ${asc ? 'ASC' : 'DESC'}
+            LIMIT :limit`,
+        )
+        .all(params) as typeof groups;
+    } else {
+      // The key comes from the LATEST message of the conversation (rn = 1): the sender as shown
+      // (name, else address) or the subject without Re:/Fwd: prefixes. The same SQL text gives the
+      // key that goes into the cursor, so the next page compares like with like. Equal keys: newest
+      // conversation first, whatever the direction.
+      const keyExpr =
+        sort === 'sender'
+          ? "LOWER(COALESCE(NULLIF(m.from_name, ''), m.from_addr, ''))"
+          : "COALESCE(m.subject_norm, LOWER(m.subject), '')";
+      let after = '';
+      if (req.cursor) {
+        after = `WHERE (k ${asc ? '>' : '<'} :cKey OR (k = :cKey AND (ld < :cDate OR (ld = :cDate AND mx < :cId))))`;
+        params.cKey = req.cursor.key;
+        params.cDate = req.cursor.date;
+        params.cId = req.cursor.id;
+      }
+      groups = db
+        .prepare(
+          `WITH g AS (
+             SELECT m.account_id AS a, m.thread_id AS t,
+                    MAX(m.date_ms) OVER (PARTITION BY m.account_id, m.thread_id) AS ld,
+                    MAX(m.id) OVER (PARTITION BY m.account_id, m.thread_id) AS mx,
+                    ROW_NUMBER() OVER (PARTITION BY m.account_id, m.thread_id
+                                       ORDER BY m.date_ms DESC, m.id DESC) AS rn,
+                    SUBSTR(${keyExpr}, 1, 200) AS k
+               FROM message m JOIN folder f ON f.id = m.folder_id
+              WHERE ${r.inclusion}
+                AND EXISTS (SELECT 1 FROM message m2 JOIN folder f2 ON f2.id = m2.folder_id
+                             WHERE m2.account_id = m.account_id AND m2.thread_id = m.thread_id
+                               AND ${memberWhere2}))
+           SELECT a, t, ld, mx, k FROM g
+            ${after ? `${after} AND rn = 1` : 'WHERE rn = 1'}
+            ORDER BY k ${asc ? 'ASC' : 'DESC'}, ld DESC, mx DESC
+            LIMIT :limit`,
+        )
+        .all(params) as typeof groups;
     }
-    const groups = db
-      .prepare(
-        `SELECT m.account_id AS a, m.thread_id AS t, MAX(m.date_ms) AS ld, MAX(m.id) AS mx
-           FROM message m JOIN folder f ON f.id = m.folder_id
-          WHERE ${r.inclusion}
-            AND EXISTS (SELECT 1 FROM message m2 JOIN folder f2 ON f2.id = m2.folder_id
-                         WHERE m2.account_id = m.account_id AND m2.thread_id = m.thread_id
-                           AND ${memberWhere2})
-          GROUP BY m.account_id, m.thread_id
-          ${having}
-          ORDER BY ld DESC, mx DESC
-          LIMIT :limit`,
-      )
-      .all(params) as { a: string; t: string; ld: number; mx: number }[];
 
     const more = groups.length > limit;
     const page = more ? groups.slice(0, limit) : groups;
@@ -157,7 +205,10 @@ export class ConversationService {
         .get(r.params) as { n: number };
       total = t.n;
     }
-    const nextCursor = more && last ? { date: last.ld, id: last.mx } : null;
+    const nextCursor =
+      more && last
+        ? { date: last.ld, id: last.mx, ...(sort !== 'date' ? { key: last.k ?? '' } : {}) }
+        : null;
     return {
       items: items.filter((x): x is ConversationRow => x !== null),
       nextCursor,
@@ -336,7 +387,22 @@ export class ConversationService {
     if (ids.size === 0) {
       return { succeeded: [], failed: [], threadCount, messageCount: 0 };
     }
-    const res = await this.actions.apply({ messageIds: [...ids], action: req.action });
+    if (req.action.type === 'deletePermanent' && req.confirm !== true) {
+      // Nothing is changed yet. The UI asks "Delete N messages permanently?" and calls again.
+      return {
+        succeeded: [],
+        failed: [],
+        requiresConfirm: true,
+        permanent: true,
+        threadCount,
+        messageCount: ids.size,
+      };
+    }
+    const res = await this.actions.apply({
+      messageIds: [...ids],
+      action: req.action,
+      confirm: req.confirm,
+    });
     return { ...res, threadCount, messageCount: res.succeeded.length };
   }
 }
