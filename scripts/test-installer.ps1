@@ -37,7 +37,7 @@ $tmp = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 Set-Content -Path (Join-Path $tmp 'f.cs') -Encoding ascii -Value 'class P { static int Main() { return 5; } }'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework644.0.30319\csc.exe'
-& $csc /nologo /out:"$tmp.exe" "$tmp.cs"
+& $csc /nologo "/out:$tmp.exe" "$tmp.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the fake uninstaller' }
 Copy-Item -Path "$tmp.exe" -Destination $uninstaller -Force
 $fakeLen = (Get-Item $uninstaller).Length
