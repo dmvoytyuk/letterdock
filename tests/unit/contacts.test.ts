@@ -247,6 +247,14 @@ describe('ContactService', () => {
     });
   });
 
+  it('forget refuses your own addresses', () => {
+    const { ctx } = setup();
+    ctx.contacts.observe([src({ fromName: 'Me', fromAddr: 'me@example.com' })]);
+    expect(() => ctx.contacts.forget('Me@Example.com')).toThrow(/own addresses/);
+    expect(ctx.contacts.get('me@example.com').forgotten).toBe(false);
+    expect(ctx.contacts.suggest('me')).toHaveLength(1);
+  });
+
   it('forget removes the contact and it is not learned again', () => {
     const { ctx } = setup();
     ctx.contacts.observe([src({ fromName: 'Bob', fromAddr: 'bob@x.example' })]);

@@ -11,6 +11,7 @@ import { openCompose } from '../lib/actions';
 import { useAccountColor } from '../lib/hooks';
 import { initials } from '../lib/format';
 import { createRuleFromSender } from '../features/rules/ruleActions';
+import { showsForget } from '../lib/contactPopoverRules';
 
 /**
  * The address popover (DESIGN-SPEC 3.6, 3.12.3, 7.4 `ContactPopover`): click a sender or recipient
@@ -245,14 +246,18 @@ function Popover({ target }: { target: Target }) {
           },
         ]
       : []),
-    {
-      key: 'forget',
-      label: 'Remove from suggestions',
-      icon: 'trash',
-      disabled: !info || info.forgotten || !info.known,
-      why: !info ? undefined : info.forgotten ? 'Already removed.' : !info.known ? 'Not in your suggestions.' : undefined,
-      on: run(remove),
-    },
+    ...(showsForget(info)
+      ? [
+          {
+            key: 'forget',
+            label: 'Remove from suggestions',
+            icon: 'trash' as const,
+            disabled: !info || info.forgotten || !info.known,
+            why: !info ? undefined : info.forgotten ? 'Already removed.' : !info.known ? 'Not in your suggestions.' : undefined,
+            on: run(remove),
+          },
+        ]
+      : []),
   ];
 
   const onKey = (e: RKE<HTMLDivElement>) => {

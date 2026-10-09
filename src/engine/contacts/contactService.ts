@@ -8,6 +8,7 @@
 //   - first start    : backfill() walks the already-synced headers once, in small chunks
 import type { Address, ContactInfo, ContactSuggestion } from '../../shared/ipc';
 import type { EngineContext } from '../context';
+import { AppException } from '../../shared/errors';
 import { cleanAddress, cleanName, fold, isNoReply, tokenize } from './text';
 
 const DAY_MS = 86_400_000;
@@ -333,6 +334,7 @@ export class ContactService {
   forget(rawAddress: string): void {
     const address = cleanAddress(rawAddress) ?? rawAddress.trim().toLowerCase();
     if (!address) return;
+    if (this.ownAddresses().has(address)) throw new AppException('INVALID_INPUT', 'Your own addresses cannot be removed from suggestions.');
     this.ctx.db.transaction(() => {
       this.ctx.db.prepare('DELETE FROM contact WHERE address = ?').run(address);
       this.ctx.db
