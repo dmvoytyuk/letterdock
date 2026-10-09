@@ -609,14 +609,14 @@ function Card({
                   {name}
                 </AddressButton>
               ) : (
-                <span className="cnm">{name}</span>
+                <span className="cnm" aria-hidden="true">{name}</span>
               )}
-              {m.isDraft ? <span className="fchip">Draft</span> : chip ? <span className="fchip">{chipLabel(m)}</span> : null}
-              <span className="cdt">{cardDate(h.date)}</span>
+              {m.isDraft ? <span className="fchip" aria-hidden="true">Draft</span> : chip ? <span className="fchip" aria-hidden="true">{chipLabel(m)}</span> : null}
+              <span className="cdt" aria-hidden="true">{cardDate(h.date)}</span>
               {m.isDraft ? null : <Icon name={open ? 'chev-up' : 'chev-d'} />}
             </span>
             {!open ? (
-              <span className="cl2">
+              <span className="cl2" aria-hidden="true">
                 <span className="csn">{h.snippet}</span>
                 {h.hasAttachments ? <Icon name="clip" /> : null}
               </span>
