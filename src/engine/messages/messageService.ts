@@ -1,5 +1,7 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { deflate as deflateCb, inflate as inflateCb } from 'node:zlib';
 import { simpleParser, type Attachment } from 'mailparser';
 import type {
   FolderId,
@@ -20,6 +22,8 @@ import { rowToHeader, type MessageRow } from '../db/repos/messageRepo';
 import { ftsText, hasRemoteImages, makeSnippet, safeFileName } from './bodyUtils';
 
 export const MAX_DISPLAY_BYTES = 25 * 1024 * 1024;
+const deflate = promisify(deflateCb);
+const inflate = promisify(inflateCb);
 const MAX_CID_BYTES = 2 * 1024 * 1024;
 // Keep `cid:` image references in the HTML (served via attachments.cidData) instead of letting
 // mailparser inline every image as a data: URI.
@@ -131,9 +135,13 @@ export class MessageService {
       if (cur.uid <= 0) {
         const src = mv ? this.ctx.folders.row(mv.srcFolderId) : null;
         if (!mv || !src) {
-          throw new AppException('NOT_FOUND', 'This message is being moved. Try again in a moment.', {
-            retryable: true,
-          });
+          throw new AppException(
+            'NOT_FOUND',
+            'This message is being moved. Try again in a moment.',
+            {
+              retryable: true,
+            },
+          );
         }
         return {
           path: pending?.serverPath?.(src) ?? src.path,
@@ -145,7 +153,12 @@ export class MessageService {
     }
     const folder = this.ctx.folders.row(cur.folder_id);
     if (!folder) throw new AppException('NOT_FOUND', 'Folder not found.');
-    return { path: pending?.serverPath?.(folder) ?? folder.path, uid: cur.uid, uv: null, mid: null };
+    return {
+      path: pending?.serverPath?.(folder) ?? folder.path,
+      uid: cur.uid,
+      uv: null,
+      mid: null,
+    };
   }
 
   private async fetchSource(row: MessageRow): Promise<Buffer> {
@@ -156,7 +169,9 @@ export class MessageService {
       let uid = loc.uid;
       if (loc.uv !== null && Number(mb.uidValidity) !== loc.uv) {
         // The folder was rebuilt on the server: find the message again by its Message-ID.
-        const found = loc.mid ? await c.search({ header: { 'message-id': loc.mid } }, { uid: true }) : [];
+        const found = loc.mid
+          ? await c.search({ header: { 'message-id': loc.mid } }, { uid: true })
+          : [];
         const list = found || [];
         if (list.length === 0) {
           throw new AppException('NOT_FOUND', 'This message is no longer on the server.');
@@ -214,6 +229,7 @@ export class MessageService {
     this.ctx.messages.saveBody(
       row.id,
       {
+        rawZ: await deflate(source).catch(() => null),
         text,
         html,
         snippet: makeSnippet(text, html),
@@ -228,16 +244,30 @@ export class MessageService {
 
   async rawSource(id: MessageId): Promise<{ source: string }> {
     const row = this.requireRow(id);
-    const src = await this.fetchSource(row);
+    const src = (await this.storedSource(row.id)) ?? (await this.fetchSource(row));
     return { source: src.toString('utf8') };
   }
 
+  /** The raw source kept with the cached body (exact bytes), or null when none is stored. */
+  private async storedSource(id: MessageId): Promise<Buffer | null> {
+    const z = this.ctx.messages.getRawZ(id);
+    if (!z) return null;
+    try {
+      return await inflate(z);
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * The raw message for "Save as .eml": the exact bytes from the server (no text conversion). Nothing
-   * keeps a copy of the raw source on this PC, so it needs a connection.
+   * The raw message for "Save as .eml": the exact bytes (no text conversion). A message that was
+   * opened before has its source stored on this PC and works offline. Otherwise it comes from the
+   * server and needs a connection.
    */
   async sourceBytes(id: MessageId): Promise<{ data: Uint8Array; subject: string }> {
     const row = this.requireRow(id);
+    const stored = await this.storedSource(row.id);
+    if (stored) return { data: new Uint8Array(stored), subject: row.subject };
     if (!this.sessions.has(row.account_id) || !this.sessions.get(row.account_id).isReady()) {
       throw new AppException(
         'HOST_UNREACHABLE',

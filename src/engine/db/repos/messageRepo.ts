@@ -183,6 +183,8 @@ export interface BodyInput {
     cachedPath?: string | null;
   }[];
   ftsBodyText: string;
+  /** The whole source, compressed (see messageService); stored next to the body. */
+  rawZ?: Buffer | null;
 }
 
 export interface ScopeFilter {
@@ -745,7 +747,10 @@ export class MessageRepo {
   }
 
   /** Real (server) rows of a folder with this Message-ID. */
-  serverRowsByMessageId(folderId: FolderId, messageIdHeader: string): { id: MessageId; uid: number }[] {
+  serverRowsByMessageId(
+    folderId: FolderId,
+    messageIdHeader: string,
+  ): { id: MessageId; uid: number }[] {
     return this.db
       .prepare('SELECT id, uid FROM message WHERE folder_id = ? AND message_id = ? AND uid > 0')
       .all(folderId, messageIdHeader) as { id: number; uid: number }[];
@@ -753,7 +758,9 @@ export class MessageRepo {
 
   /** Move a row to another folder/uid, keeping its id (and cached body, search entry). */
   relocate(id: MessageId, folderId: FolderId, uid: number): void {
-    this.db.prepare('UPDATE message SET folder_id = ?, uid = ? WHERE id = ?').run(folderId, uid, id);
+    this.db
+      .prepare('UPDATE message SET folder_id = ?, uid = ? WHERE id = ?')
+      .run(folderId, uid, id);
   }
 
   idAt(folderId: FolderId, uid: number): MessageId | null {
@@ -785,9 +792,9 @@ export class MessageRepo {
     }
     const f = scopeFilter(scope, true);
     return (
-      this.db
-        .prepare(`SELECT m.id ${f.from} WHERE ${f.where} AND m.uid > 0`)
-        .all(f.params) as { id: number }[]
+      this.db.prepare(`SELECT m.id ${f.from} WHERE ${f.where} AND m.uid > 0`).all(f.params) as {
+        id: number;
+      }[]
     ).map((r) => r.id);
   }
 
@@ -839,11 +846,21 @@ export class MessageRepo {
     this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO body (message_pk, text_plain, html, fetched_at, size_bytes) VALUES (?,?,?,?,?)
+          `INSERT INTO body (message_pk, text_plain, html, fetched_at, size_bytes, raw_z, raw_bytes)
+           VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(message_pk) DO UPDATE SET text_plain=excluded.text_plain, html=excluded.html,
-             fetched_at=excluded.fetched_at, size_bytes=excluded.size_bytes`,
+             fetched_at=excluded.fetched_at, size_bytes=excluded.size_bytes,
+             raw_z=excluded.raw_z, raw_bytes=excluded.raw_bytes`,
         )
-        .run(id, body.text, body.html, now, (body.text?.length ?? 0) + (body.html?.length ?? 0));
+        .run(
+          id,
+          body.text,
+          body.html,
+          now,
+          (body.text?.length ?? 0) + (body.html?.length ?? 0),
+          body.rawZ ?? null,
+          body.rawZ?.length ?? 0,
+        );
       this.db.prepare('DELETE FROM attachment WHERE message_pk = ?').run(id);
       const ins = this.db.prepare(
         `INSERT INTO attachment (message_pk, part_id, filename, content_type, size, content_id, inline, cached_path)
@@ -878,7 +895,9 @@ export class MessageRepo {
 
   /** Total size of downloaded bodies plus attachment files kept on disk (bytes). */
   bodyCacheBytes(): number {
-    const b = this.db.prepare('SELECT COALESCE(SUM(size_bytes),0) AS n FROM body').get() as { n: number };
+    const b = this.db
+      .prepare('SELECT COALESCE(SUM(size_bytes + raw_bytes),0) AS n FROM body')
+      .get() as { n: number };
     const a = this.db
       .prepare('SELECT COALESCE(SUM(size),0) AS n FROM attachment WHERE cached_path IS NOT NULL')
       .get() as { n: number };
@@ -890,7 +909,7 @@ export class MessageRepo {
     const rows = this.db
       .prepare(
         `SELECT b.message_pk AS id, m.account_id AS accountId,
-                b.size_bytes + COALESCE((SELECT SUM(a.size) FROM attachment a
+                b.size_bytes + b.raw_bytes + COALESCE((SELECT SUM(a.size) FROM attachment a
                                          WHERE a.message_pk = b.message_pk AND a.cached_path IS NOT NULL), 0) AS bytes
          FROM body b JOIN message m ON m.id = b.message_pk
          ORDER BY b.fetched_at ASC, b.message_pk ASC LIMIT ?`,
@@ -934,7 +953,11 @@ export class MessageRepo {
    * first sync uses). PC only: nothing is sent to the server. Skips messages that are being moved
    * (placeholder UID) and ones with a waiting change. Returns folder id -> removed ids.
    */
-  pruneOlderThan(accountId: string, cutoffMs: number, keep: Set<MessageId>): Map<FolderId, MessageId[]> {
+  pruneOlderThan(
+    accountId: string,
+    cutoffMs: number,
+    keep: Set<MessageId>,
+  ): Map<FolderId, MessageId[]> {
     const rows = this.db
       .prepare(
         'SELECT id, folder_id AS folderId FROM message WHERE account_id = ? AND internal_ms < ? AND uid > 0',
@@ -970,6 +993,13 @@ export class MessageRepo {
     const r = this.db.prepare('SELECT text_plain, html FROM body WHERE message_pk = ?').get(id) as
       { text_plain: string | null; html: string | null } | undefined;
     return r ? { text: r.text_plain, html: r.html } : null;
+  }
+
+  /** The stored compressed raw source of a cached message, or null when there is none. */
+  getRawZ(id: MessageId): Buffer | null {
+    const r = this.db.prepare('SELECT raw_z FROM body WHERE message_pk = ?').get(id) as
+      { raw_z: Buffer | null } | undefined;
+    return r?.raw_z ?? null;
   }
 
   extraHeaders(id: MessageId): {

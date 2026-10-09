@@ -58,13 +58,18 @@ describe('migrations', () => {
     ins.run(10, 'Lunch on Friday? Pizza or sushi.', 'none');
     ins.run(11, '<https://claude.ai> kept because the body is cached', 'cached');
     expect(migrate(db, MIGRATIONS)).toBe(MIGRATIONS.length);
-    const rows = db.prepare('SELECT uid, snippet, snippet_checked AS c FROM message ORDER BY uid').all() as {
+    const rows = db
+      .prepare('SELECT uid, snippet, snippet_checked AS c FROM message ORDER BY uid')
+      .all() as {
       uid: number;
       snippet: string;
       c: number;
     }[];
     for (const r of rows.filter((x) => x.uid <= 4)) expect(r).toMatchObject({ snippet: '', c: 0 });
-    expect(rows.find((r) => r.uid === 10)).toMatchObject({ snippet: 'Lunch on Friday? Pizza or sushi.', c: 1 });
+    expect(rows.find((r) => r.uid === 10)).toMatchObject({
+      snippet: 'Lunch on Friday? Pizza or sushi.',
+      c: 1,
+    });
     expect(rows.find((r) => r.uid === 11)!.c).toBe(1);
   });
 
@@ -72,7 +77,9 @@ describe('migrations', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     migrate(db, MIGRATIONS.slice(0, 9));
-    db.prepare("INSERT INTO account (id,email,display_name,provider,auth_type,imap_host,imap_port,imap_security,smtp_host,smtp_port,smtp_security,username,created_at) VALUES ('a','a@x.test','A','generic','password','h',993,'ssl','h',465,'ssl','a',1)").run();
+    db.prepare(
+      "INSERT INTO account (id,email,display_name,provider,auth_type,imap_host,imap_port,imap_security,smtp_host,smtp_port,smtp_security,username,created_at) VALUES ('a','a@x.test','A','generic','password','h',993,'ssl','h',465,'ssl','a',1)",
+    ).run();
     const ob = db.prepare(
       "INSERT INTO outbox (account_id, raw_path, created_at, attempts, last_error, state, subject, send_after, meta_json) VALUES ('a','p',1,?,?,?,?,?,'{}')",
     );
@@ -81,18 +88,30 @@ describe('migrations', () => {
     db.prepare(
       "INSERT INTO scheduled_send (account_id, draft_id, send_at, created_at, meta_json, message_id, status, attempt) VALUES ('a','d',9,1,'{}','<m@x>','held',2)",
     ).run();
-    db.prepare("INSERT INTO draft_state (draft_id, account_id, mode, message_id, updated_at) VALUES ('d1','a','new','<d@x>',1)").run();
+    db.prepare(
+      "INSERT INTO draft_state (draft_id, account_id, mode, message_id, updated_at) VALUES ('d1','a','new','<d@x>',1)",
+    ).run();
 
     expect(migrate(db)).toBe(MIGRATIONS.length);
-    const rows = db.prepare('SELECT id, attempts, last_error, state, subject, send_after FROM outbox ORDER BY id').all();
+    const rows = db
+      .prepare(
+        'SELECT id, attempts, last_error, state, subject, send_after FROM outbox ORDER BY id',
+      )
+      .all();
     expect(rows).toEqual([
       { id: 1, attempts: 0, last_error: null, state: 'queued', subject: 'first', send_after: 5 },
       { id: 2, attempts: 3, last_error: 'boom', state: 'failed', subject: 'second', send_after: 6 },
     ]);
-    expect(db.prepare('SELECT id, status, attempt, resume_attempts AS ra, resume_error AS re FROM scheduled_send').all()).toEqual([
-      { id: 1, status: 'held', attempt: 2, ra: 0, re: null },
-    ]);
-    expect(db.prepare("SELECT paused_send_at AS p FROM draft_state WHERE draft_id = 'd1'").get()).toEqual({ p: null });
+    expect(
+      db
+        .prepare(
+          'SELECT id, status, attempt, resume_attempts AS ra, resume_error AS re FROM scheduled_send',
+        )
+        .all(),
+    ).toEqual([{ id: 1, status: 'held', attempt: 2, ra: 0, re: null }]);
+    expect(
+      db.prepare("SELECT paused_send_at AS p FROM draft_state WHERE draft_id = 'd1'").get(),
+    ).toEqual({ p: null });
 
     // The newest row is removed: the next one still gets a new number.
     db.prepare('DELETE FROM outbox WHERE id = 2').run();
@@ -101,15 +120,24 @@ describe('migrations', () => {
       .run();
     expect(Number(next.lastInsertRowid)).toBe(3);
     db.prepare('DELETE FROM outbox WHERE id = 3').run();
-    expect(Number(db.prepare("INSERT INTO outbox (account_id, raw_path, created_at) VALUES ('a','p',1)").run().lastInsertRowid)).toBe(4);
+    expect(
+      Number(
+        db.prepare("INSERT INTO outbox (account_id, raw_path, created_at) VALUES ('a','p',1)").run()
+          .lastInsertRowid,
+      ),
+    ).toBe(4);
     db.prepare('DELETE FROM scheduled_send').run();
     const s2 = db
-      .prepare("INSERT INTO scheduled_send (account_id, draft_id, send_at, created_at, meta_json, message_id) VALUES ('a','d',9,1,'{}','<m@x>')")
+      .prepare(
+        "INSERT INTO scheduled_send (account_id, draft_id, send_at, created_at, meta_json, message_id) VALUES ('a','d',9,1,'{}','<m@x>')",
+      )
       .run();
     expect(Number(s2.lastInsertRowid)).toBe(2);
     // The index for due messages is still there.
     expect(
-      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sched_due'").get(),
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sched_due'")
+        .get(),
     ).toBeTruthy();
   });
 
@@ -287,6 +315,36 @@ describe('repos', () => {
     expect(hits()).toBe(0);
     expect(ctx.messages.purgeFolder(inbox1)).toEqual([added[1]]);
     expect(ctx.messages.countInFolder(inbox1)).toBe(0);
+  });
+
+  it('keeps the compressed raw source with the body: counted in the size, evicted and cascaded with it', () => {
+    const { ctx, db, inbox1 } = setup();
+    const { added } = ctx.messages.upsertHeaders([
+      header({ folderId: inbox1, uid: 1 }),
+      header({ folderId: inbox1, uid: 2 }),
+    ]);
+    const input = (rawZ: Buffer | null) => ({
+      text: 'abc',
+      html: null,
+      snippet: 'abc',
+      ftsBodyText: 'abc',
+      attachments: [],
+      rawZ,
+    });
+    const raw = Buffer.alloc(100, 7);
+    ctx.messages.saveBody(added[0], input(raw), 1);
+    ctx.messages.saveBody(added[1], input(null), 2);
+    expect(ctx.messages.getRawZ(added[0])).toEqual(raw);
+    expect(ctx.messages.getRawZ(added[1])).toBeNull();
+    expect(ctx.messages.bodyCacheBytes()).toBe(3 + 100 + 3);
+    expect(ctx.messages.cachedBodiesOldestFirst(10).map((b) => b.bytes)).toEqual([103, 3]);
+    ctx.messages.evictBodies([added[0]]);
+    expect(ctx.messages.getRawZ(added[0])).toBeNull();
+    expect(ctx.messages.bodyCacheBytes()).toBe(3);
+    // Deleting the message (folder purge, account removal) takes the body row and the raw with it.
+    ctx.messages.saveBody(added[0], input(raw), 3);
+    ctx.messages.purgeFolder(inbox1);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM body').get() as { n: number }).n).toBe(0);
   });
 
   it('caches bodies, attachments and updates the search index', () => {
