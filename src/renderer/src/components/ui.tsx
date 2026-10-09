@@ -487,8 +487,8 @@ export type MenuEntry =
   | 'sep';
 
 interface MenuOptions {
-  /** Fixed width in px (default: as wide as the items need). */
-  width?: number;
+  /** Minimum width in px. The menu still grows to fit its items (default: as wide as they need). */
+  minWidth?: number;
   /** Called when the menu closes by any way (Esc, outside click, a choice). */
   onClose?: () => void;
 }
@@ -597,7 +597,7 @@ export function MenuHost() {
         left: pos?.left ?? menu.x,
         top: pos?.top ?? menu.y,
         visibility: pos ? 'visible' : 'hidden',
-        ...(menu.opts.width ? { width: menu.opts.width } : {}),
+        ...(menu.opts.minWidth ? { minWidth: menu.opts.minWidth } : {}),
       }}
       onKeyDown={onKey}
       onContextMenu={(e) => e.preventDefault()}
@@ -621,8 +621,8 @@ export function MenuHost() {
               it.onSelect();
             }}
           >
-            {it.icon ? <Icon name={it.icon} /> : <span style={{ width: 16 }} />}
-            {it.label}
+            {it.icon ? <Icon name={it.icon} /> : <span className="mi-gap" aria-hidden="true" />}
+            <span className="ml">{it.label}</span>
             {it.hint ? <span className="a">{it.hint}</span> : null}
           </button>
         ),

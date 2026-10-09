@@ -1872,6 +1872,7 @@ select.inp {
   padding: 6px;
   z-index: 500;
   min-width: 200px;
+  max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow: auto;
 }
@@ -1906,11 +1907,26 @@ select.inp {
     inset 0 0 0 2px var(--ring-o),
     inset 0 0 0 3px var(--ring-i);
 }
+.menu .mi > svg,
+.menu .mi .mi-gap {
+  flex: none;
+}
+.menu .mi .mi-gap {
+  width: 16px;
+  height: 16px;
+}
+.menu .mi .ml {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .menu .mi .a {
   color: var(--t3);
   font-size: 12px;
   margin-left: auto;
-  padding-left: 16px;
+  padding-left: 24px;
+  flex: none;
+  white-space: nowrap;
 }
 .menu .mi[disabled] {
   color: var(--tdis);

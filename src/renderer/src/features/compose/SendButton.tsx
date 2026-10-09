@@ -43,7 +43,7 @@ export const SendButton = forwardRef<
     items.push('sep', { label: 'Pick date & time...', icon: 'calendar', disabled: limitReached, onSelect: onPick });
     setOpen(true);
     openMenuAt(el, items, {
-      width: 280,
+      minWidth: 280,
       onClose: () => {
         setOpen(false);
         chev.current?.focus();
