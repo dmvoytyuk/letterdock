@@ -22,6 +22,7 @@ export const MAIN_CHANNELS = [
   'images.clearCache',
   'app.openExternal',
   'app.openLogs',
+  'app.showItemInFolder',
   'app.mailtoStatus',
   'app.openDefaultAppsSettings',
   'app.info',

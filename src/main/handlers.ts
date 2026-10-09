@@ -25,7 +25,7 @@ import type { ImageDiskCache } from './imageCache/store';
 import { computeMailtoStatus, DEFAULT_APPS_URI } from './mailto';
 import { buildPrintDocument } from './print/printDocument';
 import { printDocument, type PrintDeps } from './print/printWindow';
-import { saveEml } from './saveEml';
+import { SavedPaths, saveEml } from './saveEml';
 
 type MainHandlers = {
   [C in MainChannel]: (req: IpcReq<C>) => Promise<IpcRes<C>> | IpcRes<C>;
@@ -67,6 +67,8 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
     await copyFile(prep.path, res.filePath);
     return true;
   }
+
+  const savedPaths = new SavedPaths();
 
   return {
     'oauth.getSettings': () => d.settings.getOAuth(),
@@ -153,8 +155,8 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
       });
       return { printed: await printDocument(html, d.print) };
     },
-    'messages.saveEml': (r) =>
-      saveEml(
+    'messages.saveEml': async (r) => {
+      const res = await saveEml(
         {
           fetchSource: (messageId) =>
             d.engine.request<{ data: Uint8Array; subject: string }>('messages.sourceBytes', { messageId }),
@@ -173,7 +175,10 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
           writeFile: (path, data) => writeFile(path, data),
         },
         r.messageId,
-      ),
+      );
+      if (res.saved && res.path) savedPaths.add(res.path);
+      return res;
+    },
     'ui.showUndo': (r) => ({
       delivered: d.showUndoInMain({ label: r.label, undoToken: r.undoToken, count: r.count ?? 0 }),
     }),
@@ -222,6 +227,13 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
     'app.openDefaultAppsSettings': async () => {
       // Fixed address on purpose: never built from input.
       await shell.openExternal(DEFAULT_APPS_URI);
+    },
+    'app.showItemInFolder': (r) => {
+      // Only a file this app saved a moment ago. Never a path from the window.
+      if (!savedPaths.has(r.path)) {
+        throw new AppException('INVALID_INPUT', 'That file was not saved by Letterdock just now.');
+      }
+      shell.showItemInFolder(r.path);
     },
     'app.openLogs': async () => {
       await shell.openPath(d.logsDir);

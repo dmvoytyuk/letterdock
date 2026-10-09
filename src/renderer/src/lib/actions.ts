@@ -374,7 +374,18 @@ export function deleteMessagesPermanently(ids: MessageId[]): void {
 export async function saveAsEml(messageId: MessageId): Promise<void> {
   try {
     const r = await call('messages.saveEml', { messageId });
-    if (r.saved) toast(r.path ? `Saved to ${r.path}` : 'Message saved.', { duration: 8000 });
+    if (r.saved) {
+      const path = r.path;
+      toast(path ? `Saved to ${path}` : 'Message saved.', {
+        duration: 8000,
+        ...(path
+          ? {
+              actionLabel: 'Show in folder',
+              onAction: () => void call('app.showItemInFolder', { path }).catch((e) => toastError(asAppError(e).message)),
+            }
+          : {}),
+      });
+    }
   } catch (e) {
     toastError(asAppError(e).message);
   }

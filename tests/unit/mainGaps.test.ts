@@ -1,21 +1,28 @@
 // Main-process pieces: the new channels' request checks, "Save as .eml", the Undo relay from the
 // message window, the quit-prompt state, and file names. No Electron window is ever created.
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { QuitState } from '../../src/main/quitGuard';
 import { relayUndoToMain, type RelayTarget } from '../../src/main/undoRelay';
-import { saveEml, type SaveEmlDeps } from '../../src/main/saveEml';
+import { SavedPaths, saveEml, type SaveEmlDeps } from '../../src/main/saveEml';
 import { emlFileName, safeFileStem } from '../../src/shared/fileName';
 import { isKnownChannel, schemas } from '../../src/main/ipcSchemas';
 import { MAIN_CHANNELS, isMainChannel } from '../../src/shared/channels';
 import { AppException } from '../../src/shared/errors';
 
 // handlers.ts needs these names from electron; none of them is used by the code under test here.
+const electron = vi.hoisted(() => ({
+  showItemInFolder: vi.fn(),
+  showSaveDialog: vi.fn(),
+}));
 vi.mock('electron', () => ({
   app: { getPath: () => 'C:\\Users\\test\\Downloads', getVersion: () => '0.0.0', isPackaged: false },
   BrowserWindow: { getFocusedWindow: () => null },
-  dialog: {},
+  dialog: { showSaveDialog: electron.showSaveDialog },
   nativeTheme: {},
-  shell: {},
+  shell: { showItemInFolder: electron.showItemInFolder },
   ipcMain: {},
   Notification: {},
 }));
@@ -254,5 +261,48 @@ describe('quit prompt state', () => {
     const q = new QuitState();
     q.mainWindowClosed({ windowsLeft: 1, quitting: false });
     expect(q.confirmed).toBe(false);
+  });
+});
+
+describe('Show in folder', () => {
+  it('SavedPaths remembers a path (any spelling of the same Windows path), forgets the oldest', () => {
+    const p = new SavedPaths(2);
+    p.add('C:\\Users\\me\\Mail.eml');
+    expect(p.has('c:\\users\\me\\mail.eml')).toBe(true);
+    expect(p.has('C:\\Users\\me\\other.eml')).toBe(false);
+    p.add('C:\\a.eml');
+    p.add('C:\\b.eml');
+    expect(p.has('C:\\Users\\me\\Mail.eml')).toBe(false);
+    expect(p.has('C:\\b.eml')).toBe(true);
+  });
+
+  it('the request check wants a non-empty path', () => {
+    expect(schemas['app.showItemInFolder'].safeParse({ path: 'C:\\x.eml' }).success).toBe(true);
+    expect(schemas['app.showItemInFolder'].safeParse({ path: '' }).success).toBe(false);
+    expect(schemas['app.showItemInFolder'].safeParse({}).success).toBe(false);
+    expect(isMainChannel('app.showItemInFolder')).toBe(true);
+  });
+
+  it('reveals only a file that Save as .eml wrote, and refuses any other path', async () => {
+    const { createMainHandlers } = await import('../../src/main/handlers');
+    const dir = mkdtempSync(join(tmpdir(), 'ld-eml-'));
+    try {
+      const target = join(dir, 'note.eml');
+      electron.showSaveDialog.mockResolvedValue({ canceled: false, filePath: target });
+      const handlers = createMainHandlers({
+        engine: { request: async () => ({ data: new Uint8Array([65]), subject: 'Note' }) },
+        getWindow: () => null,
+      } as never);
+      // Before anything was saved, nothing can be revealed.
+      expect(() => handlers['app.showItemInFolder']({ path: target })).toThrow();
+      expect(await handlers['messages.saveEml']({ messageId: 1 })).toEqual({ saved: true, path: target });
+      await handlers['app.showItemInFolder']({ path: target });
+      expect(electron.showItemInFolder).toHaveBeenCalledWith(target);
+      electron.showItemInFolder.mockClear();
+      expect(() => handlers['app.showItemInFolder']({ path: 'C:\\Windows\\System32\\cmd.exe' })).toThrow();
+      expect(electron.showItemInFolder).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

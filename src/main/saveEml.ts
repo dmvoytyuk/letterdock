@@ -1,6 +1,6 @@
 // "Save as .eml": fetch the raw message, ask where to put it, write the bytes. The pieces that touch
 // Electron and the file system are passed in, so the logic can be tested without a window.
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import type { SaveEmlRes } from '../shared/ipc';
 import { emlFileName } from '../shared/fileName';
 
@@ -12,6 +12,30 @@ export interface SaveEmlDeps {
   /** The native save dialog. Returns the chosen path, or null when the user cancelled. */
   chooseFile: (defaultPath: string) => Promise<string | null>;
   writeFile: (path: string, data: Uint8Array) => Promise<void>;
+}
+
+/**
+ * The files this app saved just now ("Save as .eml"). "Show in folder" only works for these, so the
+ * window can never ask main to reveal an arbitrary path. A short list: the toast that offers the
+ * button is gone after a few seconds.
+ */
+export class SavedPaths {
+  private list: string[] = [];
+  constructor(private readonly max = 20) {}
+
+  private key(path: string): string {
+    // Windows paths are not case sensitive.
+    return normalize(path).toLowerCase();
+  }
+
+  add(path: string): void {
+    const k = this.key(path);
+    this.list = [...this.list.filter((p) => p !== k), k].slice(-this.max);
+  }
+
+  has(path: string): boolean {
+    return this.list.includes(this.key(path));
+  }
 }
 
 export async function saveEml(deps: SaveEmlDeps, messageId: number): Promise<SaveEmlRes> {

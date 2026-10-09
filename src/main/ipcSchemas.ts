@@ -309,6 +309,7 @@ export const schemas: Schemas = {
   'images.clearCache': none,
   'app.openExternal': z.object({ url: str(8000) }),
   'app.openLogs': none,
+  'app.showItemInFolder': z.object({ path: str(4000).min(1) }),
   'app.mailtoStatus': none,
   'app.openDefaultAppsSettings': none,
   'app.info': none,

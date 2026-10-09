@@ -1132,6 +1132,8 @@ export interface IpcMethods {
   'images.clearCache': { req: void; res: { freed: number } };
   'app.openExternal': { req: { url: string }; res: void }; // main validates http/https/mailto only
   'app.openLogs': { req: void; res: void };
+  /** Shows a file in Explorer. Only for a path that "Save as .eml" returned a moment ago. */
+  'app.showItemInFolder': { req: { path: string }; res: void };
   'app.mailtoStatus': { req: void; res: MailtoStatus };
   /** Opens Windows Settings > Default apps (fixed ms-settings:defaultapps address). */
   'app.openDefaultAppsSettings': { req: void; res: void };

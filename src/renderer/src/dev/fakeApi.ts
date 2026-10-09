@@ -1457,6 +1457,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'sync.folder':
     case 'log.write':
     case 'app.openExternal':
+    case 'app.showItemInFolder':
       return delay(undefined, 10);
     case 'message.openWindow': {
       window.open(`viewer.html?fake=1#msg=${(r as { messageId: number }).messageId}`, '_blank', 'popup,width=860,height=720');
