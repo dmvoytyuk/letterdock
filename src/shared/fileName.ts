@@ -1,13 +1,13 @@
 // Pure helpers for file names the user sees in a save dialog. No node / electron imports.
 
+import { replaceControlChars } from './safety';
+
 const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 
 /** A name that is safe as a Windows file name: no path parts, no reserved characters or names. */
 export function safeFileStem(raw: string | null | undefined, fallback: string, maxLength = 120): string {
-  let n = (raw ?? '')
-    .replace(/\s+/g, ' ') // line breaks and tabs in a subject become one space
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
+  let n = replaceControlChars((raw ?? '').replace(/\s+/g, ' '), '_') // line breaks and tabs in a subject become one space
+    .replace(/[\\/:*?"<>|]/g, '_')
     .trim();
   n = n.replace(/^\.+/, '').replace(/[. ]+$/, '');
   if (!n) n = fallback;

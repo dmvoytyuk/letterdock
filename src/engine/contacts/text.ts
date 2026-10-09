@@ -1,6 +1,8 @@
 // Text helpers of the contacts index (pure). Folding makes search ignore case and accents and works
 // for every script (Cyrillic, Greek, accented Latin); tokens are what a typed prefix is matched to.
 
+import { replaceControlChars } from '../../shared/safety';
+
 // Letters that do not split into base letter + accent mark.
 const SPECIAL: Record<string, string> = {
   ß: 'ss',
@@ -55,9 +57,7 @@ export function isNoReply(address: string): boolean {
 /** A display name worth keeping (not empty, not just the address again). */
 export function cleanName(raw: string | null | undefined, address: string): string | null {
   if (!raw) return null;
-  const n = raw
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+  const n = replaceControlChars(raw, ' ')
     .replace(/^["'\s]+|["'\s]+$/g, '')
     .replace(/\s+/g, ' ')
     .trim();

@@ -1,5 +1,7 @@
 // Pure helpers for cached bodies.
 
+import { replaceControlChars } from '../../shared/safety';
+
 const NAMED_ENTITIES: Record<string, string> = {
   nbsp: ' ',
   amp: '&',
@@ -40,8 +42,24 @@ function decodeEntities(s: string): string {
 }
 
 // Characters marketing mails use as invisible padding after the preview text.
-// eslint-disable-next-line no-misleading-character-class
-const INVISIBLE = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0]/g;
+const INVISIBLE_CODES = new Set([0x00ad, 0x034f, 0x061c, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180e, 0x3164, 0xfeff, 0xffa0]);
+const INVISIBLE_RANGES: [number, number][] = [
+  [0x200b, 0x200f],
+  [0x2028, 0x202e],
+  [0x2060, 0x206f],
+  [0xfe00, 0xfe0f],
+];
+
+/** Removes the invisible characters (checked by code, so no regex class of combining characters is needed). */
+function stripInvisible(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (INVISIBLE_CODES.has(c) || INVISIBLE_RANGES.some(([lo, hi]) => c >= lo && c <= hi)) continue;
+    out += text[i];
+  }
+  return out;
+}
 
 /**
  * Cheap HTML to text for snippets and the search index. Not for display.
@@ -66,7 +84,7 @@ export function stripHtml(html: string): string {
     .replace(/<[^>]*>/g, ' ')
     // A tag cut off at the end of the chunk.
     .replace(/<[^>]*$/, ' ');
-  s = decodeEntities(s).replace(INVISIBLE, '');
+  s = stripInvisible(decodeEntities(s));
   return stripCss(s).replace(/\s+/g, ' ').trim();
 }
 
@@ -86,8 +104,8 @@ export function cleanSnippetText(src: string): string {
     .replace(/\[\s*(?:image|img|inline image|cid)\b\S*/gi, ' ')
     // Links in angle brackets or square brackets, and bare URLs.
     .replace(/[<[(]\s*(?:https?:\/\/|www\.)[^\s>\])]*\s*[>\])]?/gi, ' ')
-    .replace(/(?:https?:\/\/|www\.)\S*/gi, ' ')
-    .replace(INVISIBLE, '')
+    .replace(/(?:https?:\/\/|www\.)\S*/gi, ' ');
+  s = stripInvisible(s)
     .replace(/\uFFFD+\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
@@ -134,8 +152,9 @@ const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i;
 
 /** Make an attachment name safe to use as a Windows file name. */
 export function safeFileName(name: string | null | undefined, fallback = 'attachment'): string {
-  // eslint-disable-next-line no-control-regex
-  let n = (name ?? '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim();
+  let n = replaceControlChars(name ?? '', '_')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim();
   n = n.replace(/^\.+/, '').replace(/[. ]+$/, '');
   if (!n) n = fallback;
   if (RESERVED.test(n)) n = '_' + n;

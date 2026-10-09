@@ -23,6 +23,7 @@ import type {
   SendRes,
 } from '../../shared/ipc';
 import { AppException, makeError, toAppError } from '../../shared/errors';
+import { replaceControlChars } from '../../shared/safety';
 import { findProviderByHost } from '../../shared/providers';
 import { isValidEmail } from '../accounts/autodiscover';
 import type { DraftsApi, EngineContext } from '../context';
@@ -160,8 +161,7 @@ export class ComposeService implements DraftsApi {
   // ---------- attachments ----------
 
   private cleanName(name: string): string {
-    // eslint-disable-next-line no-control-regex
-    return name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 255) || 'attachment';
+    return replaceControlChars(name).trim().slice(0, 255) || 'attachment';
   }
 
   /** Copy a file into the data folder and hand out an opaque token (never the path). */

@@ -1,5 +1,7 @@
 // mailto: handling (pure helpers; the Electron calls live in index.ts / handlers.ts).
 
+import { hasControlChars } from '../shared/safety';
+
 const MAX_MAILTO_CHARS = 8000;
 
 /**
@@ -12,8 +14,7 @@ export function findMailtoArg(argv: readonly string[]): string | null {
     const arg = raw.trim();
     if (!/^mailto:/i.test(arg)) continue;
     if (arg.length > MAX_MAILTO_CHARS) continue;
-    // eslint-disable-next-line no-control-regex
-    if (/[\u0000-\u001f\u007f]/.test(arg)) continue;
+    if (hasControlChars(arg)) continue;
     return arg;
   }
   return null;

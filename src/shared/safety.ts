@@ -29,3 +29,23 @@ export function isExecutableName(name: string): boolean {
   const lower = name.toLowerCase();
   return EXECUTABLE_EXTENSIONS.some((e) => lower.endsWith(e));
 }
+
+/** C0 control characters (U+0000 to U+001F) and DEL (U+007F). */
+export function isControlCode(code: number): boolean {
+  return code <= 0x1f || code === 0x7f;
+}
+
+/** Does the text contain a control character (line break, tab, NUL, DEL...)? */
+export function hasControlChars(text: string): boolean {
+  for (let i = 0; i < text.length; i++) if (isControlCode(text.charCodeAt(i))) return true;
+  return false;
+}
+
+/** Replaces every control character with `replacement` (default: removes it). */
+export function replaceControlChars(text: string, replacement = ''): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    out += isControlCode(text.charCodeAt(i)) ? replacement : text[i];
+  }
+  return out;
+}

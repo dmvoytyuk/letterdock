@@ -7,6 +7,7 @@ import type {
   FolderCountRes,
   RenameFolderReq,
 } from '../../shared/ipc';
+import { hasControlChars } from '../../shared/safety';
 import { AppException } from '../../shared/errors';
 import type { EngineContext } from '../context';
 import type { SessionManager } from '../imap/sessionManager';
@@ -17,8 +18,7 @@ export function validateFolderName(raw: string, delimiter: string | null): strin
   const name = raw.trim();
   if (!name) throw new AppException('INVALID_INPUT', 'Enter a folder name.');
   if (name.length > 100) throw new AppException('INVALID_INPUT', 'The folder name is too long.');
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(name)) {
+  if (hasControlChars(name)) {
     throw new AppException('INVALID_INPUT', 'The folder name contains invalid characters.');
   }
   if (
