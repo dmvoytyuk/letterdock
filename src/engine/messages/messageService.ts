@@ -1,0 +1,299 @@
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { simpleParser, type Attachment } from 'mailparser';
+import type {
+  FolderId,
+  ListMessagesReq,
+  ListMessagesRes,
+  ListScope,
+  LoadOlderReq,
+  LoadOlderRes,
+  MessageBody,
+  MessageHeader,
+  MessageId,
+} from '../../shared/ipc';
+import type { PreparedAttachment } from '../../shared/internal';
+import { AppException } from '../../shared/errors';
+import type { EngineContext } from '../context';
+import type { SessionManager } from '../imap/sessionManager';
+import { rowToHeader, type MessageRow } from '../db/repos/messageRepo';
+import { ftsText, hasRemoteImages, makeSnippet, safeFileName } from './bodyUtils';
+
+export const MAX_DISPLAY_BYTES = 25 * 1024 * 1024;
+const MAX_CID_BYTES = 2 * 1024 * 1024;
+// Keep `cid:` image references in the HTML (served via attachments.cidData) instead of letting
+// mailparser inline every image as a data: URI.
+const PARSER_OPTIONS = { skipImageLinks: true };
+
+export class MessageService {
+  private inflight = new Map<MessageId, Promise<MessageBody>>();
+
+  constructor(
+    private readonly ctx: EngineContext,
+    private readonly sessions: SessionManager,
+  ) {}
+
+  // ---------- lists ----------
+
+  list(req: ListMessagesReq): ListMessagesRes {
+    const { items, nextCursor, total } = this.ctx.messages.list(req);
+    return {
+      items,
+      nextCursor,
+      total,
+      canLoadOlderFromServer: nextCursor === null && this.canLoadOlder(req.scope),
+    };
+  }
+
+  private canLoadOlder(scope: ListScope): boolean {
+    const base =
+      'uidvalidity IS NOT NULL AND history_complete = 0 AND oldest_synced_uid > 1 AND selectable = 1';
+    let sql: string;
+    let arg: unknown[] = [];
+    switch (scope.kind) {
+      case 'folder':
+        sql = `SELECT 1 FROM folder WHERE id = ? AND ${base}`;
+        arg = [scope.folderId];
+        break;
+      case 'accountInbox':
+        sql = `SELECT 1 FROM folder WHERE account_id = ? AND role = 'inbox' AND ${base}`;
+        arg = [scope.accountId];
+        break;
+      case 'unifiedInbox':
+      case 'unifiedUnread':
+        sql = `SELECT 1 FROM folder WHERE role = 'inbox' AND ${base}`;
+        break;
+      default:
+        return false;
+    }
+    return this.ctx.db.prepare(sql).get(...arg) !== undefined;
+  }
+
+  getHeaders(ids: MessageId[]): MessageHeader[] {
+    return this.ctx.messages.headers(ids);
+  }
+
+  // ---------- bodies ----------
+
+  private requireRow(id: MessageId): MessageRow {
+    const row = this.ctx.messages.row(id);
+    if (!row) throw new AppException('NOT_FOUND', 'This message is no longer available.');
+    return row;
+  }
+
+  private buildBody(row: MessageRow, truncated = false): MessageBody {
+    const body = this.ctx.messages.getBody(row.id);
+    const extra = this.ctx.messages.extraHeaders(row.id)!;
+    return {
+      id: row.id,
+      header: rowToHeader(this.requireRow(row.id)),
+      bcc: extra.bcc,
+      replyTo: extra.replyTo,
+      inReplyTo: extra.inReplyTo,
+      references: extra.references,
+      html: body?.html ?? null,
+      text: body?.text ?? null,
+      attachments: this.ctx.messages.attachments(row.id),
+      hasRemoteImages: hasRemoteImages(body?.html ?? null),
+      senderImagesAllowed: this.ctx.messages.senderImagesAllowed(row.from_addr),
+      truncated,
+    };
+  }
+
+  get(id: MessageId): Promise<MessageBody> {
+    const row = this.requireRow(id);
+    if (row.body_state === 'cached' && this.ctx.messages.getBody(id)) {
+      this.ctx.messages.touchBody(id, this.ctx.now()); // "last opened" for the cache cleanup
+      return Promise.resolve(this.buildBody(row));
+    }
+    const running = this.inflight.get(id);
+    if (running) return running;
+    const p = this.fetchAndCache(row).finally(() => this.inflight.delete(id));
+    this.inflight.set(id, p);
+    return p;
+  }
+
+  private async fetchSource(row: MessageRow): Promise<Buffer> {
+    if (row.uid <= 0) {
+      // A move to another folder is still running (the row has a placeholder UID).
+      throw new AppException('NOT_FOUND', 'This message is being moved. Try again in a moment.', {
+        retryable: true,
+      });
+    }
+    const folder = this.ctx.folders.row(row.folder_id);
+    if (!folder) throw new AppException('NOT_FOUND', 'Folder not found.');
+    const session = this.sessions.get(row.account_id);
+    return session.run('user', async (c) => {
+      await c.mailboxOpen(folder.path, { readOnly: true });
+      const m = await c.fetchOne(String(row.uid), { source: true }, { uid: true });
+      if (!m || !m.source) {
+        throw new AppException('NOT_FOUND', 'This message is no longer on the server.');
+      }
+      return m.source;
+    });
+  }
+
+  private async fetchAndCache(row: MessageRow): Promise<MessageBody> {
+    if (row.size !== null && row.size > MAX_DISPLAY_BYTES) {
+      return { ...this.buildBody(row, true), html: null, text: null };
+    }
+    const source = await this.fetchSource(row);
+    const parsed = await simpleParser(source, PARSER_OPTIONS);
+    const html = typeof parsed.html === 'string' ? parsed.html : null;
+    const text = parsed.text ?? null;
+
+    const attDir = join(this.ctx.dataDir, 'attachments', row.account_id, String(row.id));
+    const atts: {
+      partId: string;
+      filename: string | null;
+      contentType: string;
+      size: number;
+      contentId: string | null;
+      inline: boolean;
+      cachedPath: string | null;
+    }[] = [];
+    let index = 0;
+    for (const a of parsed.attachments) {
+      const cid = a.cid ?? null;
+      const inline = !!cid && !!html && html.includes(`cid:${cid}`);
+      let cachedPath: string | null = null;
+      if (inline && a.size <= MAX_CID_BYTES) {
+        cachedPath = join(attDir, `${index}_${safeFileName(a.filename, 'inline')}`);
+        await mkdir(attDir, { recursive: true });
+        await writeFile(cachedPath, a.content);
+      }
+      atts.push({
+        partId: String(index),
+        filename: a.filename ?? null,
+        contentType: a.contentType || 'application/octet-stream',
+        size: a.size,
+        contentId: cid,
+        inline,
+        cachedPath,
+      });
+      index++;
+    }
+    this.ctx.messages.saveBody(
+      row.id,
+      {
+        text,
+        html,
+        snippet: makeSnippet(text, html),
+        attachments: atts,
+        ftsBodyText: ftsText(text, html),
+      },
+      this.ctx.now(),
+    );
+    this.ctx.hub.changed({ folderIds: [row.folder_id], updated: [row.id] });
+    return this.buildBody(this.requireRow(row.id));
+  }
+
+  async rawSource(id: MessageId): Promise<{ source: string }> {
+    const row = this.requireRow(id);
+    const src = await this.fetchSource(row);
+    return { source: src.toString('utf8') };
+  }
+
+  // ---------- attachments ----------
+
+  async prepareAttachment(attachmentId: number): Promise<PreparedAttachment> {
+    const att = this.ctx.messages.attachmentRow(attachmentId);
+    if (!att) throw new AppException('NOT_FOUND', 'Attachment not found.');
+    const filename = safeFileName(att.filename, `attachment-${att.id}`);
+    if (att.cached_path) {
+      try {
+        const st = await stat(att.cached_path);
+        return {
+          path: att.cached_path,
+          filename,
+          size: st.size,
+          contentType: att.content_type ?? 'application/octet-stream',
+        };
+      } catch {
+        /* cache file vanished: fetch again */
+      }
+    }
+    const row = this.requireRow(att.message_pk);
+    const source = await this.fetchSource(row);
+    const parsed = await simpleParser(source, PARSER_OPTIONS);
+    const found: Attachment | undefined = parsed.attachments[Number(att.part_id)];
+    if (!found) throw new AppException('NOT_FOUND', 'The attachment is no longer in the message.');
+    const dir = join(this.ctx.dataDir, 'attachments', row.account_id, String(row.id));
+    await mkdir(dir, { recursive: true });
+    const path = join(dir, `${att.part_id}_${filename}`);
+    await writeFile(path, found.content);
+    this.ctx.messages.setAttachmentPath(att.id, path);
+    return {
+      path,
+      filename,
+      size: found.size,
+      contentType: att.content_type ?? found.contentType,
+    };
+  }
+
+  async cidData(
+    messageId: MessageId,
+    contentId: string,
+  ): Promise<{ contentType: string; data: Uint8Array } | null> {
+    const att = this.ctx.messages.attachmentByContentId(messageId, contentId);
+    if (!att) return null;
+    const prepared = await this.prepareAttachment(att.id);
+    if (prepared.size > MAX_CID_BYTES) return null;
+    const data = await readFile(prepared.path);
+    return { contentType: prepared.contentType, data: new Uint8Array(data) };
+  }
+
+  // ---------- images, older mail ----------
+
+  allowSenderImages(address: string, allow: boolean): void {
+    if (!address.includes('@')) throw new AppException('INVALID_INPUT', 'Enter an email address.');
+    this.ctx.messages.setSenderImagesAllowed(address, allow);
+  }
+
+  /** `sync.loadOlder` for one folder, or for every folder behind a list scope. */
+  async loadOlder(req: LoadOlderReq): Promise<LoadOlderRes> {
+    if (req.folderId !== undefined) return this.loadOlderFolder(req.folderId);
+    const folderIds = this.foldersForScope(req.scope!).filter((id) => {
+      const st = this.ctx.folders.syncState(id);
+      return st && st.uidvalidity !== null && !st.historyComplete;
+    });
+    let fetched = 0;
+    let allDone = true;
+    const results = await Promise.allSettled(folderIds.map((id) => this.loadOlderFolder(id)));
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        fetched += r.value.fetched;
+        if (!r.value.reachedStart) allDone = false;
+      } else {
+        allDone = false;
+      }
+    }
+    return { fetched, reachedStart: allDone };
+  }
+
+  private async loadOlderFolder(folderId: FolderId): Promise<LoadOlderRes> {
+    const row = this.ctx.folders.row(folderId);
+    if (!row) throw new AppException('NOT_FOUND', 'Folder not found.');
+    return this.sessions.get(row.account_id).loadOlderFor(folderId);
+  }
+
+  /** Folders that feed a list scope (unified views = every account's inbox). */
+  foldersForScope(scope: ListScope): FolderId[] {
+    switch (scope.kind) {
+      case 'folder':
+        return [scope.folderId];
+      case 'accountInbox': {
+        const r = this.ctx.folders.rowByRole(scope.accountId, 'inbox');
+        return r ? [r.id] : [];
+      }
+      case 'unifiedInbox':
+      case 'unifiedUnread':
+        return this.ctx.accounts
+          .list()
+          .map((a) => this.ctx.folders.rowByRole(a.id, 'inbox')?.id)
+          .filter((id): id is number => id !== undefined);
+      default:
+        return [];
+    }
+  }
+}

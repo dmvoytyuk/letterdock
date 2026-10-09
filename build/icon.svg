@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Mailroom</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B9CF2"/>
+      <stop offset="1" stop-color="#0A5AA6"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <!-- two letters peeking out behind: the other inboxes -->
+  <rect x="68" y="46" width="120" height="40" rx="14" fill="#FFFFFF" fill-opacity="0.45"/>
+  <rect x="48" y="68" width="160" height="44" rx="16" fill="#FFFFFF" fill-opacity="0.72"/>
+  <!-- front envelope: all inboxes in one -->
+  <rect x="30" y="92" width="196" height="132" rx="22" fill="#FFFFFF"/>
+  <path d="M56 124 L128 176 L200 124" fill="none" stroke="#0F6CBD" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

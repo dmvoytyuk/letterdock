@@ -1,0 +1,1093 @@
+// Message actions (ARCHITECTURE 5.6): read/flag, move, archive, delete, spam, undo, mark all read,
+// empty folder. Everything is optimistic: the local database changes first, the change is written to
+// the pending queue (pendingQueue.ts), and the server follows in the background.
+//   - Server unreachable / temporary error : the change stays queued and is sent later, in order, when
+//     the account is online again (also after an app restart). The local change is NOT reverted.
+//   - The server refuses the change        : the local change is reverted and `action:failed` raised.
+//   - The message is gone on the server    : the op is dropped and the local row removed.
+//   - The folder was rebuilt (UIDVALIDITY) : the message is found again by Message-ID, or dropped.
+import { randomUUID } from 'node:crypto';
+import type {
+  ApplyActionReq,
+  ApplyActionRes,
+  AppError,
+  FolderId,
+  MarkAllReadReq,
+  MessageAction,
+  MessageId,
+  UndoRes,
+} from '../../shared/ipc';
+import { UNDO_WINDOW_MS } from '../../shared/ipc';
+import { AppException, toAppError } from '../../shared/errors';
+import { findProviderByHost } from '../../shared/providers';
+import type { ImapFlow } from 'imapflow';
+import { pendingTotal, type EngineContext, type PendingOpsApi } from '../context';
+import type { FolderRow } from '../db/repos/folderRepo';
+import type { MessageRow } from '../db/repos/messageRepo';
+import type { SessionManager } from '../imap/sessionManager';
+import { chunk, toSequenceSet } from '../imap/syncDiff';
+import {
+  PendingQueue,
+  type DeleteOp,
+  type FlagColumn,
+  type FlagOp,
+  type MoveOp,
+  type PendingOp,
+} from './pendingQueue';
+
+const UNDO_KEEP_MS = UNDO_WINDOW_MS + 30_000;
+const SERVER_BATCH = 500;
+
+interface MoveEntry {
+  id: MessageId;
+  accountId: string;
+  /** Where the message is on the server (its uid there is `origUid`). */
+  srcFolderId: FolderId;
+  destFolderId: FolderId;
+  origUid: number;
+  messageIdHeader: string | null;
+  /** Where undo puts it back: the folder the user saw it in before this action. */
+  restoreFolderId?: FolderId;
+  /** The uid to use on the server (differs from `origUid` after a UIDVALIDITY remap). */
+  serverUid?: number;
+}
+
+interface MoveGroup {
+  src: FolderRow;
+  dest: FolderRow;
+  entries: MoveEntry[];
+}
+
+interface UndoRecord {
+  createdAt: number;
+  entries: MoveEntry[];
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** How a batch of queued changes ended. */
+type Outcome = 'done' | 'stalled';
+
+/** Errors that mean "the user must fix something": keep the changes and wait, never revert. */
+const WAIT_CODES = new Set(['AUTH_FAILED', 'OAUTH_REAUTH_REQUIRED', 'OAUTH_NOT_CONFIGURED', 'TLS_ERROR']);
+/** An unknown (INTERNAL) error that keeps coming back is treated as final after this many tries. */
+const MAX_UNKNOWN_TRIES = 6;
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
+
+interface Located {
+  /** The folder's UIDVALIDITY changed since the uids were stored. */
+  mismatch: boolean;
+  /** local uid -> uid on the server now (null = the message is not there). */
+  resolved: Map<number, number | null>;
+}
+
+export class ActionService implements PendingOpsApi {
+  private undoStore = new Map<string, UndoRecord>();
+  /** Changes waiting for the server (persisted in `pending_op`). */
+  readonly queue: PendingQueue;
+  private runners = new Map<string, Promise<void>>();
+  private rerun = new Set<string>();
+  /** Resolves when the batch that is being sent right now (per account) is finished. */
+  private batchDone = new Map<string, Promise<void>>();
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private background = new Set<Promise<void>>();
+  private stopped = false;
+
+  constructor(
+    private readonly ctx: EngineContext,
+    private readonly sessions: SessionManager,
+  ) {
+    this.queue = new PendingQueue(
+      ctx.db,
+      () => ctx.now(),
+      (accountId) => this.queueChanged(accountId),
+    );
+    ctx.pendingOps = this;
+  }
+
+  // ---------- PendingOpsApi ----------
+
+  count(accountId: string): number {
+    return this.queue.count(accountId);
+  }
+
+  messageIdsWithFlagOps(accountId: string): Set<number> {
+    return this.queue.messageIdsWithFlagOps(accountId);
+  }
+
+  forgetAccount(accountId: string): void {
+    const t = this.retryTimers.get(accountId);
+    if (t) clearTimeout(t);
+    this.retryTimers.delete(accountId);
+    this.queue.dropAccount(accountId);
+  }
+
+  barrier(accountId: string): Promise<void> {
+    return this.runners.get(accountId) ?? Promise.resolve();
+  }
+
+  /** Send the waiting changes of an account now. Resolves when the queue is empty or stuck. */
+  flush(accountId: string): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const cur = this.runners.get(accountId);
+    if (cur) {
+      this.rerun.add(accountId); // something was added while the runner was finishing
+      return cur;
+    }
+    if (this.queue.count(accountId) === 0) return Promise.resolve();
+    const p: Promise<void> = this.runLoop(accountId).finally(() => {
+      if (this.runners.get(accountId) === p) this.runners.delete(accountId);
+      this.background.delete(p);
+      if (this.rerun.delete(accountId)) void this.flush(accountId);
+    });
+    this.runners.set(accountId, p);
+    this.background.add(p);
+    return p;
+  }
+
+  private kick(accountId: string): void {
+    void this.flush(accountId).catch(() => undefined);
+  }
+
+  private queueChanged(accountId: string): void {
+    this.ctx.hub.emit({ type: 'pending:count', accountId, count: pendingTotal(this.ctx, accountId) });
+    if (this.sessions.has(accountId)) this.sessions.get(accountId).refreshStatus();
+  }
+
+  /** Wait for every running server write (used by tests and on shutdown). Queued ops do not count. */
+  async drain(): Promise<void> {
+    while (this.background.size > 0) await Promise.allSettled([...this.background]);
+  }
+
+  /** Stop retrying (engine shutdown). Queued changes stay in the database for the next start. */
+  stop(): void {
+    this.stopped = true;
+    for (const t of this.retryTimers.values()) clearTimeout(t);
+    this.retryTimers.clear();
+  }
+
+  /** Run a server call, retrying temporary network errors a few times in a row. */
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    const delays = this.ctx.actionRetryDelaysMs ?? [1000, 4000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        const err = toAppError(e);
+        if (!err.retryable || attempt >= delays.length) throw e;
+        await sleep(delays[attempt]!);
+      }
+    }
+  }
+
+  /** Wait for a send that is running right now and involves these messages. */
+  private async settle(ids: MessageId[]): Promise<void> {
+    const accounts = new Set<string>();
+    for (const id of ids) {
+      const r = this.ctx.messages.row(id);
+      if (r) accounts.add(r.account_id);
+    }
+    for (const a of accounts) {
+      if (this.queue.hasInFlight(a, ids)) await (this.batchDone.get(a) ?? Promise.resolve());
+    }
+  }
+
+  // ---------- entry points ----------
+
+  async apply(req: ApplyActionReq): Promise<ApplyActionRes> {
+    await this.settle(req.messageIds);
+    return this.applyInternal(req.messageIds, req.action, true);
+  }
+
+  private async applyInternal(
+    ids: MessageId[],
+    action: MessageAction,
+    withUndo: boolean,
+  ): Promise<ApplyActionRes> {
+    const result: ApplyActionRes = { succeeded: [], failed: [] };
+    const rows: MessageRow[] = [];
+    for (const id of [...new Set(ids)]) {
+      const row = this.ctx.messages.row(id);
+      if (row && row.flag_deleted !== 1 && this.ctx.drafts?.isLocalDraft(row.id)) {
+        // A draft that is not on the server yet: delete forgets it; nothing else can be done with it.
+        if (action.type === 'delete') {
+          await this.ctx.drafts.discardRow(row.id);
+          result.succeeded.push(row.id);
+        } else if (action.type === 'markRead' || action.type === 'flag') {
+          result.succeeded.push(row.id);
+        } else {
+          result.failed.push({
+            id,
+            error: toAppError(
+              new AppException('NOT_FOUND', 'This draft is still being saved. Try again in a moment.', {
+                retryable: true,
+              }),
+            ),
+          });
+        }
+      } else if (row && row.flag_deleted !== 1) rows.push(row);
+      else
+        result.failed.push({
+          id,
+          error: toAppError(new AppException('NOT_FOUND', 'Message not found.')),
+        });
+    }
+    switch (action.type) {
+      case 'markRead':
+        this.setFlag(rows, 'flag_seen', action.read, result);
+        break;
+      case 'flag':
+        this.setFlag(rows, 'flag_flagged', action.flagged, result);
+        break;
+      default:
+        await this.relocateRows(rows, action, result, withUndo);
+    }
+    return result;
+  }
+
+  // ---------- flags ----------
+
+  private setFlag(
+    rows: MessageRow[],
+    column: FlagColumn,
+    value: boolean,
+    result: ApplyActionRes,
+  ): void {
+    const changed = new Set(
+      this.ctx.messages.setFlagColumn(
+        rows.map((r) => r.id),
+        column,
+        value,
+      ),
+    );
+    const folderIds = [...new Set(rows.map((r) => r.folder_id))];
+    for (const f of folderIds) this.ctx.folders.recomputeCounts(f);
+    if (changed.size > 0) this.ctx.hub.changed({ folderIds, updated: [...changed] });
+    result.succeeded.push(...rows.map((r) => r.id));
+
+    const accounts = new Set<string>();
+    this.ctx.db.transaction(() => {
+      for (const r of rows) {
+        if (!changed.has(r.id)) continue;
+        this.queue.addFlag(r.account_id, {
+          msgId: r.id,
+          mid: r.message_id,
+          folderId: r.folder_id,
+          col: column,
+          value,
+          prev: !value,
+        });
+        accounts.add(r.account_id);
+      }
+    })();
+    for (const a of accounts) this.kick(a);
+  }
+
+  // ---------- planning moves ----------
+
+  private isGmail(accountId: string): boolean {
+    const a = this.ctx.accounts.get(accountId);
+    return !!a && (a.provider === 'gmail' || findProviderByHost(a.imap.host)?.id === 'gmail');
+  }
+
+  /** The archive folder; creates "Archive" when a non-Gmail account has none. */
+  private async archiveFolder(accountId: string): Promise<FolderRow> {
+    if (this.isGmail(accountId)) {
+      // Gmail: archiving = leaving the Inbox label. Moving to All Mail does exactly that.
+      const all =
+        this.ctx.folders.rowByRole(accountId, 'all') ??
+        this.ctx.folders.rowByPath(accountId, '[Gmail]/All Mail');
+      if (!all) throw new AppException('UNSUPPORTED', 'This account has no All Mail folder.');
+      return all;
+    }
+    const existing = this.ctx.folders.rowByRole(accountId, 'archive');
+    if (existing) return existing;
+    const session = this.sessions.get(accountId);
+    await session.run('user', async (c) => {
+      const prefix = c.namespace?.prefix ?? '';
+      const created = await c.mailboxCreate(`${prefix}Archive`);
+      await c.mailboxSubscribe(created.path).catch(() => undefined);
+    });
+    await session.discoverFolders();
+    const made = this.ctx.folders.rowByRole(accountId, 'archive');
+    if (!made) throw new AppException('INTERNAL', 'The Archive folder could not be created.');
+    return made;
+  }
+
+  private roleFolder(
+    accountId: string,
+    role: 'trash' | 'junk' | 'inbox',
+    label: string,
+  ): FolderRow {
+    const f = this.ctx.folders.rowByRole(accountId, role);
+    if (!f) throw new AppException('UNSUPPORTED', `This account has no ${label} folder.`);
+    return f;
+  }
+
+  /**
+   * A move that is still waiting in the queue is undone locally first (the row goes back to where
+   * the server has it), so the new action starts from the real place. That is what merges
+   * "A to B, then B to C" into "A to C" and cancels "A to B, then back to A".
+   */
+  private restoreWaitingMove(
+    row: MessageRow,
+    op: MoveOp,
+    touched: Set<FolderId>,
+    removed: MessageId[],
+  ): MessageRow {
+    const orig = this.ctx.folders.row(op.p.srcFolderId);
+    if (!orig) throw new AppException('NOT_FOUND', 'The original folder was not found.');
+    const dup = this.ctx.messages.idAt(orig.id, op.p.origUid);
+    if (dup !== null && dup !== row.id) {
+      this.ctx.messages.deleteById(dup);
+      removed.push(dup);
+    }
+    touched.add(row.folder_id);
+    touched.add(orig.id);
+    this.ctx.messages.relocate(row.id, orig.id, op.p.origUid);
+    this.queue.remove(op);
+    return this.ctx.messages.row(row.id)!;
+  }
+
+  private async relocateRows(
+    rows: MessageRow[],
+    action: MessageAction,
+    result: ApplyActionRes,
+    withUndo: boolean,
+  ): Promise<void> {
+    const groups = new Map<string, MoveGroup>();
+    const permanent = new Map<FolderId, { src: FolderRow; rows: MessageRow[] }>();
+    const archiveCache = new Map<string, Promise<FolderRow>>();
+    // Rows put back from a waiting move (they are reported as changed even if nothing else happens).
+    const restored: MessageId[] = [];
+    const restoredFolders = new Set<FolderId>();
+    const removedDups: MessageId[] = [];
+
+    for (const original of rows) {
+      let row = original;
+      const visibleFolderId = original.folder_id;
+      try {
+        const waiting = this.queue.findMove(row.account_id, row.id);
+        if (waiting) {
+          row = this.restoreWaitingMove(row, waiting, restoredFolders, removedDups);
+          restored.push(row.id);
+        }
+        const src = this.ctx.folders.row(row.folder_id);
+        if (!src) throw new AppException('NOT_FOUND', 'Folder not found.');
+        let dest: FolderRow | null = null;
+        switch (action.type) {
+          case 'move': {
+            dest = this.ctx.folders.row(action.destFolderId);
+            if (!dest) throw new AppException('NOT_FOUND', 'The destination folder was not found.');
+            if (dest.account_id !== row.account_id) {
+              throw new AppException(
+                'INVALID_INPUT',
+                'Messages can only be moved within the same account.',
+              );
+            }
+            if (dest.selectable !== 1) {
+              throw new AppException('INVALID_INPUT', 'You cannot move messages into this folder.');
+            }
+            break;
+          }
+          case 'archive': {
+            const gmail = this.isGmail(row.account_id);
+            if (src.role === 'archive' || (gmail && src.role === 'all')) break; // already archived
+            let p = archiveCache.get(row.account_id);
+            if (!p) {
+              p = this.archiveFolder(row.account_id);
+              archiveCache.set(row.account_id, p);
+            }
+            dest = await p;
+            break;
+          }
+          case 'delete': {
+            const trash = this.ctx.folders.rowByRole(row.account_id, 'trash');
+            if (src.role === 'trash' || !trash) {
+              const g = permanent.get(src.id) ?? { src, rows: [] };
+              g.rows.push(row);
+              permanent.set(src.id, g);
+              continue;
+            }
+            dest = trash;
+            break;
+          }
+          case 'spam':
+            if (src.role === 'junk') break;
+            dest = this.roleFolder(row.account_id, 'junk', 'Junk');
+            break;
+          case 'notSpam':
+            if (src.role !== 'junk') {
+              throw new AppException('INVALID_INPUT', 'This message is not in the Junk folder.');
+            }
+            dest = this.roleFolder(row.account_id, 'inbox', 'Inbox');
+            break;
+          default:
+            throw new AppException('INVALID_INPUT', 'Unknown action.');
+        }
+        if (!dest || dest.id === src.id) {
+          result.succeeded.push(row.id); // nothing to do (or back where the server has it)
+          continue;
+        }
+        const key = `${src.id}>${dest.id}`;
+        const g = groups.get(key) ?? { src, dest, entries: [] };
+        g.entries.push({
+          id: row.id,
+          accountId: row.account_id,
+          srcFolderId: src.id,
+          destFolderId: dest.id,
+          origUid: row.uid,
+          messageIdHeader: row.message_id,
+          restoreFolderId: visibleFolderId !== src.id ? visibleFolderId : undefined,
+        });
+        groups.set(key, g);
+      } catch (e) {
+        result.failed.push({ id: original.id, error: toAppError(e) });
+      }
+    }
+
+    // Optimistic local change.
+    const allEntries: MoveEntry[] = [];
+    const accounts = new Set<string>();
+    this.ctx.db.transaction(() => {
+      for (const g of groups.values()) {
+        for (const e of g.entries) {
+          this.ctx.messages.relocate(e.id, g.dest.id, -e.id); // placeholder uid until the server answers
+          if (e.messageIdHeader) {
+            this.ctx.recentMoves.set(`${e.accountId}|${e.messageIdHeader}`, this.ctx.now());
+          }
+          this.queue.addMove(e.accountId, {
+            msgId: e.id,
+            mid: e.messageIdHeader,
+            srcFolderId: g.src.id,
+            destFolderId: g.dest.id,
+            origUid: e.origUid,
+            srcUv: this.ctx.folders.syncState(g.src.id)?.uidvalidity ?? null,
+          });
+          accounts.add(e.accountId);
+        }
+      }
+      for (const g of permanent.values()) {
+        const ids = g.rows.map((r) => r.id);
+        this.ctx.messages.setFlagColumn(ids, 'flag_deleted', true);
+        const uv = this.ctx.folders.syncState(g.src.id)?.uidvalidity ?? null;
+        for (const r of g.rows) {
+          this.queue.addDelete(r.account_id, {
+            msgId: r.id,
+            mid: r.message_id,
+            folderId: g.src.id,
+            uv,
+          });
+          accounts.add(r.account_id);
+        }
+      }
+    })();
+    for (const g of groups.values()) {
+      this.ctx.folders.recomputeCounts(g.src.id);
+      this.ctx.folders.recomputeCounts(g.dest.id);
+      this.ctx.hub.changed({
+        folderIds: [g.src.id, g.dest.id],
+        updated: g.entries.map((e) => e.id),
+      });
+      result.succeeded.push(...g.entries.map((e) => e.id));
+      allEntries.push(...g.entries);
+    }
+    for (const g of permanent.values()) {
+      const ids = g.rows.map((r) => r.id);
+      this.ctx.folders.recomputeCounts(g.src.id);
+      this.ctx.hub.changed({ folderIds: [g.src.id], removed: ids });
+      result.succeeded.push(...ids);
+    }
+    if (restored.length > 0 || removedDups.length > 0) {
+      for (const f of restoredFolders) this.ctx.folders.recomputeCounts(f);
+      this.ctx.hub.changed({
+        folderIds: [...restoredFolders],
+        updated: restored,
+        removed: removedDups,
+      });
+    }
+
+    if (withUndo && allEntries.length > 0) {
+      this.purgeUndo();
+      const token = randomUUID();
+      this.undoStore.set(token, { createdAt: this.ctx.now(), entries: allEntries });
+      result.undoToken = token;
+    }
+
+    for (const a of accounts) this.kick(a);
+  }
+
+  // ---------- sending the queue ----------
+
+  /** The connection is up, so commands can be sent. */
+  private canRun(accountId: string): boolean {
+    return this.sessions.has(accountId) && this.sessions.get(accountId).isReady();
+  }
+
+  private async runLoop(accountId: string): Promise<void> {
+    if (this.stopped) return;
+    for (;;) {
+      if (this.stopped || !this.canRun(accountId)) return;
+      const batch = this.queue.nextBatch(accountId);
+      if (batch.length === 0) return;
+      this.queue.setInFlight(batch, true);
+      let release!: () => void;
+      this.batchDone.set(
+        accountId,
+        new Promise<void>((r) => {
+          release = r;
+        }),
+      );
+      let outcome: Outcome;
+      try {
+        outcome = await this.executeBatch(accountId, batch);
+      } catch (e) {
+        // A bug or an unexpected failure: keep the changes, count the try, try again later.
+        this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'queued change failed');
+        this.queue.noteFailure(batch, String((e as Error)?.message ?? e));
+        outcome = 'stalled';
+      } finally {
+        this.queue.setInFlight(batch, false);
+        this.batchDone.delete(accountId);
+        release();
+      }
+      if (outcome === 'stalled') {
+        this.scheduleRetry(accountId, batch);
+        return;
+      }
+    }
+  }
+
+  private scheduleRetry(accountId: string, batch: readonly PendingOp[]): void {
+    if (this.stopped || this.retryTimers.has(accountId)) return;
+    const tries = Math.max(1, ...batch.map((o) => o.attempts));
+    const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (tries - 1));
+    const t = setTimeout(() => {
+      this.retryTimers.delete(accountId);
+      this.kick(accountId);
+    }, delay);
+    t.unref?.();
+    this.retryTimers.set(accountId, t);
+  }
+
+  private executeBatch(accountId: string, batch: PendingOp[]): Promise<Outcome> {
+    switch (batch[0]!.kind) {
+      case 'flag':
+        return this.execFlags(accountId, batch as FlagOp[]);
+      case 'move':
+        return this.execMoves(accountId, batch as MoveOp[]);
+      case 'delete':
+        return this.execDeletes(accountId, batch as DeleteOp[]);
+    }
+  }
+
+  /** The row an op is about; found again by Message-ID if its id is gone. */
+  private resolveRow(msgId: number, folderId: number, mid: string | null): MessageRow | null {
+    const r = this.ctx.messages.row(msgId);
+    if (r) return r;
+    if (mid) {
+      const id = this.ctx.messages.idsByMessageId(folderId, mid)[0];
+      if (id !== undefined) return this.ctx.messages.row(id);
+    }
+    return null;
+  }
+
+  /**
+   * imapflow does not throw when a command is refused: it returns `false`. Turn that into an error:
+   * a lost connection is temporary (the change waits), a refusal by the server is final.
+   */
+  private requireOk(c: ImapFlow, result: unknown, what: string): void {
+    if (result !== false) return;
+    if (!c.usable) {
+      throw new AppException('HOST_UNREACHABLE', 'The connection to the server was lost.');
+    }
+    throw new AppException('SERVER_REJECTED', `The server did not accept the ${what}.`, {
+      retryable: false,
+    });
+  }
+
+  /**
+   * Check, in the folder on the server, where each message is now:
+   * - same UIDVALIDITY: the uid itself (or null when the message is gone from the server);
+   * - changed UIDVALIDITY: looked up by Message-ID (null when not found).
+   */
+  private async locate(
+    c: ImapFlow,
+    folder: FolderRow,
+    items: { uid: number; mid: string | null }[],
+    expectedUv: number | null,
+  ): Promise<Located> {
+    const mb = await c.mailboxOpen(folder.path); // read-write
+    const mismatch = expectedUv !== null && Number(mb.uidValidity) !== expectedUv;
+    const resolved = new Map<number, number | null>();
+    if (!mismatch) {
+      const existing = new Set<number>();
+      for (const part of chunk(items.map((i) => i.uid), SERVER_BATCH)) {
+        const found = await c.search({ uid: toSequenceSet(part) }, { uid: true });
+        this.requireOk(c, found, 'request');
+        for (const u of found || []) existing.add(u);
+      }
+      for (const it of items) resolved.set(it.uid, existing.has(it.uid) ? it.uid : null);
+    } else {
+      for (const it of items) {
+        let uid: number | null = null;
+        if (it.mid) {
+          const found = await c.search({ header: { 'message-id': it.mid } }, { uid: true });
+          this.requireOk(c, found, 'request');
+          const list = found || [];
+          uid = list.length > 0 ? list[list.length - 1]! : null;
+        }
+        resolved.set(it.uid, uid);
+      }
+    }
+    return { mismatch, resolved };
+  }
+
+  /** Remove ops (and optionally their local rows) for messages that are gone or cannot be found. */
+  private dropOps(
+    accountId: string,
+    ops: readonly PendingOp[],
+    rowIds: MessageId[],
+    reason: 'gone' | 'uidvalidity' | null,
+  ): void {
+    if (ops.length === 0) return;
+    this.queue.removeMany(ops);
+    const folderIds = new Set<FolderId>();
+    const removed: MessageId[] = [];
+    for (const id of rowIds) {
+      const row = this.ctx.messages.row(id);
+      if (!row) continue;
+      folderIds.add(row.folder_id);
+      this.ctx.messages.deleteById(id);
+      removed.push(id);
+    }
+    if (removed.length > 0) {
+      for (const f of folderIds) this.ctx.folders.recomputeCounts(f);
+      this.ctx.hub.changed({ folderIds: [...folderIds], removed });
+    }
+    if (reason) {
+      this.ctx.hub.emit({ type: 'pending:dropped', accountId, count: ops.length, reason });
+    }
+  }
+
+  /** A batch failed. Temporary problem: keep it. Final refusal: undo it locally and tell the UI. */
+  private batchError(
+    ops: PendingOp[],
+    err: AppError,
+    ids: MessageId[],
+    revert: () => void,
+  ): Outcome {
+    const keep =
+      WAIT_CODES.has(err.code) ||
+      (err.retryable && !(err.code === 'INTERNAL' && ops.some((o) => o.attempts + 1 >= MAX_UNKNOWN_TRIES)));
+    if (keep) {
+      this.ctx.log.info({ code: err.code, ops: ops.length }, 'change kept for later');
+      this.queue.noteFailure(ops, err.message);
+      return 'stalled';
+    }
+    this.ctx.log.warn({ code: err.code, ops: ops.length }, 'server refused a change; reverting');
+    revert();
+    this.queue.removeMany(ops);
+    const first = ops[0]!;
+    this.ctx.hub.emit({
+      type: 'action:failed',
+      messageIds: ids,
+      error: err,
+      accountId: first.accountId,
+      kind: first.kind === 'flag' ? (first.p.col === 'flag_seen' ? 'read' : 'flag') : first.kind,
+    });
+    return 'done';
+  }
+
+  // ----- flags -----
+
+  private async execFlags(accountId: string, ops: FlagOp[]): Promise<Outcome> {
+    const { col, value } = ops[0]!.p;
+    const imapFlag = col === 'flag_seen' ? '\\Seen' : '\\Flagged';
+    interface Item {
+      op: FlagOp;
+      row: MessageRow;
+    }
+    const byFolder = new Map<FolderId, Item[]>();
+    const lost: FlagOp[] = [];
+    for (const op of ops) {
+      const row = this.resolveRow(op.p.msgId, op.p.folderId, op.p.mid);
+      if (!row || row.uid <= 0) lost.push(op);
+      else byFolder.set(row.folder_id, [...(byFolder.get(row.folder_id) ?? []), { op, row }]);
+    }
+    this.dropOps(accountId, lost, [], null);
+
+    for (const [folderId, items] of byFolder) {
+      const folder = this.ctx.folders.row(folderId);
+      if (!folder) {
+        this.dropOps(accountId, items.map((i) => i.op), [], null);
+        continue;
+      }
+      const expectedUv = this.ctx.folders.syncState(folderId)?.uidvalidity ?? null;
+      let loc: Located;
+      try {
+        loc = await this.withRetry(() =>
+          this.sessions.get(accountId).run('user', async (c) => {
+            const l = await this.locate(
+              c,
+              folder,
+              items.map((i) => ({ uid: i.row.uid, mid: i.row.message_id })),
+              expectedUv,
+            );
+            const uids = items
+              .map((i) => l.resolved.get(i.row.uid))
+              .filter((u): u is number => typeof u === 'number');
+            for (const part of chunk(uids, SERVER_BATCH)) {
+              const set = toSequenceSet(part);
+              const ok = value
+                ? await c.messageFlagsAdd(set, [imapFlag], { uid: true })
+                : await c.messageFlagsRemove(set, [imapFlag], { uid: true });
+              this.requireOk(c, ok, 'change');
+            }
+            return l;
+          }),
+        );
+      } catch (e) {
+        const outcome = this.batchError(
+          items.map((i) => i.op),
+          toAppError(e),
+          items.map((i) => i.row.id),
+          () => {
+            const ids = items.map((i) => i.row.id);
+            this.ctx.messages.setFlagColumn(ids, col, !value);
+            this.ctx.folders.recomputeCounts(folderId);
+            this.ctx.hub.changed({ folderIds: [folderId], updated: ids });
+          },
+        );
+        if (outcome === 'stalled') return 'stalled';
+        continue;
+      }
+      const gone = items.filter((i) => loc.resolved.get(i.row.uid) == null);
+      this.queue.removeMany(items.filter((i) => !gone.includes(i)).map((i) => i.op));
+      this.dropOps(
+        accountId,
+        gone.map((i) => i.op),
+        gone.map((i) => i.row.id),
+        gone.length > 0 ? (loc.mismatch ? 'uidvalidity' : 'gone') : null,
+      );
+    }
+    return 'done';
+  }
+
+  // ----- moves -----
+
+  private async execMoves(accountId: string, ops: MoveOp[]): Promise<Outcome> {
+    const first = ops[0]!.p;
+    const src = this.ctx.folders.row(first.srcFolderId);
+    const dest = this.ctx.folders.row(first.destFolderId);
+    if (!src || !dest) {
+      this.dropOps(accountId, ops, [], null);
+      return 'done';
+    }
+    const entries: MoveEntry[] = [];
+    const stale: MoveOp[] = [];
+    const opOf = new Map<MoveEntry, MoveOp>();
+    for (const op of ops) {
+      const row = this.ctx.messages.row(op.p.msgId);
+      if (!row || row.folder_id !== dest.id) {
+        stale.push(op); // the row changed in the meantime: nothing sensible to send
+        continue;
+      }
+      const e: MoveEntry = {
+        id: row.id,
+        accountId,
+        srcFolderId: src.id,
+        destFolderId: dest.id,
+        origUid: op.p.origUid,
+        messageIdHeader: op.p.mid,
+      };
+      entries.push(e);
+      opOf.set(e, op);
+    }
+    this.dropOps(accountId, stale, [], null);
+    if (entries.length === 0) return 'done';
+    // The moved message will show up in the destination: it is not "new mail" (the optimistic
+    // entry may be old when the move waited a long time in the queue).
+    for (const e of entries) {
+      if (e.messageIdHeader) this.ctx.recentMoves.set(`${accountId}|${e.messageIdHeader}`, this.ctx.now());
+    }
+
+    const g: MoveGroup = { src, dest, entries };
+    const uidMap = new Map<number, number>();
+    let loc: Located;
+    try {
+      loc = await this.withRetry(() =>
+        this.sessions.get(accountId).run('user', async (c) => {
+          const l = await this.locate(
+            c,
+            src,
+            entries.map((e) => ({ uid: e.origUid, mid: e.messageIdHeader })),
+            first.srcUv,
+          );
+          const live = entries
+            .map((e) => l.resolved.get(e.origUid))
+            .filter((u): u is number => typeof u === 'number');
+          for (const part of chunk(live, SERVER_BATCH)) {
+            const res = (await c.messageMove(toSequenceSet(part), dest.path, {
+              uid: true,
+            })) as { uidMap?: Map<number, number> } | false;
+            this.requireOk(c, res, 'move');
+            if (res && res.uidMap) for (const [from, to] of res.uidMap) uidMap.set(from, to);
+          }
+          return l;
+        }),
+      );
+    } catch (e) {
+      return this.batchError(
+        entries.map((x) => opOf.get(x)!),
+        toAppError(e),
+        entries.map((x) => x.id),
+        () => this.revertMove(g),
+      );
+    }
+    const gone = entries.filter((e) => loc.resolved.get(e.origUid) == null);
+    const live = entries.filter((e) => !gone.includes(e));
+    for (const e of live) e.serverUid = loc.resolved.get(e.origUid) ?? e.origUid;
+    this.queue.removeMany(live.map((e) => opOf.get(e)!));
+    this.dropOps(
+      accountId,
+      gone.map((e) => opOf.get(e)!),
+      gone.map((e) => e.id),
+      gone.length > 0 ? (loc.mismatch ? 'uidvalidity' : 'gone') : null,
+    );
+    if (live.length > 0) this.finalizeMove({ src, dest, entries: live }, uidMap, accountId);
+    return 'done';
+  }
+
+  /** The server did the move: swap the placeholder uid for the real one. */
+  private finalizeMove(g: MoveGroup, uidMap: Map<number, number>, accountId: string): void {
+    const { src, dest, entries } = g;
+    const removed: MessageId[] = [];
+    const unmapped: MoveEntry[] = [];
+    for (const e of entries) {
+      const row = this.ctx.messages.row(e.id);
+      if (!row || row.folder_id !== dest.id) continue; // changed again meanwhile
+      // A sync may have noticed the message in both places before we finished: drop the extras.
+      for (const stale of this.ctx.messages.deleteByUids(src.id, [e.origUid])) removed.push(stale);
+      const newUid = uidMap.get(e.serverUid ?? e.origUid);
+      if (newUid === undefined) {
+        unmapped.push(e);
+        continue;
+      }
+      const dup = this.ctx.messages.idAt(dest.id, newUid);
+      if (dup !== null && dup !== e.id) {
+        this.ctx.messages.deleteById(dup);
+        removed.push(dup);
+      }
+      this.ctx.messages.relocate(e.id, dest.id, newUid);
+    }
+    if (unmapped.length > 0) {
+      // No UIDPLUS: we cannot know the new UID. Let the next sync of the destination find it.
+      const gone = unmapped.map((e) => e.id);
+      for (const id of gone) this.ctx.messages.deleteById(id);
+      removed.push(...gone);
+      void this.sessions
+        .get(accountId)
+        .syncFolderById(dest.id)
+        .catch(() => undefined);
+    }
+    this.ctx.folders.recomputeCounts(src.id);
+    this.ctx.folders.recomputeCounts(dest.id);
+    this.ctx.hub.changed({
+      folderIds: [src.id, dest.id],
+      updated: entries.filter((e) => !removed.includes(e.id)).map((e) => e.id),
+      removed,
+    });
+  }
+
+  /** The server refused the move for good: put the rows back where they were. */
+  private revertMove(g: MoveGroup): void {
+    const { src, dest, entries } = g;
+    const removed: MessageId[] = [];
+    for (const e of entries) {
+      const row = this.ctx.messages.row(e.id);
+      if (!row || row.folder_id !== dest.id) continue;
+      const dup = this.ctx.messages.idAt(src.id, e.origUid);
+      if (dup !== null && dup !== e.id) {
+        this.ctx.messages.deleteById(dup);
+        removed.push(dup);
+      }
+      this.ctx.messages.relocate(e.id, src.id, e.origUid);
+    }
+    this.ctx.folders.recomputeCounts(src.id);
+    this.ctx.folders.recomputeCounts(dest.id);
+    this.ctx.hub.changed({
+      folderIds: [src.id, dest.id],
+      updated: entries.map((e) => e.id),
+      removed,
+    });
+  }
+
+  // ----- permanent delete -----
+
+  private async execDeletes(accountId: string, ops: DeleteOp[]): Promise<Outcome> {
+    interface Item {
+      op: DeleteOp;
+      row: MessageRow;
+    }
+    const byFolder = new Map<FolderId, Item[]>();
+    const lost: DeleteOp[] = [];
+    for (const op of ops) {
+      const row = this.resolveRow(op.p.msgId, op.p.folderId, op.p.mid);
+      if (!row || row.uid <= 0) lost.push(op);
+      else byFolder.set(row.folder_id, [...(byFolder.get(row.folder_id) ?? []), { op, row }]);
+    }
+    // Already gone locally: nothing left to delete.
+    this.dropOps(accountId, lost, [], null);
+
+    for (const [folderId, items] of byFolder) {
+      const folder = this.ctx.folders.row(folderId);
+      if (!folder) {
+        this.dropOps(accountId, items.map((i) => i.op), items.map((i) => i.row.id), null);
+        continue;
+      }
+      const uv = items[0]!.op.p.uv;
+      try {
+        await this.withRetry(() =>
+          this.sessions.get(accountId).run('user', async (c) => {
+            const l = await this.locate(
+              c,
+              folder,
+              items.map((i) => ({ uid: i.row.uid, mid: i.row.message_id })),
+              uv,
+            );
+            const uids = items
+              .map((i) => l.resolved.get(i.row.uid))
+              .filter((u): u is number => typeof u === 'number');
+            for (const part of chunk(uids, SERVER_BATCH)) {
+              const ok = await c.messageDelete(toSequenceSet(part), { uid: true });
+              this.requireOk(c, ok, 'delete');
+            }
+          }),
+        );
+      } catch (e) {
+        const outcome = this.batchError(
+          items.map((i) => i.op),
+          toAppError(e),
+          items.map((i) => i.row.id),
+          () => {
+            const ids = items.map((i) => i.row.id);
+            this.ctx.messages.setFlagColumn(ids, 'flag_deleted', false);
+            this.ctx.folders.recomputeCounts(folderId);
+            this.ctx.hub.changed({ folderIds: [folderId], added: ids });
+          },
+        );
+        if (outcome === 'stalled') return 'stalled';
+        continue;
+      }
+      // Deleted (or it was gone already): either way the message is finished.
+      this.dropOps(accountId, items.map((i) => i.op), items.map((i) => i.row.id), null);
+      this.ctx.folders.recomputeCounts(folderId);
+      this.ctx.hub.touchCounts();
+    }
+    return 'done';
+  }
+
+
+  // ---------- undo ----------
+
+  private purgeUndo(): void {
+    const now = this.ctx.now();
+    for (const [k, v] of this.undoStore) {
+      if (now - v.createdAt > UNDO_KEEP_MS) this.undoStore.delete(k);
+    }
+  }
+
+  async undo(token: string): Promise<UndoRes> {
+    this.purgeUndo();
+    const rec = this.undoStore.get(token);
+    if (!rec) throw new AppException('NOT_FOUND', 'This can no longer be undone.');
+    this.undoStore.delete(token);
+    await this.settle(rec.entries.map((e) => e.id));
+
+    // Put each message back into its original folder. Ids are normally unchanged.
+    const bySrc = new Map<FolderId, MessageId[]>();
+    for (const e of rec.entries) {
+      let id: MessageId | null = null;
+      const row = this.ctx.messages.row(e.id);
+      if (row && row.folder_id === e.destFolderId) id = row.id;
+      else if (e.messageIdHeader) {
+        // The id was lost (server gave no UID mapping): find it again by Message-ID.
+        const find = () => this.ctx.messages.idsByMessageId(e.destFolderId, e.messageIdHeader!)[0];
+        id = find() ?? null;
+        if (id === null) {
+          await this.sessions
+            .get(e.accountId)
+            .syncFolderById(e.destFolderId)
+            .catch(() => undefined);
+          id = find() ?? null;
+        }
+      }
+      const target = e.restoreFolderId ?? e.srcFolderId;
+      if (id !== null) bySrc.set(target, [...(bySrc.get(target) ?? []), id]);
+    }
+    const restored: MessageId[] = [];
+    for (const [srcFolderId, ids] of bySrc) {
+      const res = await this.applyInternal(ids, { type: 'move', destFolderId: srcFolderId }, false);
+      restored.push(...res.succeeded);
+    }
+    if (restored.length === 0) {
+      throw new AppException('NOT_FOUND', 'The messages could not be found to restore.');
+    }
+    return { restored };
+  }
+
+  // ---------- bulk ----------
+
+  async markAllRead(req: MarkAllReadReq): Promise<{ count: number }> {
+    const ids = this.ctx.messages.unreadIds(req.scope);
+    if (ids.length === 0) return { count: 0 };
+    const res = await this.applyInternal(ids, { type: 'markRead', read: true }, false);
+    return { count: res.succeeded.length };
+  }
+
+  /** Permanently delete everything in Trash or Junk (the UI asks first). */
+  async emptyFolder(folderId: FolderId): Promise<{ deleted: number }> {
+    const folder = this.ctx.folders.row(folderId);
+    if (!folder) throw new AppException('NOT_FOUND', 'Folder not found.');
+    if (folder.role !== 'trash' && folder.role !== 'junk') {
+      throw new AppException('INVALID_INPUT', 'Only Trash and Junk can be emptied.');
+    }
+    const local = this.ctx.messages.idsForFolder(folderId);
+    await this.settle(local);
+    const count = await this.withRetry(() =>
+      this.sessions.get(folder.account_id).run('user', async (c) => {
+        const mb = await c.mailboxOpen(folder.path);
+        if (mb.exists > 0) await c.messageDelete('1:*');
+        return mb.exists;
+      }),
+    );
+    const removed = this.ctx.messages.purgeFolder(folderId);
+    this.ctx.folders.recomputeCounts(folderId);
+    this.ctx.hub.changed({ folderIds: [folderId], removed });
+    return { deleted: Math.max(count, removed.length) };
+  }
+
+  /** Marks the source of a reply / forward on the server and locally (after a successful send). */
+  markReplied(rowId: MessageId, kind: 'answered' | 'forwarded'): void {
+    const row = this.ctx.messages.row(rowId);
+    if (!row || row.uid <= 0) return;
+    const folder = this.ctx.folders.row(row.folder_id);
+    if (!folder) return;
+    if (kind === 'answered') {
+      this.ctx.messages.setFlagColumn([rowId], 'flag_answered', true);
+      this.ctx.hub.changed({ folderIds: [row.folder_id], updated: [rowId] });
+    }
+    const flag = kind === 'answered' ? '\\Answered' : '$Forwarded';
+    const p: Promise<void> = this.sessions
+      .get(row.account_id)
+      .run('background', async (c) => {
+        await c.mailboxOpen(folder.path);
+        await c.messageFlagsAdd(String(row.uid), [flag], { uid: true });
+      })
+      .catch((e) => this.ctx.log.debug({ err: String(e?.message ?? e) }, 'mark replied failed'))
+      .finally(() => this.background.delete(p));
+    this.background.add(p);
+  }
+}

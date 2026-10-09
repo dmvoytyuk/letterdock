@@ -1,0 +1,239 @@
+// Runtime validation of every renderer request (ARCHITECTURE section 6).
+// The mapped type below makes a missing or wrongly-typed schema a compile error.
+import { z } from 'zod';
+import type { IpcChannel, IpcReq } from '../shared/ipc';
+
+const id = z.number().int().nonnegative();
+const accountId = z.string().min(1).max(100);
+const str = (max = 2000) => z.string().max(max);
+const address = z.object({ name: str(500).optional(), address: str(500) });
+const endpoint = z.object({
+  host: str(255),
+  port: z.number().int().min(1).max(65535),
+  security: z.enum(['ssl', 'starttls']),
+});
+
+const newAccountBase = {
+  email: str(320),
+  authType: z.enum(['password', 'oauth2']),
+  oauthProvider: z.enum(['microsoft', 'google']).optional(),
+  password: str(1000).optional(),
+  oauthSessionId: str(200).optional(),
+  username: str(320),
+  imap: endpoint,
+  smtp: endpoint,
+  syncDays: z.number().int().min(1).max(3650).optional(),
+  badge: str(4).optional(),
+};
+
+const sendReq = z.object({
+  draftId: str(100),
+  accountId,
+  to: z.array(address).max(500),
+  cc: z.array(address).max(500),
+  bcc: z.array(address).max(500),
+  subject: str(2000),
+  html: z.string().max(25 * 1024 * 1024),
+  attachmentTokens: z.array(str(200)).max(100),
+});
+
+const prepareCompose = z.object({
+  mode: z.enum(['new', 'reply', 'replyAll', 'forward']),
+  sourceMessageId: id.optional(),
+  accountId: accountId.optional(),
+  draftId: str(100).optional(),
+  draftMessageId: id.optional(),
+  mailto: str(8000).optional(),
+});
+
+const scope = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('unifiedInbox') }),
+  z.object({ kind: z.literal('unifiedFlagged') }),
+  z.object({ kind: z.literal('unifiedUnread') }),
+  z.object({ kind: z.literal('folder'), folderId: id }),
+  z.object({ kind: z.literal('accountInbox'), accountId }),
+]);
+
+const action = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('markRead'), read: z.boolean() }),
+  z.object({ type: z.literal('flag'), flagged: z.boolean() }),
+  z.object({ type: z.literal('move'), destFolderId: id }),
+  z.object({ type: z.literal('archive') }),
+  z.object({ type: z.literal('delete') }),
+  z.object({ type: z.literal('spam') }),
+  z.object({ type: z.literal('notSpam') }),
+]);
+
+const settingsPatch = z
+  .object({
+    notifications: z.object({
+      enabled: z.boolean(),
+      mutedAccountIds: z.array(accountId).max(10000),
+      showPreview: z.boolean(),
+      sound: z.boolean(),
+    }),
+    markReadDelayMs: z.number().int().min(-1).max(60000),
+    remoteImages: z.enum(['block', 'allowKnownSenders']),
+    theme: z.enum(['system', 'light', 'dark']),
+    startMinimizedToTray: z.boolean(),
+    closeToTray: z.boolean(),
+    launchAtLogin: z.boolean(),
+    maxBodyCacheMB: z.number().int().min(50).max(100000),
+    imageCacheMaxMb: z.number().int().min(50).max(10000),
+    imageCacheMaxAgeDays: z.number().int().min(1).max(3650),
+    maxWorkConnectionsPerAccount: z.number().int().min(1).max(4),
+    verboseLogging: z.boolean(),
+    autoUpdateCheck: z.boolean(),
+    undoSendDelayMs: z.union([z.literal(0), z.literal(5000), z.literal(10000), z.literal(30000)]),
+    alwaysShowCcBcc: z.boolean(),
+    rememberComposeBounds: z.boolean(),
+    suggestFromAllAccounts: z.boolean(),
+  })
+  .partial();
+
+const none = z.undefined();
+
+type Schemas = { [C in IpcChannel]: z.ZodType<IpcReq<C>> };
+
+export const schemas: Schemas = {
+  'accounts.list': none,
+  'accounts.discover': z.object({ email: str(320) }),
+  'accounts.test': z.object({ input: z.object(newAccountBase) }),
+  'accounts.add': z.object({
+    ...newAccountBase,
+    displayName: str(200),
+    color: str(32).optional(),
+  }),
+  'accounts.update': z.object({
+    accountId,
+    patch: z
+      .object({
+        displayName: str(200),
+        color: str(32).nullable(),
+        signature: str(20000).nullable(),
+        syncDays: z.number().int().min(1).max(3650),
+        enabled: z.boolean(),
+        sortOrder: z.number().int(),
+        badge: str(4),
+        imap: endpoint,
+        smtp: endpoint,
+        username: str(320),
+      })
+      .partial(),
+  }),
+  'accounts.updateCredentials': z.object({ accountId, password: str(1000) }),
+  'accounts.remove': z.object({ accountId }),
+  'accounts.reorder': z.object({ orderedIds: z.array(accountId).max(10000) }),
+  'accounts.statuses': none,
+
+  'oauth.getSettings': none,
+  'oauth.setSettings': z.object({
+    microsoft: z.object({ clientIdOverride: str(100), tenant: str(255) }).optional(),
+  }),
+  'oauth.start': z.object({
+    provider: z.enum(['microsoft', 'google']),
+    loginHint: str(320).optional(),
+  }),
+  'oauth.complete': z.object({ sessionId: str(200) }),
+  'oauth.cancel': z.object({ sessionId: str(200) }),
+  'oauth.reauthorize': z.object({ accountId }),
+
+  'folders.list': z.object({ accountId: accountId.optional() }),
+  'folders.counts': none,
+  'folders.create': z.object({
+    accountId,
+    parentPath: str(1000).nullable(),
+    name: str(200),
+  }),
+  'folders.rename': z.object({ folderId: id, newName: str(200) }),
+  'folders.delete': z.object({ folderId: id }),
+  'folders.empty': z.object({ folderId: id }),
+
+  'messages.list': z.object({
+    scope,
+    cursor: z.object({ date: z.number(), id }).nullable(),
+    limit: z.number().int().min(1).max(200),
+    unreadOnly: z.boolean().optional(),
+  }),
+  'messages.get': z.object({ messageId: id }),
+  'messages.getHeaders': z.object({ messageIds: z.array(id).max(500) }),
+  'messages.rawSource': z.object({ messageId: id }),
+  'messages.apply': z.object({ messageIds: z.array(id).min(1).max(1000), action }),
+  'messages.undo': z.object({ undoToken: str(200) }),
+  'messages.markAllRead': z.object({
+    scope: z.union([scope, z.object({ kind: z.literal('account'), accountId })]),
+  }),
+  'senders.allowImages': z.object({ address: str(320), allow: z.boolean() }),
+  'senders.listAllowed': none,
+  'message.openWindow': z.object({ messageId: id }),
+  'message.print': z.object({
+    messageId: id,
+    bodyHtml: z
+      .string()
+      .max(10 * 1024 * 1024)
+      .optional(),
+  }),
+  'contacts.suggest': z.object({
+    query: str(200),
+    accountId: accountId.optional(),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
+  'contacts.forget': z.object({ address: str(320).min(3) }),
+  'attachments.open': z.object({ attachmentId: id }),
+  'attachments.saveAs': z.object({ attachmentId: id }),
+  'attachments.cidData': z.object({ messageId: id, contentId: str(500) }),
+
+  'compose.openWindow': prepareCompose,
+  'compose.prepare': prepareCompose,
+  'compose.pickFiles': none,
+  'compose.attachData': z.object({
+    filename: str(255),
+    contentType: str(200),
+    data: z.instanceof(Uint8Array).refine((d) => d.byteLength <= 25 * 1024 * 1024),
+  }),
+  'compose.discard': z.object({ draftId: str(100) }),
+  'compose.saveDraft': sendReq,
+  'compose.send': sendReq,
+  'drafts.retrySave': z.object({ messageId: id }),
+  'outbox.list': none,
+  'outbox.retry': z.object({ outboxId: id }),
+  'outbox.cancel': z.object({ outboxId: id }),
+
+  'search.local': z.object({
+    query: str(1000),
+    accountId: accountId.optional(),
+    limit: z.number().int().min(1).max(500).optional(),
+    offset: z.number().int().min(0).optional(),
+  }),
+  'search.server': z.object({
+    query: str(1000),
+    accountIds: z.array(accountId).max(10000).optional(),
+  }),
+
+  'sync.account': z.object({ accountId }),
+  'sync.folder': z.object({ folderId: id }),
+  'sync.all': none,
+  'sync.loadOlder': z
+    .object({ folderId: id.optional(), scope: scope.optional() })
+    .refine((r) => r.folderId !== undefined || r.scope !== undefined),
+
+  'settings.get': none,
+  'settings.set': settingsPatch,
+  'images.cacheInfo': none,
+  'images.clearCache': none,
+  'app.openExternal': z.object({ url: str(8000) }),
+  'app.openLogs': none,
+  'app.mailtoStatus': none,
+  'app.openDefaultAppsSettings': none,
+  'app.info': none,
+  'system.networkChanged': z.object({ online: z.boolean() }),
+  'log.write': z.object({ level: z.enum(['warn', 'error']), msg: str(4000) }),
+
+  'updates.status': none,
+  'updates.check': none,
+  'updates.install': none,
+};
+
+export function isKnownChannel(c: unknown): c is IpcChannel {
+  return typeof c === 'string' && Object.prototype.hasOwnProperty.call(schemas, c);
+}

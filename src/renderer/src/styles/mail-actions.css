@@ -1,0 +1,323 @@
+/* Styles for mail actions, search, outbox and image settings (M2/M3 UI). */
+
+/* ----- drag and drop ----- */
+.drag-pill {
+  position: fixed;
+  top: -100px;
+  left: -100px;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  background: var(--bg-elev);
+  border: 1px solid var(--accent);
+  box-shadow: var(--e2);
+  color: var(--t1);
+  font: 13px var(--ff);
+  white-space: nowrap;
+}
+.drag-pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drag-pill b {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+body.dragging-mail .row.sel {
+  opacity: 0.6;
+}
+.srow.drop-ok {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-sub);
+}
+.srow.drop-no {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.cnt.bad-cnt {
+  color: var(--danger);
+}
+
+/* ----- list header extras ----- */
+.empty-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--t2);
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+}
+.empty-bar span {
+  flex: 1;
+}
+.cnt-note {
+  font-size: 12px;
+  color: var(--t3);
+  white-space: nowrap;
+}
+.lhead .sortsel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  height: 28px;
+  padding: 0 6px;
+}
+.lhead h2 {
+  min-width: 0;
+}
+
+/* ----- search ----- */
+.schips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sdrop .schips {
+  padding: 0;
+  border: 0;
+  flex: 1;
+}
+.schip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  font-size: 12px;
+  max-width: 200px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.schip:hover:not(.static) {
+  background: var(--hover);
+}
+.schip.on {
+  background: var(--accent-sub);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.schip.static {
+  background: var(--bg-alt);
+}
+.schip.help {
+  width: 24px;
+  padding: 0;
+  justify-content: center;
+}
+.sdrop {
+  z-index: 60;
+  max-height: calc(100vh - 60px);
+  overflow: auto;
+}
+.sd-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.sd-lbl {
+  width: 64px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--t2);
+  line-height: 24px;
+}
+.sd-help {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-alt);
+  font-size: 12px;
+}
+.sd-help > div {
+  display: flex;
+  gap: 12px;
+}
+.sd-help dt {
+  width: 150px;
+  flex: none;
+  font-family: var(--mono);
+}
+.sd-help dd {
+  color: var(--t2);
+}
+.sd-recent {
+  display: grid;
+  gap: 2px;
+}
+.sd-recent .sd-lbl {
+  width: auto;
+}
+.sd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  text-align: left;
+  width: 100%;
+  font-size: 13px;
+}
+.sd-item:hover {
+  background: var(--hover);
+}
+.sd-item span:not(.kbd) {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sd-item .kbd {
+  font-size: 11px;
+  color: var(--t3);
+}
+.search-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--t2);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.search-note span {
+  flex: 1;
+}
+.search .box .ibtn {
+  margin-right: -4px;
+}
+
+/* ----- move dialog ----- */
+.movelist {
+  margin-top: 8px;
+  max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+}
+.mgroup {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t3);
+  padding: 6px 8px 2px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.mrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  text-align: left;
+  font-size: 13px;
+}
+.mrow.act,
+.mrow:hover:not([disabled]) {
+  background: var(--hover);
+}
+.mrow[disabled] {
+  color: var(--tdis);
+}
+.mrow .nm {
+  flex: none;
+}
+.mrow .pth {
+  color: var(--t3);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ----- outbox ----- */
+.obox {
+  list-style: none;
+  flex: 1;
+  overflow: auto;
+}
+.orow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.orow .dot {
+  margin-top: 6px;
+}
+.orow .otx {
+  flex: 1;
+  min-width: 0;
+}
+.orow .osub {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orow .ost {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--t2);
+}
+.orow .ost.bad {
+  color: var(--danger);
+}
+.orow .oact {
+  display: flex;
+  gap: 6px;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ----- settings: allowed senders ----- */
+.allowed {
+  list-style: none;
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 420px;
+}
+.allowed li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 2px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.allowed li:last-child {
+  border-bottom: 0;
+}

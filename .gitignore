@@ -1,0 +1,23 @@
+node_modules/
+out/
+dist/
+release/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env*
+*.log
+.DS_Store
+coverage/
+.vitest-cache/
+*.tsbuildinfo
+Thumbs.db
+*.tmp
+scratch/
+.scratch/
+.claude/
+.idea/
+.vscode/
+
+# Internal design docs (kept local, not published)
+docs/

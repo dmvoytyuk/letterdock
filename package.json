@@ -1,0 +1,79 @@
+{
+  "name": "mailroom",
+  "productName": "Mailroom",
+  "version": "0.2.5",
+  "description": "Free, open-source Windows email client with unlimited accounts",
+  "license": "MIT",
+  "homepage": "https://github.com/voydapps/mailroom#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voydapps/mailroom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/voydapps/mailroom/issues"
+  },
+  "private": true,
+  "main": "./out/main/index.js",
+  "author": "voyd",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "dist": "electron-vite build && electron-builder --win nsis",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "postinstall": "node node_modules/electron/install.js && electron-builder install-app-deps",
+    "icons": "node scripts/build-icons.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "fast-xml-parser": "^5.11.2",
+    "html-to-text": "^10.0.1",
+    "imapflow": "^2.2.11",
+    "mailparser": "^3.9.37",
+    "nodemailer": "^10.0.16",
+    "pino": "^10.4.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@resvg/resvg-js": "^2.6.2",
+    "@tanstack/react-virtual": "^3.14.13",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/css-tree": "^3.2.0",
+    "@types/html-to-text": "^9.0.4",
+    "@types/mailparser": "^3.9.0",
+    "@types/node": "^24.19.1",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/smtp-server": "^3.5.13",
+    "@vitejs/plugin-react": "^5.2.0",
+    "css-tree": "^3.2.1",
+    "dompurify": "^3.4.16",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "hoodiecrow-imap": "^3.3.1",
+    "jsdom": "^30.1.2",
+    "png-to-ico": "^3.0.2",
+    "prettier": "^3.9.9",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "smtp-server": "^3.19.18",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1",
+    "vite": "^7.3.7",
+    "vitest": "^5.0.3",
+    "zustand": "^5.0.15"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
