@@ -376,7 +376,13 @@ export class ComposeService implements DraftsApi {
       inReplyToMessageId: d.source_message_pk,
       mode: d.mode as ComposeMode,
       attachments: this.attachmentsFor(content.attachmentTokens),
+      pausedSendAt: d.paused_send_at ?? null,
     };
+  }
+
+  /** The "scheduling is paused" strip was shown: forget the old time. */
+  clearPaused(draftId: string): void {
+    this.repo.setPausedSendAt(draftId, null);
   }
 
   /** Edit a draft message from a Drafts folder. Formatting is reduced to text (safe by design). */
@@ -961,7 +967,7 @@ export class ComposeService implements DraftsApi {
   }
 
   /** A cancelled schedule is a normal draft again: shown in Drafts and uploaded in the background. */
-  reattachDraft(meta: OutboxMeta): string {
+  reattachDraft(meta: OutboxMeta, pausedSendAt: number | null = null): string {
     const req = meta.req;
     this.repo.upsertDraft({
       draft_id: req.draftId,
@@ -978,6 +984,7 @@ export class ComposeService implements DraftsApi {
       server_dirty: 0,
       rev: 0,
     });
+    this.repo.setPausedSendAt(req.draftId, pausedSendAt);
     this.saveDraftNow(req);
     return req.draftId;
   }
@@ -989,6 +996,9 @@ export class ComposeService implements DraftsApi {
     subject: string;
     meta: OutboxMeta;
     raw: Buffer;
+    /** The history of an earlier Outbox row of this message (kept over a restart). */
+    attempts?: number;
+    lastError?: string | null;
   }): Promise<number> {
     const now = this.ctx.now();
     const meta: OutboxMeta = { ...a.meta, scheduledId: a.scheduledId };
@@ -998,6 +1008,8 @@ export class ComposeService implements DraftsApi {
       sendAfter: now,
       metaJson: JSON.stringify(meta),
       createdAt: now,
+      attempts: a.attempts,
+      lastError: a.lastError,
     });
     const rawPath = join(this.ctx.dataDir, 'outbox', `${id}.eml`);
     try {

@@ -83,6 +83,9 @@ export class ScheduledService implements SchedulerApi {
         this.finish(sid);
         return false;
       }
+      // The Outbox row is made again later (after the Sent folder was checked). Keep how often it
+      // was tried and why it failed, so the new row does not look like a first try.
+      this.repo.setResume(sid, row.attempts, row.last_error);
       return true;
     });
   }
@@ -141,7 +144,7 @@ export class ScheduledService implements SchedulerApi {
     if (!r) return null;
     let draftId: string | null = null;
     try {
-      draftId = this.compose.reattachDraft(JSON.parse(r.meta_json) as OutboxMeta);
+      draftId = this.compose.reattachDraft(JSON.parse(r.meta_json) as OutboxMeta, r.send_at);
     } catch (e) {
       this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'could not restore a cancelled scheduled message');
     }
@@ -372,7 +375,7 @@ export class ScheduledService implements SchedulerApi {
       throw new AppException('CANCELLED', 'The message is already being sent.');
     }
     const meta = JSON.parse(r.meta_json) as OutboxMeta;
-    const draftId = this.compose.reattachDraft(meta);
+    const draftId = this.compose.reattachDraft(meta, r.send_at);
     this.repo.delete(id);
     void rm(r.raw_path, { force: true }).catch(() => undefined);
     this.changed();
@@ -417,7 +420,7 @@ export class ScheduledService implements SchedulerApi {
       status: 'sending',
       sending_since: now,
       attempt: r.attempt + 1,
-      last_error: null,
+      last_error: r.resume_attempts > 0 ? r.resume_error : null,
       outbox_id: null,
     });
     this.active.add(r.id);
@@ -429,7 +432,10 @@ export class ScheduledService implements SchedulerApi {
         subject: r.subject,
         meta: JSON.parse(r.meta_json) as OutboxMeta,
         raw,
+        attempts: r.resume_attempts,
+        lastError: r.resume_error,
       });
+      if (r.resume_attempts > 0 || r.resume_error) this.repo.setResume(r.id, 0, null);
       // The Outbox may have finished already (a very fast send): then the row is gone.
       if (this.repo.get(r.id)) this.repo.update(r.id, { outbox_id: outboxId });
     } catch (e) {

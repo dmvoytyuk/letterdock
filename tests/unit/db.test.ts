@@ -68,6 +68,51 @@ describe('migrations', () => {
     expect(rows.find((r) => r.uid === 11)!.c).toBe(1);
   });
 
+  it('010 keeps outbox and scheduled rows and never reuses an id again', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    migrate(db, MIGRATIONS.slice(0, 9));
+    db.prepare("INSERT INTO account (id,email,display_name,provider,auth_type,imap_host,imap_port,imap_security,smtp_host,smtp_port,smtp_security,username,created_at) VALUES ('a','a@x.test','A','generic','password','h',993,'ssl','h',465,'ssl','a',1)").run();
+    const ob = db.prepare(
+      "INSERT INTO outbox (account_id, raw_path, created_at, attempts, last_error, state, subject, send_after, meta_json) VALUES ('a','p',1,?,?,?,?,?,'{}')",
+    );
+    ob.run(0, null, 'queued', 'first', 5);
+    ob.run(3, 'boom', 'failed', 'second', 6);
+    db.prepare(
+      "INSERT INTO scheduled_send (account_id, draft_id, send_at, created_at, meta_json, message_id, status, attempt) VALUES ('a','d',9,1,'{}','<m@x>','held',2)",
+    ).run();
+    db.prepare("INSERT INTO draft_state (draft_id, account_id, mode, message_id, updated_at) VALUES ('d1','a','new','<d@x>',1)").run();
+
+    expect(migrate(db)).toBe(MIGRATIONS.length);
+    const rows = db.prepare('SELECT id, attempts, last_error, state, subject, send_after FROM outbox ORDER BY id').all();
+    expect(rows).toEqual([
+      { id: 1, attempts: 0, last_error: null, state: 'queued', subject: 'first', send_after: 5 },
+      { id: 2, attempts: 3, last_error: 'boom', state: 'failed', subject: 'second', send_after: 6 },
+    ]);
+    expect(db.prepare('SELECT id, status, attempt, resume_attempts AS ra, resume_error AS re FROM scheduled_send').all()).toEqual([
+      { id: 1, status: 'held', attempt: 2, ra: 0, re: null },
+    ]);
+    expect(db.prepare("SELECT paused_send_at AS p FROM draft_state WHERE draft_id = 'd1'").get()).toEqual({ p: null });
+
+    // The newest row is removed: the next one still gets a new number.
+    db.prepare('DELETE FROM outbox WHERE id = 2').run();
+    const next = db
+      .prepare("INSERT INTO outbox (account_id, raw_path, created_at) VALUES ('a','p',1)")
+      .run();
+    expect(Number(next.lastInsertRowid)).toBe(3);
+    db.prepare('DELETE FROM outbox WHERE id = 3').run();
+    expect(Number(db.prepare("INSERT INTO outbox (account_id, raw_path, created_at) VALUES ('a','p',1)").run().lastInsertRowid)).toBe(4);
+    db.prepare('DELETE FROM scheduled_send').run();
+    const s2 = db
+      .prepare("INSERT INTO scheduled_send (account_id, draft_id, send_at, created_at, meta_json, message_id) VALUES ('a','d',9,1,'{}','<m@x>')")
+      .run();
+    expect(Number(s2.lastInsertRowid)).toBe(2);
+    // The index for due messages is still there.
+    expect(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_sched_due'").get(),
+    ).toBeTruthy();
+  });
+
   it('rolls back a failing migration', () => {
     const db = new Database(':memory:');
     expect(() =>

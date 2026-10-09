@@ -537,3 +537,158 @@ describe('after a crash while sending', () => {
     await waitFor('finished', () => h2.engine.scheduled.list().length === 0);
   });
 });
+
+describe('Same time: the old send time travels with the draft', () => {
+  it('Edit (scheduled.cancel) gives the reopened draft its previous time, and it survives saving', async () => {
+    const c = await boot();
+    const item = await schedule(c, 3 * HOUR, { subject: 'Edit me' });
+    const res = await call<ScheduledCancelRes>(c.h, 'scheduled.cancel', { id: item.id });
+    expect(res.sendAt).toBe(item.sendAt);
+    const reopened = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: res.draftId });
+    expect(reopened.pausedSendAt).toBe(item.sendAt);
+    expect(reopened.subject).toBe('Edit me');
+
+    // Autosave must not lose it.
+    await call(c.h, 'compose.saveDraft', {
+      draftId: res.draftId,
+      accountId: c.acc.id,
+      to: [{ address: 'friend@example.com' }],
+      cc: [],
+      bcc: [],
+      subject: 'Edit me, better',
+      html: '<p>changed</p>',
+      attachmentTokens: [],
+    });
+    const again = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: res.draftId });
+    expect(again.pausedSendAt).toBe(item.sendAt);
+    expect(again.subject).toBe('Edit me, better');
+  });
+
+  it('compose.clearPaused forgets it; a normal draft never has one', async () => {
+    const c = await boot();
+    const item = await schedule(c, 2 * HOUR);
+    const res = await call<ScheduledCancelRes>(c.h, 'scheduled.cancel', { id: item.id });
+    await call(c.h, 'compose.clearPaused', { draftId: res.draftId });
+    const after = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: res.draftId });
+    expect(after.pausedSendAt).toBeNull();
+    // Clearing an unknown draft is harmless.
+    await call(c.h, 'compose.clearPaused', { draftId: 'does-not-exist' });
+
+    const fresh = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', accountId: c.acc.id });
+    expect(fresh.pausedSendAt ?? null).toBeNull();
+  });
+
+  it('is replaced by the new time when the draft is scheduled and edited again', async () => {
+    const c = await boot();
+    const first = await schedule(c, 2 * HOUR, { subject: 'Twice' });
+    const cancelled = await call<ScheduledCancelRes>(c.h, 'scheduled.cancel', { id: first.id });
+    const second = await call<ScheduledItem>(c.h, 'scheduled.create', {
+      draftId: cancelled.draftId,
+      sendAt: c.clock.now() + 5 * HOUR,
+    });
+    expect(second.sendAt).not.toBe(first.sendAt);
+    const back = await call<ScheduledCancelRes>(c.h, 'scheduled.cancel', { id: second.id });
+    const reopened = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: back.draftId });
+    expect(reopened.pausedSendAt).toBe(second.sendAt);
+  });
+
+  it('Cancel send on a scheduled message in the Outbox also keeps its time', async () => {
+    const c = await boot();
+    smtp!.failNextData(1, 451);
+    (c.h.engine.ctx as { sendRetryDelaysMs?: number[] }).sendRetryDelaysMs = [60 * MIN];
+    const item = await schedule(c, HOUR, { subject: 'late' });
+    c.clock.offset += 2 * HOUR;
+    await recheck(c);
+    const queued = await waitFor('waiting in the Outbox', async () =>
+      (await outbox(c)).find((o) => o.state === 'queued' && o.attempts === 1),
+    );
+    const res = await call<{ draftId: string }>(c.h, 'outbox.cancel', { outboxId: queued.id });
+    const reopened = await call<ComposeDraft>(c.h, 'compose.prepare', { mode: 'new', draftId: res.draftId });
+    expect(reopened.pausedSendAt).toBe(item.sendAt);
+  });
+});
+
+describe('ids are never reused', () => {
+  it('an Outbox id is not given again after the message was cancelled', async () => {
+    const c = await boot();
+    c.h.settings.undoSendDelayMs = 30_000;
+    const send = async (subject: string) => {
+      const d = await draftReq(c, { subject });
+      return call<{ outboxId: number }>(c.h, 'compose.send', d);
+    };
+    const a = await send('first');
+    await call(c.h, 'outbox.cancel', { outboxId: a.outboxId });
+    const b = await send('second');
+    expect(b.outboxId).toBeGreaterThan(a.outboxId);
+    await call(c.h, 'outbox.cancel', { outboxId: b.outboxId });
+    const d = await send('third');
+    expect(d.outboxId).toBeGreaterThan(b.outboxId);
+    expect(new Set([a.outboxId, b.outboxId, d.outboxId]).size).toBe(3);
+  });
+
+  it('a scheduled id is not given again after the message was deleted', async () => {
+    const c = await boot();
+    const a = await schedule(c, HOUR);
+    await call(c.h, 'scheduled.delete', { id: a.id });
+    const b = await schedule(c, HOUR);
+    expect(b.id).toBeGreaterThan(a.id);
+  });
+});
+
+describe('a send that was retrying keeps its history over a restart', () => {
+  it('keeps the number of tries and the last error when the Outbox row is made again', async () => {
+    const c = await boot({ persistent: true });
+    smtp!.failNextData(1, 451);
+    (c.h.engine.ctx as { sendRetryDelaysMs?: number[] }).sendRetryDelaysMs = [60 * MIN];
+    await schedule(c, HOUR, { subject: 'still trying' });
+    c.clock.offset += 2 * HOUR;
+    await recheck(c);
+    const before = await waitFor('first try failed', async () =>
+      (await outbox(c)).find((o) => o.state === 'queued' && o.attempts === 1 && o.lastError),
+    );
+    await c.h.engine.shutdown();
+    harnesses.splice(harnesses.indexOf(c.h), 1);
+
+    const h2 = await createHarness(imap!, { smtp: smtp!, now: c.clock.now, scheduledSpacingMs: 20, ...c.extra });
+    harnesses.push(h2);
+    (h2.engine.ctx as { sendRetryDelaysMs?: number[] }).sendRetryDelaysMs = [60 * MIN, 60 * MIN];
+    h2.engine.start();
+    await waitFor('online', () => h2.engine.sessions.statuses()[0]?.state === 'online');
+    expect(h2.engine.compose.list()).toHaveLength(0);
+    // The schedule remembers the history until the Outbox row is made again.
+    expect(h2.engine.ctx.db.prepare('SELECT resume_attempts AS a, resume_error AS e FROM scheduled_send').get()).toEqual({
+      a: 1,
+      e: before.lastError,
+    });
+    // The Sent folder has no copy: it is sent again. This time the server fails once more.
+    smtp!.failNextData(1, 451);
+    c.clock.offset += 6 * MIN;
+    await h2.engine.scheduled.recheck();
+    // 1 earlier try + this one = 2, not "1 try" as if it had just started.
+    await waitFor('second failure counted', () => h2.engine.compose.list()[0]?.attempts === 2);
+    expect(h2.engine.compose.list()[0]!.lastError).toBeTruthy();
+    // The history was handed over: nothing is kept on the schedule row any more.
+    expect(h2.engine.ctx.db.prepare('SELECT resume_attempts AS a, resume_error AS e FROM scheduled_send').get()).toEqual({
+      a: 0,
+      e: null,
+    });
+  });
+
+  it('a normal Outbox message that was retrying keeps its tries and error after a restart', async () => {
+    const c = await boot({ persistent: true });
+    smtp!.failNextData(1, 451);
+    (c.h.engine.ctx as { sendRetryDelaysMs?: number[] }).sendRetryDelaysMs = [60 * MIN];
+    const d = await draftReq(c, { subject: 'plain retry' });
+    await call(c.h, 'compose.send', d);
+    const before = await waitFor('first try failed', async () =>
+      (await outbox(c)).find((o) => o.state === 'queued' && o.attempts === 1 && o.lastError),
+    );
+    await c.h.engine.shutdown();
+    harnesses.splice(harnesses.indexOf(c.h), 1);
+    const h2 = await createHarness(imap!, { smtp: smtp!, now: c.clock.now, scheduledSpacingMs: 20, ...c.extra });
+    harnesses.push(h2);
+    h2.engine.start();
+    const after = h2.engine.compose.list().find((o) => o.id === before.id)!;
+    expect(after).toMatchObject({ attempts: 1, lastError: before.lastError });
+  });
+});

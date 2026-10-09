@@ -31,6 +31,8 @@ export interface DraftStateRow {
   server_dirty: number;
   /** Counts saves. */
   rev: number;
+  /** The time a scheduled message had before "Edit" turned it into this draft ("Same time"). */
+  paused_send_at?: number | null;
 }
 
 export interface ComposeFileRow {
@@ -52,13 +54,24 @@ export class ComposeRepo {
     sendAfter: number;
     metaJson: string;
     createdAt: number;
+    /** A message that was on its way before (a scheduled one after a restart) keeps its history. */
+    attempts?: number;
+    lastError?: string | null;
   }): number {
     const res = this.db
       .prepare(
-        `INSERT INTO outbox (account_id, raw_path, created_at, attempts, state, subject, send_after, meta_json)
-         VALUES (?, '', ?, 0, 'queued', ?, ?, ?)`,
+        `INSERT INTO outbox (account_id, raw_path, created_at, attempts, last_error, state, subject, send_after, meta_json)
+         VALUES (?, '', ?, ?, ?, 'queued', ?, ?, ?)`,
       )
-      .run(r.accountId, r.createdAt, r.subject, r.sendAfter, r.metaJson);
+      .run(
+        r.accountId,
+        r.createdAt,
+        r.attempts ?? 0,
+        r.lastError ?? null,
+        r.subject,
+        r.sendAfter,
+        r.metaJson,
+      );
     return Number(res.lastInsertRowid);
   }
 
@@ -98,7 +111,10 @@ export class ComposeRepo {
     );
   }
 
-  upsertDraft(d: DraftStateRow): void {
+  upsertDraft(row: DraftStateRow): void {
+    // `paused_send_at` is not part of a save: only setPausedSendAt() changes it.
+    const { paused_send_at: _paused, ...d } = row;
+    void _paused;
     this.db
       .prepare(
         `INSERT INTO draft_state (draft_id, account_id, mode, source_message_pk, in_reply_to, references_h,
@@ -153,6 +169,10 @@ export class ComposeRepo {
 
   setServerFolder(draftId: string, folderId: number): void {
     this.db.prepare('UPDATE draft_state SET server_folder_id = ? WHERE draft_id = ?').run(folderId, draftId);
+  }
+
+  setPausedSendAt(draftId: string, at: number | null): void {
+    this.db.prepare('UPDATE draft_state SET paused_send_at = ? WHERE draft_id = ?').run(at, draftId);
   }
 
   deleteDraft(draftId: string): void {

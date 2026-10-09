@@ -7,6 +7,7 @@ import localDrafts from './006_local_drafts.sql?raw';
 import conversations from './007_conversations.sql?raw';
 import scheduledSend from './008_scheduled_send.sql?raw';
 import rules from './009_rules.sql?raw';
+import uniqueIdsResume from './010_unique_ids_resume.sql?raw';
 
 export interface Migration {
   version: number;
@@ -24,4 +25,5 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, sql: conversations },
   { version: 8, sql: scheduledSend },
   { version: 9, sql: rules },
+  { version: 10, sql: uniqueIdsResume },
 ];

@@ -21,6 +21,9 @@ export interface ScheduledRow {
   message_id: string;
   outbox_id: number | null;
   sending_since: number | null;
+  /** Outbox tries and last error the message had when the app stopped (see migration 010). */
+  resume_attempts: number;
+  resume_error: string | null;
 }
 
 export interface NewScheduled {
@@ -112,6 +115,12 @@ export class ScheduledRepo {
           WHERE id=?`,
       )
       .run(n.status, n.send_at, n.last_error, n.attempt, n.outbox_id, n.sending_since, id);
+  }
+
+  setResume(id: number, attempts: number, error: string | null): void {
+    this.db
+      .prepare('UPDATE scheduled_send SET resume_attempts = ?, resume_error = ? WHERE id = ?')
+      .run(attempts, error, id);
   }
 
   delete(id: number): void {
