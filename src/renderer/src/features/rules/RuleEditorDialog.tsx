@@ -42,7 +42,9 @@ function RuleEditorDialog({ request, onClose }: { request: RuleEditorRequest; on
 
   const initial = useMemo<RuleDraft>(() => {
     if (existing) return fromRule(existing);
-    const accountId = request.prefill?.accountId ?? currentAccountId() ?? (accounts.length === 1 ? accounts[0]!.id : null);
+    // From a message: that account. From Settings with 2 or more accounts: All accounts. Else the account of the folder in view.
+    const fromSettings = !request.prefill && useUi.getState().page === 'settings' && accounts.length >= 2;
+    const accountId = request.prefill?.accountId ?? (fromSettings ? null : (currentAccountId() ?? (accounts.length === 1 ? accounts[0]!.id : null)));
     return {
       name: request.prefill?.name ?? `Rule ${ruleCount + 1}`,
       enabled: true,

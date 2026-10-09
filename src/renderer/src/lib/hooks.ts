@@ -131,7 +131,7 @@ export function useAppEvents(): void {
         scheduleRefresh();
       } else if (e.type === 'ui:openMessage') {
         const ui = useUi.getState();
-        if (ui.view.kind === 'search' || ui.view.kind === 'outbox') ui.exitSearchOrOutbox();
+        if (ui.view.kind === 'search' || ui.view.kind === 'outbox' || ui.view.kind === 'scheduled') ui.exitSearchOrOutbox();
         useUi.setState({ pendingOpenMessageId: e.messageId, page: 'mail' });
       }
     });
