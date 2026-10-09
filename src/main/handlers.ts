@@ -1,5 +1,5 @@
 // Handlers for channels the main process owns (see shared/channels.ts).
-import { copyFile } from 'node:fs/promises';
+import { copyFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { app, BrowserWindow, dialog, nativeTheme, shell } from 'electron';
 import { convert as htmlToText } from 'html-to-text';
@@ -25,6 +25,7 @@ import type { ImageDiskCache } from './imageCache/store';
 import { computeMailtoStatus, DEFAULT_APPS_URI } from './mailto';
 import { buildPrintDocument } from './print/printDocument';
 import { printDocument, type PrintDeps } from './print/printWindow';
+import { saveEml } from './saveEml';
 
 type MainHandlers = {
   [C in MainChannel]: (req: IpcReq<C>) => Promise<IpcRes<C>> | IpcRes<C>;
@@ -50,6 +51,11 @@ export interface HandlerDeps {
    */
   onSettingsChanged: (patch: Partial<AppSettings> | null) => void;
   print: PrintDeps;
+  /**
+   * Shows the Undo toast in the main window (event `ui:undoAvailable`). Returns false when there is
+   * no main window the user can see.
+   */
+  showUndoInMain: (e: { label: string; undoToken: string; count: number }) => boolean;
 }
 
 export function createMainHandlers(d: HandlerDeps): MainHandlers {
@@ -147,6 +153,30 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
       });
       return { printed: await printDocument(html, d.print) };
     },
+    'messages.saveEml': (r) =>
+      saveEml(
+        {
+          fetchSource: (messageId) =>
+            d.engine.request<{ data: Uint8Array; subject: string }>('messages.sourceBytes', { messageId }),
+          defaultDir: () => app.getPath('downloads'),
+          chooseFile: async (defaultPath) => {
+            // The dialog belongs to whichever window asked (main or the message window).
+            const parent = BrowserWindow.getFocusedWindow() ?? d.getWindow();
+            const opts = {
+              title: 'Save message',
+              defaultPath,
+              filters: [{ name: 'Email message', extensions: ['eml'] }],
+            };
+            const res = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts);
+            return res.canceled || !res.filePath ? null : res.filePath;
+          },
+          writeFile: (path, data) => writeFile(path, data),
+        },
+        r.messageId,
+      ),
+    'ui.showUndo': (r) => ({
+      delivered: d.showUndoInMain({ label: r.label, undoToken: r.undoToken, count: r.count ?? 0 }),
+    }),
     'compose.pickFiles': async () => {
       // The dialog belongs to whichever window asked (main or a compose window).
       const parent = BrowserWindow.getFocusedWindow() ?? d.getWindow();

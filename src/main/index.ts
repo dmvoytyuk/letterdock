@@ -29,7 +29,8 @@ import {
   shouldStartHidden,
 } from './background';
 import { AppTray } from './tray';
-import { QUIT_BUTTONS, quitPromptText, shouldAskBeforeQuit } from './quitGuard';
+import { QUIT_BUTTONS, QuitState, quitPromptText, shouldAskBeforeQuit } from './quitGuard';
+import { relayUndoToMain } from './undoRelay';
 import { APP_NAME, readEnv, resolveAppUserModelId } from './buildConfig';
 import { LEGACY_APP_NAME, MIGRATION_MARKER, migrateUserData } from './legacyMigration';
 import { nodeCleanupDeps, removeLegacyInstall, stopLegacyProcessesSync } from './legacyCleanup';
@@ -151,7 +152,7 @@ async function boot(): Promise<void> {
   /** Windows is signing out or shutting down: never ask, never hold it up. */
   let sessionEnding = false;
   /** The user answered the scheduled-messages prompt (or none was needed): quitting goes on. */
-  let quitConfirmed = false;
+  const quit = new QuitState();
   let asking = false;
 
   /**
@@ -159,7 +160,7 @@ async function boot(): Promise<void> {
    * Letterdock closes, because it cannot send them while it is closed. Resolves true = go on.
    */
   const confirmQuit = async (): Promise<boolean> => {
-    if (quitConfirmed || sessionEnding) return true;
+    if (quit.confirmed || sessionEnding) return true;
     if (asking) return false;
     asking = true;
     try {
@@ -169,7 +170,7 @@ async function boot(): Promise<void> {
       } catch {
         due = null; // the engine is not answering: do not trap the user in the app
       }
-      if (!shouldAskBeforeQuit({ quitConfirmed, sessionEnding, due })) return true;
+      if (!shouldAskBeforeQuit({ quitConfirmed: quit.confirmed, sessionEnding, due })) return true;
       const text = quitPromptText(due!.count);
       const opts = {
         type: 'warning' as const,
@@ -333,7 +334,7 @@ async function boot(): Promise<void> {
     // reaches the database, then the engine stops. Close-to-tray must not keep the window alive.
     prepareInstall: async () => {
       isQuitting = true;
-      quitConfirmed = true; // the installer restarts Letterdock, so scheduled mail is not lost
+      quit.confirm(); // the installer restarts Letterdock, so scheduled mail is not lost
       await waitForPendingSaves(3000);
       tray.destroy();
       engine.stop();
@@ -355,6 +356,7 @@ async function boot(): Promise<void> {
     openViewer: (messageId) => void viewers.open(messageId),
     onSettingsChanged: (patch) => applySettingsChange(patch),
     print: { imagesHandle: images.handle, tempDir: printTemp },
+    showUndoInMain: (e) => relayUndoToMain(mainWindow, e),
   });
 
   registerIpc({
@@ -402,12 +404,15 @@ async function boot(): Promise<void> {
       if (mainCloseAction(settings.get(), isQuitting, tray.available) === 'hide') {
         e.preventDefault();
         w.hide();
-      } else if (!isQuitting && !quitConfirmed && !sessionEnding) {
+      } else if (!isQuitting && !quit.confirmed && !sessionEnding) {
         // Closing this window ends the app (no tray): ask about scheduled messages first.
         e.preventDefault();
         void confirmQuit().then((ok) => {
-          if (!ok) return;
-          quitConfirmed = true;
+          if (!ok) {
+            quit.cancel();
+            return;
+          }
+          quit.confirm();
           if (!w.isDestroyed()) w.close();
         });
       }
@@ -420,6 +425,12 @@ async function boot(): Promise<void> {
     w.on('closed', () => {
       appWindows.delete(w);
       if (mainWindow === w) mainWindow = null;
+      // The prompt was answered "Quit anyway", but a compose or message window keeps Letterdock
+      // running: the answer is void, the next quit asks again.
+      quit.mainWindowClosed({
+        windowsLeft: BrowserWindow.getAllWindows().filter((x) => x !== w && !x.isDestroyed()).length,
+        quitting: isQuitting,
+      });
     });
     return w;
   }
@@ -489,11 +500,14 @@ async function boot(): Promise<void> {
   });
   updater.start();
   app.on('before-quit', (e) => {
-    if (!quitConfirmed && !sessionEnding && !quitReady) {
+    if (!quit.confirmed && !sessionEnding && !quitReady) {
       e.preventDefault();
       void confirmQuit().then((ok) => {
-        if (!ok) return;
-        quitConfirmed = true;
+        if (!ok) {
+          quit.cancel();
+          return;
+        }
+        quit.confirm();
         app.quit();
       });
       return;
