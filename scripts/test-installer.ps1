@@ -36,10 +36,10 @@ Write-Host '== Step 2: break the old uninstaller and mark the old exe'
 $tmp = Join-Path $(if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }) 'fake-uninstaller'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 Set-Content -Path (Join-Path $tmp 'f.cs') -Encoding ascii -Value 'class P { static int Main() { return 5; } }'
-$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework644.0.30319\csc.exe'
-& $csc /nologo "/out:$tmp.exe" "$tmp.cs"
+$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+& $csc /nologo "/out:$tmp\f.exe" "$tmp\f.cs"
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the fake uninstaller' }
-Copy-Item -Path "$tmp.exe" -Destination $uninstaller -Force
+Copy-Item -Path "$tmp\f.exe" -Destination $uninstaller -Force
 $fakeLen = (Get-Item $uninstaller).Length
 $marker = [byte[]](1, 2, 3, 4)
 [IO.File]::WriteAllBytes($exe, $marker)   # a stale/damaged exe: must be replaced by the update
