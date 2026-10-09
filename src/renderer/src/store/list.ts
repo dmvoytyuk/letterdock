@@ -11,7 +11,7 @@ import type {
 } from '../../../shared/ipc';
 import { asAppError, call } from '../lib/api';
 import { useApp } from './app';
-import { scopeOf, type View } from './ui';
+import { scopeOf, useUi, type View } from './ui';
 
 export const PAGE = 50;
 
@@ -96,7 +96,8 @@ interface ListState {
 
   load: (view: View, unreadOnly: boolean, grouped?: boolean) => Promise<void>;
   loadMore: () => Promise<void>;
-  refresh: () => Promise<void>;
+  /** Re-read what is loaded; `extra` asks for that many more rows (used when paging by a sort key). */
+  refresh: (extra?: number) => Promise<void>;
   patch: (ids: MessageId[], p: Partial<ListItem>) => void;
   /** Drop rows from the screen right away (optimistic move / delete). */
   removeLocal: (ids: MessageId[]) => void;
@@ -113,8 +114,15 @@ interface ListState {
 
 let seq = 0;
 
-const scopeKey = (scope: ListScope, unreadOnly: boolean, grouped = false) =>
-  JSON.stringify([scope, unreadOnly, grouped]);
+// `grouped` stays the last element: load() compares keys without it to keep the selection when the setting flips.
+const scopeKey = (scope: ListScope, unreadOnly: boolean, sortKey: string, grouped = false) =>
+  JSON.stringify([scope, unreadOnly, sortKey, grouped]);
+
+/** Sort and direction of the conversation list, as one string (part of the list key). */
+function currentSortKey(): string {
+  const { sort, direction } = useUi.getState().listSort;
+  return `${sort}:${direction}`;
+}
 
 /** The folder a conversation list is about (0 when it mixes folders). */
 function scopeFolderId(scope: ListScope): number {
@@ -137,7 +145,9 @@ async function fetchPage(
   grouped: boolean,
 ): Promise<Page> {
   if (grouped) {
-    const res = await call('conversations.list', { scope, cursor, limit, unreadOnly });
+    // `nextCursor` goes back unchanged, together with the same sort and direction (it carries the sort key).
+    const { sort, direction } = useUi.getState().listSort;
+    const res = await call('conversations.list', { scope, cursor, limit, unreadOnly, sort, direction });
     const folderId = scopeFolderId(scope);
     return { ...res, items: res.items.map((r) => conversationItem(r, folderId)) };
   }
@@ -210,7 +220,7 @@ export const useList = create<ListState>((set, get) => ({
     if (view.kind === 'search') return loadSearch(view.query, view.accountId, set, get);
     const scope = scopeOf(view);
     const grouped = groupedArg ?? wantsGrouped(view);
-    const key = scopeKey(scope, unreadOnly, grouped);
+    const key = scopeKey(scope, unreadOnly, currentSortKey(), grouped);
     const mine = ++seq;
     const prev = get();
     const sameScope = prev.key === key;
@@ -300,6 +310,15 @@ export const useList = create<ListState>((set, get) => ({
           set({ loadingMore: false, endReached: true });
           return;
         }
+        // Sender and Subject sorts page by a sort key the UI never builds: read the list again from the
+        // top, one page longer. The date order can continue after the last row.
+        if (s.grouped && useUi.getState().listSort.sort !== 'date') {
+          const before = get().items.length;
+          await get().refresh(PAGE);
+          if (mine !== seq) return;
+          set((cur) => ({ loadingMore: false, ...(cur.items.length <= before ? { endReached: true } : {}) }));
+          return;
+        }
         const last = get().items[get().items.length - 1];
         const res = await fetchPage(scope, cursorAfter(last), PAGE, s.unreadOnly, s.grouped);
         if (mine !== seq) return;
@@ -319,7 +338,7 @@ export const useList = create<ListState>((set, get) => ({
   },
 
   /** Re-read everything already loaded (called when messages:changed arrives). */
-  async refresh() {
+  async refresh(extra = 0) {
     const s = get();
     if (s.search) {
       if (s.loading) return;
@@ -342,7 +361,7 @@ export const useList = create<ListState>((set, get) => ({
     if (!s.scope || s.loading) return;
     const scope = s.scope;
     const mine = seq;
-    const want = Math.max(PAGE, s.items.length);
+    const want = Math.max(PAGE, s.items.length) + extra;
     const grouped = s.grouped;
     set({ refreshing: true });
     try {

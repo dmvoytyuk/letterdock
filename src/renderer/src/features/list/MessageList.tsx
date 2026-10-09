@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKE, type MouseEvent as RME } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Account, Address, DraftSyncState, Folder } from '../../../../shared/ipc';
+import type { Account, Address, ConversationSort, DraftSyncState, Folder } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import {
   AccountBadge,
@@ -15,7 +15,7 @@ import {
 } from '../../components/ui';
 import { useApp } from '../../store/app';
 import { useList, type ListItem } from '../../store/list';
-import { ROW_HEIGHT, isUnified, useUi, type Density, type View } from '../../store/ui';
+import { ROW_HEIGHT, defaultDirection, isUnified, useUi, type Density, type View } from '../../store/ui';
 import { useAccountColor, useAccountMap } from '../../lib/hooks';
 import {
   applyToMessages,
@@ -98,6 +98,8 @@ export function MessageList({ className }: { className?: string }) {
   const colorOf = useAccountColor();
   const folderMap = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
   const groupSetting = useApp((s) => !!s.settings?.groupConversations);
+  const listSort = useUi((s) => s.listSort);
+  const grouped = useList((s) => s.grouped);
   const unified = isUnified(view);
   const alwaysBadge = useUi((s) => s.showAccountBadge);
   // "Always" means on every row, even with one account. Otherwise only in combined views with 2+ accounts.
@@ -108,7 +110,7 @@ export function MessageList({ className }: { className?: string }) {
   useEffect(() => {
     if (!loaded) return;
     void useList.getState().load(view, unreadOnly);
-  }, [view, unreadOnly, loaded, epoch, groupSetting]);
+  }, [view, unreadOnly, loaded, epoch, groupSetting, listSort]);
 
   // ----- scope accounts, for banners and sync state -----
   const scopeAccountIds = useMemo(() => {
@@ -125,8 +127,8 @@ export function MessageList({ className }: { className?: string }) {
   const flat = useMemo<Flat[]>(() => {
     const out: Flat[] = [];
     const now = Date.now();
-    if (search && searchSort === 'rank') {
-      // Best-match order: no date groups.
+    if ((search && searchSort === 'rank') || (grouped && !search && listSort.sort !== 'date')) {
+      // Best-match order, or sorted by sender or subject: no date groups (DESIGN-SPEC 3.5).
       items.forEach((m, index) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index, label: '' }));
       return out;
     }
@@ -151,7 +153,7 @@ export function MessageList({ className }: { className?: string }) {
       }
     }
     return out;
-  }, [items, collapsed, search, searchSort]);
+  }, [items, collapsed, search, searchSort, grouped, listSort.sort]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -340,6 +342,7 @@ export function MessageList({ className }: { className?: string }) {
             pressed={selectMode}
             onClick={() => useList.getState().setSelectMode(!selectMode)}
           />
+          {grouped ? <SortButton /> : null}
           <FilterButton />
           <IconButton
             icon="more"
@@ -525,6 +528,41 @@ function FilterButton() {
       }
     >
       {unreadOnly ? 'Unread' : 'Filter'} <Icon name="chev-d" />
+    </button>
+  );
+}
+
+const SORT_NAMES: Record<ConversationSort, string> = { date: 'Date', sender: 'Sender', subject: 'Subject' };
+
+/**
+ * Order of the conversation list: Date, Sender or Subject, and the direction (DESIGN-SPEC 3.5, 3.10.2).
+ * Only conversations can be sorted this way: `messages.list` has no sort in the contract.
+ */
+function SortButton() {
+  const { sort, direction } = useUi((s) => s.listSort);
+  const dirNames = sort === 'date' ? { asc: 'Oldest first', desc: 'Newest first' } : { asc: 'A to Z', desc: 'Z to A' };
+  const arrow = direction === 'asc' ? '↑' : '↓';
+  return (
+    <button
+      type="button"
+      className="tbtn"
+      title={`Sort by ${SORT_NAMES[sort]}, ${dirNames[direction]}`}
+      aria-label={`Sort: ${SORT_NAMES[sort]}, ${dirNames[direction]}`}
+      aria-haspopup="menu"
+      onClick={(e) => {
+        const choose = (s: ConversationSort) => () =>
+          useUi.getState().setListSort(s, s === sort ? direction : defaultDirection(s));
+        openMenuAt(e.currentTarget, [
+          { heading: 'Sort by' },
+          ...(['date', 'sender', 'subject'] as const).map((s): MenuEntry => ({ label: SORT_NAMES[s], checked: s === sort, onSelect: choose(s) })),
+          'sep',
+          { heading: 'Order' },
+          { label: dirNames.desc, checked: direction === 'desc', onSelect: () => useUi.getState().setListSort(sort, 'desc') },
+          { label: dirNames.asc, checked: direction === 'asc', onSelect: () => useUi.getState().setListSort(sort, 'asc') },
+        ]);
+      }}
+    >
+      {SORT_NAMES[sort]} <span aria-hidden="true">{arrow}</span>
     </button>
   );
 }

@@ -480,6 +480,8 @@ export type MenuEntry =
       hint?: string;
       danger?: boolean;
       disabled?: boolean;
+      /** A choice out of a group (sort order, filter): shows a check mark and says so to screen readers. */
+      checked?: boolean;
       onSelect: () => void;
     }
   /** A label for the group below it. Not selectable. */
@@ -613,7 +615,8 @@ export function MenuHost() {
           <button
             key={i}
             type="button"
-            role="menuitem"
+            role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
+            aria-checked={it.checked}
             className={`mi ${it.danger ? 'danger' : ''}`}
             disabled={it.disabled}
             onClick={() => {
@@ -621,7 +624,13 @@ export function MenuHost() {
               it.onSelect();
             }}
           >
-            {it.icon ? <Icon name={it.icon} /> : <span className="mi-gap" aria-hidden="true" />}
+            {it.checked !== undefined ? (
+              it.checked ? <Icon name="check" /> : <span className="mi-gap" aria-hidden="true" />
+            ) : it.icon ? (
+              <Icon name={it.icon} />
+            ) : (
+              <span className="mi-gap" aria-hidden="true" />
+            )}
             <span className="ml">{it.label}</span>
             {it.hint ? <span className="a">{it.hint}</span> : null}
           </button>
