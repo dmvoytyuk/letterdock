@@ -914,3 +914,183 @@ h3 {
     border: 1px solid CanvasText;
   }
 }
+
+/* ---------- screenshot viewer ---------- */
+.zoom {
+  position: relative;
+  display: block;
+  cursor: zoom-in;
+  border-radius: var(--r-lg);
+}
+.zoom:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.zoom::after {
+  content: "Click to enlarge" / "";
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 12px;
+  line-height: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.zoom:hover::after,
+.zoom:focus-visible::after {
+  opacity: 1;
+}
+@media (hover: none) {
+  .zoom::after {
+    display: none;
+  }
+}
+html.viewing {
+  overflow: hidden;
+}
+dialog.viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(0, 0, 0, 0.92);
+  color: #fff;
+  overflow: hidden;
+}
+dialog.viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+dialog.viewer::backdrop {
+  background: transparent;
+}
+@media (prefers-reduced-motion: no-preference) {
+  dialog.viewer[open] {
+    animation: v-fade 0.15s ease-out;
+  }
+}
+@keyframes v-fade {
+  from {
+    opacity: 0;
+  }
+}
+.v-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 0 16px;
+  min-height: 52px;
+}
+.v-count {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: #e6e6e6;
+}
+.v-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+}
+.v-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+.v-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.v-btn svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.v-fig {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.v-fig img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 52px - 12px - 12px - 28px - 72px);
+  width: auto;
+  height: auto;
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.v-fig figcaption {
+  font-size: 16px;
+  line-height: 24px;
+  text-align: center;
+  max-width: calc(100% - 120px);
+  min-height: 28px;
+}
+.v-prev,
+.v-next {
+  position: absolute;
+  bottom: 12px;
+}
+.v-prev {
+  left: 12px;
+}
+.v-next {
+  right: 12px;
+}
+@media (min-width: 800px) {
+  .v-prev,
+  .v-next {
+    bottom: auto;
+    top: 50%;
+    margin-top: -22px;
+  }
+  .v-prev {
+    left: 20px;
+  }
+  .v-next {
+    right: 20px;
+  }
+  .v-fig {
+    padding: 0 84px 16px;
+  }
+  .v-fig figcaption {
+    max-width: 100%;
+  }
+  .v-fig img {
+    max-height: calc(100dvh - 52px - 16px - 12px - 28px);
+  }
+}
+@media (forced-colors: active) {
+  dialog.viewer {
+    background: Canvas;
+    color: CanvasText;
+  }
+  .v-btn {
+    border: 1px solid ButtonText;
+  }
+}
