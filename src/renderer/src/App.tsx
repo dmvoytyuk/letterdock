@@ -11,6 +11,7 @@ import { RuleEditorHost } from './features/rules/RuleEditorDialog';
 import { RunRuleHost } from './features/rules/RunRuleDialog';
 import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { Banner, Button, MenuHost, ToastHost } from './components/ui';
+import { ContactPopoverHost } from './components/ContactPopover';
 import { useApp } from './store/app';
 import { useUi } from './store/ui';
 import { UpdateBanner } from './features/shell/UpdateBanner';
@@ -96,6 +97,7 @@ export function App() {
         <RuleEditorHost />
         <RunRuleHost />
         <MenuHost />
+        <ContactPopoverHost />
         <ToastHost />
       </div>
     </ErrorBoundary>

@@ -19,14 +19,16 @@ import { useAccountColor, useThemeState } from '../../lib/hooks';
 import { applyToMessages, composeFrom, deleteMessages, editDraft, openInWindow, roleOf, saveAsEml } from '../../lib/actions';
 import { printOpenMessage, registerPrintSource } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
-import { addressList, fileKind, fileSize, fullDate, initials, senderName } from '../../lib/format';
+import { fileKind, fileSize, fullDate, initials, senderName } from '../../lib/format';
 import { buildSrcdoc, cidRefs, sanitizeEmailHtml, type SanitizedHtml } from '../../lib/sanitize';
 import { planBody, verifyContrast, type RenderPlan } from '../../lib/emailTheme';
+import { QUOTE_HIDE, QUOTE_SHOW, QUOTE_TOGGLE_ATTR, foldQuotedHtml, setQuoteOpen, splitQuotedText } from '../../lib/quotes';
 import { reportActionError, toast, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { matchShortcut, type ShortcutId } from '../../lib/shortcuts';
 import { ConversationPane, ConversationView } from './ConversationView';
 import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
+import { AddressButton, AddressLinks } from '../../components/ContactPopover';
 
 type BodyState =
   | { status: 'loading' }
@@ -495,19 +497,23 @@ function HeaderBlock({
 }) {
   const from = header.from;
   const name = senderName(from);
-  const toLine = header.to.length
-    ? header.to.slice(0, 3).map((a) => a.name || a.address).join(', ') + (header.to.length > 3 ? `, +${header.to.length - 3}` : '')
-    : '(no recipients)';
+  const allowRule = canMakeRuleFrom(header);
   return (
     <div className="rhead">
       <div className="av" aria-hidden="true">{initials(name)}</div>
       <div className="who">
         <div>
-          <span className="nm">{name}</span>{' '}
-          {from && from.name ? <span className="ad">&lt;{from.address}&gt;</span> : null}
+          {from ? (
+            <AddressButton address={from} accountId={header.accountId} allowRule={allowRule}>
+              <span className="nm">{name}</span>
+              {from.name ? <span className="ad"> &lt;{from.address}&gt;</span> : null}
+            </AddressButton>
+          ) : (
+            <span className="nm">{name}</span>
+          )}
         </div>
         <div className="cap">
-          To: {toLine} &nbsp;
+          To: {header.to.length ? <AddressLinks list={header.to} max={3} accountId={header.accountId} allowRule={allowRule} /> : '(no recipients)'} &nbsp;
           <button type="button" className="link plain" aria-expanded={details} onClick={onToggle}>
             {details ? 'Hide details' : 'Details'}
           </button>
@@ -515,12 +521,12 @@ function HeaderBlock({
         {details ? (
           <dl className="rdetails">
             <dt>From</dt>
-            <dd>{from ? addressList([from]) : 'Unknown'}</dd>
+            <dd>{from ? <AddressLinks list={[from]} full accountId={header.accountId} allowRule={allowRule} /> : 'Unknown'}</dd>
             <dt>To</dt>
-            <dd>{addressList(header.to) || '-'}</dd>
-            {header.cc.length ? (<><dt>Cc</dt><dd>{addressList(header.cc)}</dd></>) : null}
-            {body && body.bcc.length ? (<><dt>Bcc</dt><dd>{addressList(body.bcc)}</dd></>) : null}
-            {body && body.replyTo.length ? (<><dt>Reply-To</dt><dd>{addressList(body.replyTo)}</dd></>) : null}
+            <dd>{header.to.length ? <AddressLinks list={header.to} full accountId={header.accountId} allowRule={allowRule} /> : '-'}</dd>
+            {header.cc.length ? (<><dt>Cc</dt><dd><AddressLinks list={header.cc} full accountId={header.accountId} allowRule={allowRule} /></dd></>) : null}
+            {body && body.bcc.length ? (<><dt>Bcc</dt><dd><AddressLinks list={body.bcc} full accountId={header.accountId} allowRule={allowRule} /></dd></>) : null}
+            {body && body.replyTo.length ? (<><dt>Reply-To</dt><dd><AddressLinks list={body.replyTo} full accountId={header.accountId} allowRule={allowRule} /></dd></>) : null}
             <dt>Date</dt>
             <dd>{fullDate(header.date)}</dd>
           </dl>
@@ -639,6 +645,8 @@ function BodyView({
         : null,
     [sanitized, imagesOn, darkTheme, emailDarkMode, colorOverride, autoFallback],
   );
+  // Quoted parts of replies sit behind a "..." button (DESIGN-SPEC 3.6, 3.10.4).
+  const frameHtml = useMemo(() => (plan ? foldQuotedHtml(plan.html).html : ''), [plan]);
   // Print always uses the light variant, never the dark-theme transform.
   useEffect(() => {
     printRef.current = () => {
@@ -697,7 +705,7 @@ function BodyView({
                 </div>
               ) : null}
               <HtmlFrame
-                html={buildSrcdoc(plan.html, imagesLoaded, { css: plan.css, scheme: plan.scheme, bodyPadding: plan.bodyPadding })}
+                html={buildSrcdoc(frameHtml, imagesLoaded, { css: plan.css, scheme: plan.scheme, bodyPadding: plan.bodyPadding })}
                 plan={plan}
                 onReject={onAutoFallback}
               />
@@ -723,6 +731,9 @@ function HtmlFrame({ html, plan, onReject }: { html: string; plan: RenderPlan; o
   const [confirmLink, setConfirmLink] = useState<{ url: string; text: string } | null>(null);
   const planRef = useRef(plan);
   const rejectRef = useRef(onReject);
+  // Quotes the reader opened (by their number). The frame is built again when images load or the theme
+  // changes; the quotes stay open then. State is per message because a message has its own frame.
+  const openQuotes = useRef<Set<string>>(new Set());
   // Keep the latest values for the load handler (runs before the frame effect below).
   useEffect(() => {
     planRef.current = plan;
@@ -757,6 +768,10 @@ function HtmlFrame({ html, plan, onReject }: { html: string; plan: RenderPlan; o
         const bar = (frame.contentWindow?.innerHeight ?? 0) - doc.documentElement.clientHeight;
         if (bar > 0 && bar < 40) frame.style.height = `${fit + bar}px`;
       };
+      for (const idx of openQuotes.current) {
+        const t = doc.querySelector(`[${QUOTE_TOGGLE_ATTR}="${idx}"]`);
+        if (t) setQuoteOpen(t, true);
+      }
       const p = planRef.current;
       if (p.verify !== 'none') {
         const r = verifyContrast(doc, { strict: p.verify === 'full', spentMs: p.transformMs });
@@ -774,7 +789,28 @@ function HtmlFrame({ html, plan, onReject }: { html: string; plan: RenderPlan; o
       // Images change the height when they finish loading (load/error do not bubble: use capture).
       doc.addEventListener('load', measure, true);
       doc.addEventListener('error', measure, true);
+      // The "..." button of a quoted part: the frame has no scripts, so this window opens and closes it.
+      const toggleQuote = (btn: Element) => {
+        const idx = btn.getAttribute(QUOTE_TOGGLE_ATTR) ?? '';
+        if (setQuoteOpen(btn)) openQuotes.current.add(idx);
+        else openQuotes.current.delete(idx);
+        measure();
+      };
+      doc.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const btn = (ev.target as Element | null)?.closest?.(`[${QUOTE_TOGGLE_ATTR}]`);
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleQuote(btn);
+      });
       const onClick = (ev: MouseEvent) => {
+        const quoteBtn = (ev.target as Element | null)?.closest?.(`[${QUOTE_TOGGLE_ATTR}]`);
+        if (quoteBtn) {
+          ev.preventDefault();
+          if (ev.type === 'click') toggleQuote(quoteBtn);
+          return;
+        }
         const a = (ev.target as Element | null)?.closest?.('a');
         if (!a) return;
         ev.preventDefault();
@@ -863,7 +899,8 @@ function HtmlFrame({ html, plan, onReject }: { html: string; plan: RenderPlan; o
   );
 }
 
-function TextBody({ text }: { text: string }) {
+/** Plain text with web addresses as links. */
+function Linkified({ text }: { text: string }) {
   const parts = useMemo(() => {
     const out: (string | { url: string })[] = [];
     let last = 0;
@@ -877,7 +914,7 @@ function TextBody({ text }: { text: string }) {
     return out;
   }, [text]);
   return (
-    <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '21px' }}>
+    <>
       {parts.map((p, i) =>
         typeof p === 'string' ? (
           p
@@ -892,6 +929,47 @@ function TextBody({ text }: { text: string }) {
           >
             {p.url}
           </a>
+        ),
+      )}
+    </>
+  );
+}
+
+function TextBody({ text }: { text: string }) {
+  const parts = useMemo(() => splitQuotedText(text), [text]);
+  const [open, setOpen] = useState<Set<number>>(new Set());
+  return (
+    <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: '21px' }}>
+      {parts.map((p, i) =>
+        !p.quoted ? (
+          <div key={i}>
+            <Linkified text={p.text} />
+          </div>
+        ) : (
+          <div key={i} className="tq">
+            <button
+              type="button"
+              className="tq-btn"
+              aria-expanded={open.has(i)}
+              aria-label={open.has(i) ? QUOTE_HIDE : QUOTE_SHOW}
+              title={open.has(i) ? QUOTE_HIDE : QUOTE_SHOW}
+              onClick={() =>
+                setOpen((o) => {
+                  const next = new Set(o);
+                  if (next.has(i)) next.delete(i);
+                  else next.add(i);
+                  return next;
+                })
+              }
+            >
+              {'\u2026'}
+            </button>
+            {open.has(i) ? (
+              <div className="tq-body">
+                <Linkified text={p.text} />
+              </div>
+            ) : null}
+          </div>
         ),
       )}
     </div>

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppError, MessageHeader } from '../../../../shared/ipc';
 import { Banner, Button, MenuHost, ToastHost, useMenu } from '../../components/ui';
+import { ContactPopoverHost } from '../../components/ContactPopover';
 import { Icon } from '../../components/Icon';
 import { MessageView } from '../reading/ReadingPane';
 import { MailDialogsHost } from '../dialogs/MailDialogs';
@@ -286,6 +287,7 @@ export function ViewerApp({ messageId }: { messageId: number | null }) {
       </main>
       <MailDialogsHost />
       <MenuHost />
+      <ContactPopoverHost />
       <ToastHost />
     </div>
   );

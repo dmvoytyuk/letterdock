@@ -2732,3 +2732,153 @@ kbd {
     animation: none;
   }
 }
+
+/* ----- address popover (ContactPopover): a sender or recipient name that opens Copy address, New message... ----- */
+.addr-link {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  border-radius: 2px;
+  overflow-wrap: anywhere;
+}
+.addr-link:hover {
+  text-decoration: underline;
+}
+.addr-link:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--ring-i),
+    0 0 0 3px var(--ring-o);
+}
+.cpop {
+  position: fixed;
+  z-index: 520;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--e2);
+  padding: 12px 8px 8px;
+  color: var(--t1);
+}
+.cpop-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 8px;
+}
+.cpop-av {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent-sub);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+}
+.cpop-who {
+  min-width: 0;
+}
+.cpop-nm {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.cpop-ad {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+  overflow-wrap: anywhere;
+}
+.cpop-info {
+  padding: 0 8px 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.cpop-info p {
+  margin: 0 0 2px;
+}
+.cpop-accts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px !important;
+}
+.cpop-acct {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cpop-acts {
+  display: flex;
+  flex-direction: column;
+}
+.cpop-act {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+}
+.cpop-act svg {
+  flex: none;
+}
+.cpop-act:hover:not([disabled]),
+.cpop-act:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+.cpop-act:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--ring-o),
+    inset 0 0 0 3px var(--ring-i);
+}
+.cpop-act[disabled] {
+  color: var(--tdis);
+}
+
+/* ----- folded quoted text in plain-text mail (HTML mail gets the same button inside its frame, see lib/quotes.ts) ----- */
+.tq {
+  margin: 6px 0;
+}
+.tq-btn {
+  min-width: 36px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--ctrl);
+  border-radius: 12px;
+  background: var(--hover);
+  color: var(--t1);
+  font-weight: 600;
+  letter-spacing: 1px;
+  line-height: 22px;
+}
+.tq-btn:hover {
+  background: var(--border);
+}
+.tq-btn:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--ring-i),
+    0 0 0 3px var(--ring-o);
+}
+.tq-body {
+  margin-top: 4px;
+  color: var(--t2);
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+}

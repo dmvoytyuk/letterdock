@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify';
 import * as csstree from 'css-tree';
 import { IMAGE_SCHEME, isRemoteUrl, toProxyUrl } from '../../../shared/imageProxy';
 import { classify,detectDarkAware, type ClassifyResult } from './emailTheme';
+import { QUOTE_FRAME_CSS } from './quotes';
 
 export interface SanitizedHtml {
   /** Safe HTML with every remote resource removed. */
@@ -227,7 +228,7 @@ export function buildSrcdoc(bodyHtml: string, allowRemote: boolean, theme?: Fram
   ].join('; ');
   const pad = `body{padding:${theme ? theme.bodyPadding : 16}px}`;
   const scheme = theme?.scheme === 'dark' ? '<meta name="color-scheme" content="dark">' : '';
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">${scheme}<style>${BASE_CSS}${pad}${theme?.css ?? ''}</style></head><body>${bodyHtml}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">${scheme}<style>${BASE_CSS}${QUOTE_FRAME_CSS}${pad}${theme?.css ?? ''}</style></head><body>${bodyHtml}</body></html>`;
 }
 
 export function cidRefs(html: string): string[] {
