@@ -1,7 +1,7 @@
 {
   "name": "letterdock",
   "productName": "Letterdock",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Free, open-source Windows email client with unlimited accounts",
   "license": "MIT",
   "homepage": "https://github.com/voydapps/letterdock#readme",
