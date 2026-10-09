@@ -46,7 +46,8 @@
   var img = dlg.querySelector('img'), cap = dlg.querySelector('figcaption'), cnt = dlg.querySelector('.v-count');
   function info(a) {
     var t = a.querySelector('img'), card = a.closest('.card'), h = card && card.querySelector('h3');
-    var s = t.currentSrc || a.getAttribute('href').replace(/\.png$/, '.webp');
+    // Full-resolution twin of the thumbnail that is showing now (theme/size aware), else the link target as WebP.
+    var s = t.currentSrc ? t.currentSrc.replace('/screenshots/', '/screenshots/full/') : a.getAttribute('href').replace(/\.png$/, '.webp');
     return { src: s, alt: t.alt, cap: h ? h.textContent : t.alt };
   }
   function show(i) {

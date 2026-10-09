@@ -10,7 +10,8 @@
 //      (Tuesday 10:24), puts the app in the wanted state, and takes a picture at 2x.
 //   4. Draws the missing window frame (round corners, minimize/maximize/close glyphs), scales
 //      the picture to the exact size from the website spec, and writes
-//      site/screenshots/<name>.png (palette-optimized) and <name>.webp (quality 82).
+//      site/screenshots/<name>.png (palette-optimized) and <name>.webp (quality 82), plus the
+//      native 2x capture for the screenshot viewer: site/screenshots/full/<name>.png and .webp.
 //   5. Makes site/og.png (1200x630 social card) and the favicons from build/icon.svg.
 //
 // Needs (one time):  npm install   and   npx playwright install chromium
@@ -29,7 +30,8 @@ import pngToIco from 'png-to-ico';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const siteDir = join(root, 'site');
 const outDir = join(siteDir, 'screenshots');
-mkdirSync(outDir, { recursive: true });
+const fullDir = join(outDir, 'full');
+mkdirSync(fullDir, { recursive: true });
 
 const args = process.argv.slice(2);
 const onlyArg = args.find((a) => a.startsWith('--only'));
@@ -262,8 +264,15 @@ async function writeImage(name, raw, w, h) {
   const webp = join(outDir, `${name}.webp`);
   await img.clone().png({ palette: true, quality: 90, effort: 10, compressionLevel: 9 }).toFile(png);
   await img.clone().webp({ quality: 82, effort: 6 }).toFile(webp);
-  console.log(`${name}: ${w}x${h}  png ${(statSync(png).size / 1024).toFixed(0)} KB  webp ${(statSync(webp).size / 1024).toFixed(0)} KB`);
-  return [png, webp];
+  // Full resolution (native 2x capture) for the viewer; the no-JS link opens the PNG.
+  const fpng = join(fullDir, `${name}.png`);
+  const fwebp = join(fullDir, `${name}.webp`);
+  const full = sharp(raw);
+  const fm = await full.metadata();
+  await full.clone().png({ palette: true, quality: 90, effort: 10, compressionLevel: 9 }).toFile(fpng);
+  await full.clone().webp({ quality: 82, effort: 6 }).toFile(fwebp);
+  console.log(`${name}: ${w}x${h}  png ${(statSync(png).size / 1024).toFixed(0)} KB  webp ${(statSync(webp).size / 1024).toFixed(0)} KB  | full ${fm.width}x${fm.height} png ${(statSync(fpng).size / 1024).toFixed(0)} KB  webp ${(statSync(fwebp).size / 1024).toFixed(0)} KB`);
+  return [png, webp, fpng, fwebp];
 }
 
 /** Social card 1200x630: brand blue, icon, name, one line, and a tilted piece of the light hero picture. */
