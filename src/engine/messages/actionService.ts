@@ -22,17 +22,21 @@ import { AppException, toAppError } from '../../shared/errors';
 import { findProviderByHost } from '../../shared/providers';
 import type { ImapFlow } from 'imapflow';
 import { pendingTotal, type EngineContext, type PendingOpsApi } from '../context';
-import type { FolderRow } from '../db/repos/folderRepo';
+import type { FolderRow, ListedFolder } from '../db/repos/folderRepo';
+import { FolderOps } from '../folders/folderOps';
 import type { MessageRow } from '../db/repos/messageRepo';
 import type { SessionManager } from '../imap/sessionManager';
 import { chunk, toSequenceSet } from '../imap/syncDiff';
 import {
   PendingQueue,
+  shouldKeep,
   type DeleteOp,
   type FlagColumn,
   type FlagOp,
+  type FolderOp,
   type MoveOp,
   type PendingOp,
+  type RepliedOp,
 } from './pendingQueue';
 
 const UNDO_KEEP_MS = UNDO_WINDOW_MS + 30_000;
@@ -68,10 +72,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** How a batch of queued changes ended. */
 type Outcome = 'done' | 'stalled';
 
-/** Errors that mean "the user must fix something": keep the changes and wait, never revert. */
-const WAIT_CODES = new Set(['AUTH_FAILED', 'OAUTH_REAUTH_REQUIRED', 'OAUTH_NOT_CONFIGURED', 'TLS_ERROR']);
-/** An unknown (INTERNAL) error that keeps coming back is treated as final after this many tries. */
-const MAX_UNKNOWN_TRIES = 6;
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
 
@@ -86,6 +86,8 @@ export class ActionService implements PendingOpsApi {
   private undoStore = new Map<string, UndoRecord>();
   /** Changes waiting for the server (persisted in `pending_op`). */
   readonly queue: PendingQueue;
+  /** Folder create / rename / delete / empty in the same queue (ARCHITECTURE 5.6). */
+  readonly folderOps: FolderOps;
   private runners = new Map<string, Promise<void>>();
   private rerun = new Set<string>();
   /** Resolves when the batch that is being sent right now (per account) is finished. */
@@ -103,6 +105,13 @@ export class ActionService implements PendingOpsApi {
       () => ctx.now(),
       (accountId) => this.queueChanged(accountId),
     );
+    this.folderOps = new FolderOps(ctx, sessions, this.queue, {
+      withRetry: (fn) => this.withRetry(fn),
+      cancelMovesInto: (a, f) => this.cancelMovesInto(a, f),
+      requireOk: (c, r, w) => this.requireOk(c as ImapFlow, r, w),
+      stampMovesFrom: (a, f, p) => this.stampMovesFrom(a, f, p),
+      kick: (a) => this.kick(a),
+    });
     ctx.pendingOps = this;
   }
 
@@ -114,6 +123,39 @@ export class ActionService implements PendingOpsApi {
 
   messageIdsWithFlagOps(accountId: string): Set<number> {
     return this.queue.messageIdsWithFlagOps(accountId);
+  }
+
+  serverPath(folder: FolderRow): string {
+    return this.queue.serverPath(folder.account_id, folder.path, folder.delimiter);
+  }
+
+  projectFolders(accountId: string, listed: ListedFolder[]): ListedFolder[] {
+    return this.folderOps.project(accountId, listed);
+  }
+
+  rememberNamespace(accountId: string, prefix: string): void {
+    this.folderOps.saveNamespacePrefix(accountId, prefix);
+  }
+
+  folderGen(accountId: string): number {
+    return this.folderOps.gen(accountId);
+  }
+
+  isFolderPending(accountId: string, folderId: number): boolean {
+    return this.folderOps.isPending(accountId, folderId);
+  }
+
+  findMove(accountId: string, msgId: number) {
+    const op = this.queue.findAnyMove(accountId, msgId);
+    return op
+      ? {
+          srcFolderId: op.p.srcFolderId,
+          origUid: op.p.origUid,
+          srcUv: op.p.srcUv,
+          mid: op.p.mid,
+          inFlight: op.inFlight,
+        }
+      : undefined;
   }
 
   forgetAccount(accountId: string): void {
@@ -158,6 +200,25 @@ export class ActionService implements PendingOpsApi {
   /** Wait for every running server write (used by tests and on shutdown). Queued ops do not count. */
   async drain(): Promise<void> {
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
+  }
+
+  /** Wait for the batch that is being sent right now (folder changes must not meet a running op). */
+  async settleRunning(accountId: string): Promise<void> {
+    await (this.batchDone.get(accountId) ?? Promise.resolve());
+  }
+
+  /**
+   * Send the queue and wait until it is empty, stuck or cannot run (offline). Used by calls that
+   * used to talk to the server directly (folder create / rename / delete / empty): online they still
+   * finish before they return; offline they return at once and the change waits.
+   */
+  async flushAll(accountId: string): Promise<void> {
+    for (let i = 0; i < 6; i++) {
+      await this.flush(accountId);
+      if (this.queue.count(accountId) === 0 || !this.canRun(accountId) || this.retryTimers.has(accountId)) {
+        return;
+      }
+    }
   }
 
   /** Stop retrying (engine shutdown). Queued changes stay in the database for the next start. */
@@ -303,16 +364,11 @@ export class ActionService implements PendingOpsApi {
     }
     const existing = this.ctx.folders.rowByRole(accountId, 'archive');
     if (existing) return existing;
-    const session = this.sessions.get(accountId);
-    await session.run('user', async (c) => {
-      const prefix = c.namespace?.prefix ?? '';
-      const created = await c.mailboxCreate(`${prefix}Archive`);
-      await c.mailboxSubscribe(created.path).catch(() => undefined);
-    });
-    await session.discoverFolders();
-    const made = this.ctx.folders.rowByRole(accountId, 'archive');
-    if (!made) throw new AppException('INTERNAL', 'The Archive folder could not be created.');
-    return made;
+    // No Archive folder yet: make it here at once and queue the create. The moves that follow wait
+    // behind it, so this works offline too.
+    const same = this.ctx.folders.rowByPath(accountId, `${this.folderOps.topLevelPrefix(accountId)}Archive`);
+    if (same) return same;
+    return this.folderOps.createLocal(accountId, null, 'Archive', 'archive');
   }
 
   private roleFolder(
@@ -348,6 +404,45 @@ export class ActionService implements PendingOpsApi {
     this.ctx.messages.relocate(row.id, orig.id, op.p.origUid);
     this.queue.remove(op);
     return this.ctx.messages.row(row.id)!;
+  }
+
+  /** A folder is going away: messages whose move into it waits go back to where they came from. */
+  cancelMovesInto(accountId: string, folderId: FolderId): void {
+    const ops = this.queue
+      .forAccount(accountId)
+      .filter((o): o is MoveOp => o.kind === 'move' && !o.inFlight && o.p.destFolderId === folderId);
+    if (ops.length === 0) return;
+    const touched = new Set<FolderId>();
+    const restored: MessageId[] = [];
+    const removed: MessageId[] = [];
+    for (const op of ops) {
+      const row = this.ctx.messages.row(op.p.msgId);
+      if (!row || row.folder_id !== folderId) {
+        this.queue.remove(op);
+        continue;
+      }
+      try {
+        this.restoreWaitingMove(row, op, touched, removed);
+        restored.push(row.id);
+      } catch {
+        // The original folder is gone too: the message cannot go back.
+        this.queue.remove(op);
+        this.ctx.messages.deleteById(row.id);
+        removed.push(row.id);
+      }
+    }
+    for (const f of touched) this.ctx.folders.recomputeCounts(f);
+    this.ctx.hub.changed({ folderIds: [...touched], updated: restored, removed });
+  }
+
+  /** The source folder of waiting moves is deleted on this PC: remember where it is on the server. */
+  stampMovesFrom(accountId: string, folderId: FolderId, serverPath: string): void {
+    for (const o of this.queue.forAccount(accountId)) {
+      if (o.kind === 'move' && !o.inFlight && o.p.srcFolderId === folderId) {
+        o.p = { ...o.p, srcPath: serverPath };
+        this.queue.persistPayload(o);
+      }
+    }
   }
 
   private async relocateRows(
@@ -579,6 +674,10 @@ export class ActionService implements PendingOpsApi {
         return this.execMoves(accountId, batch as MoveOp[]);
       case 'delete':
         return this.execDeletes(accountId, batch as DeleteOp[]);
+      case 'replied':
+        return this.execReplied(accountId, batch as RepliedOp[]);
+      default:
+        return this.folderOps.exec(accountId, batch[0] as FolderOp);
     }
   }
 
@@ -618,7 +717,7 @@ export class ActionService implements PendingOpsApi {
     items: { uid: number; mid: string | null }[],
     expectedUv: number | null,
   ): Promise<Located> {
-    const mb = await c.mailboxOpen(folder.path); // read-write
+    const mb = await c.mailboxOpen(this.queue.serverPath(folder.account_id, folder.path, folder.delimiter)); // read-write
     const mismatch = expectedUv !== null && Number(mb.uidValidity) !== expectedUv;
     const resolved = new Map<number, number | null>();
     if (!mismatch) {
@@ -678,10 +777,7 @@ export class ActionService implements PendingOpsApi {
     ids: MessageId[],
     revert: () => void,
   ): Outcome {
-    const keep =
-      WAIT_CODES.has(err.code) ||
-      (err.retryable && !(err.code === 'INTERNAL' && ops.some((o) => o.attempts + 1 >= MAX_UNKNOWN_TRIES)));
-    if (keep) {
+    if (shouldKeep(err, ops)) {
       this.ctx.log.info({ code: err.code, ops: ops.length }, 'change kept for later');
       this.queue.noteFailure(ops, err.message);
       return 'stalled';
@@ -695,7 +791,14 @@ export class ActionService implements PendingOpsApi {
       messageIds: ids,
       error: err,
       accountId: first.accountId,
-      kind: first.kind === 'flag' ? (first.p.col === 'flag_seen' ? 'read' : 'flag') : first.kind,
+      kind:
+        first.kind === 'flag'
+          ? first.p.col === 'flag_seen'
+            ? 'read'
+            : 'flag'
+          : first.kind === 'move' || first.kind === 'delete'
+            ? first.kind
+            : undefined,
     });
     return 'done';
   }
@@ -779,8 +882,12 @@ export class ActionService implements PendingOpsApi {
 
   private async execMoves(accountId: string, ops: MoveOp[]): Promise<Outcome> {
     const first = ops[0]!.p;
-    const src = this.ctx.folders.row(first.srcFolderId);
     const dest = this.ctx.folders.row(first.destFolderId);
+    let src = this.ctx.folders.row(first.srcFolderId);
+    if (!src && dest && first.srcPath) {
+      // The source folder was deleted on this PC after the move was queued: the server still has it.
+      src = { ...dest, id: first.srcFolderId, path: first.srcPath };
+    }
     if (!src || !dest) {
       this.dropOps(accountId, ops, [], null);
       return 'done';
@@ -829,7 +936,7 @@ export class ActionService implements PendingOpsApi {
             .map((e) => l.resolved.get(e.origUid))
             .filter((u): u is number => typeof u === 'number');
           for (const part of chunk(live, SERVER_BATCH)) {
-            const res = (await c.messageMove(toSequenceSet(part), dest.path, {
+            const res = (await c.messageMove(toSequenceSet(part), this.queue.serverPath(accountId, dest.path, dest.delimiter), {
               uid: true,
             })) as { uidMap?: Map<number, number> } | false;
             this.requireOk(c, res, 'move');
@@ -1047,47 +1154,74 @@ export class ActionService implements PendingOpsApi {
     return { count: res.succeeded.length };
   }
 
-  /** Permanently delete everything in Trash or Junk (the UI asks first). */
+  /**
+   * Permanently delete everything in Trash or Junk (the UI asks first). The rows are hidden at
+   * once and one op in the queue empties the folder on the server, after every move into it that
+   * is still waiting. Online the call returns when the server did it; offline it returns at once.
+   */
   async emptyFolder(folderId: FolderId): Promise<{ deleted: number }> {
     const folder = this.ctx.folders.row(folderId);
     if (!folder) throw new AppException('NOT_FOUND', 'Folder not found.');
     if (folder.role !== 'trash' && folder.role !== 'junk') {
       throw new AppException('INVALID_INPUT', 'Only Trash and Junk can be emptied.');
     }
-    const local = this.ctx.messages.idsForFolder(folderId);
-    await this.settle(local);
-    const count = await this.withRetry(() =>
-      this.sessions.get(folder.account_id).run('user', async (c) => {
-        const mb = await c.mailboxOpen(folder.path);
-        if (mb.exists > 0) await c.messageDelete('1:*');
-        return mb.exists;
-      }),
-    );
-    const removed = this.ctx.messages.purgeFolder(folderId);
-    this.ctx.folders.recomputeCounts(folderId);
-    this.ctx.hub.changed({ folderIds: [folderId], removed });
-    return { deleted: Math.max(count, removed.length) };
+    await this.settleRunning(folder.account_id);
+    const deleted = this.folderOps.emptyLocal(folder);
+    await this.flushAll(folder.account_id);
+    const err = this.folderOps.takeError(folderId);
+    if (err) throw new AppException(err.code, err.message, { retryable: false });
+    return { deleted };
   }
 
-  /** Marks the source of a reply / forward on the server and locally (after a successful send). */
+  /**
+   * Marks the source of a reply / forward on the server and locally (after a successful send). The
+   * mark is queued: it is sent after a move of that message that still waits, and after a restart.
+   */
   markReplied(rowId: MessageId, kind: 'answered' | 'forwarded'): void {
     const row = this.ctx.messages.row(rowId);
-    if (!row || row.uid <= 0) return;
-    const folder = this.ctx.folders.row(row.folder_id);
-    if (!folder) return;
+    if (!row) return;
     if (kind === 'answered') {
       this.ctx.messages.setFlagColumn([rowId], 'flag_answered', true);
       this.ctx.hub.changed({ folderIds: [row.folder_id], updated: [rowId] });
     }
-    const flag = kind === 'answered' ? '\\Answered' : '$Forwarded';
-    const p: Promise<void> = this.sessions
-      .get(row.account_id)
-      .run('background', async (c) => {
-        await c.mailboxOpen(folder.path);
-        await c.messageFlagsAdd(String(row.uid), [flag], { uid: true });
-      })
-      .catch((e) => this.ctx.log.debug({ err: String(e?.message ?? e) }, 'mark replied failed'))
-      .finally(() => this.background.delete(p));
-    this.background.add(p);
+    this.queue.addRaw(row.account_id, 'replied', {
+      msgId: row.id,
+      mid: row.message_id,
+      folderId: row.folder_id,
+      flag: kind === 'answered' ? '\\Answered' : '$Forwarded',
+    });
+    this.kick(row.account_id);
+  }
+
+  /** Set the Answered / Forwarded flag. Best effort: a final refusal just drops the mark. */
+  private async execReplied(accountId: string, ops: RepliedOp[]): Promise<Outcome> {
+    const op = ops[0]!;
+    const row = this.resolveRow(op.p.msgId, op.p.folderId, op.p.mid);
+    const folder = row ? this.ctx.folders.row(row.folder_id) : null;
+    if (!row || row.uid <= 0 || !folder) {
+      this.dropOps(accountId, ops, [], null);
+      return 'done';
+    }
+    const expectedUv = this.ctx.folders.syncState(folder.id)?.uidvalidity ?? null;
+    try {
+      await this.withRetry(() =>
+        this.sessions.get(accountId).run('user', async (c) => {
+          const l = await this.locate(c, folder, [{ uid: row.uid, mid: row.message_id }], expectedUv);
+          const uid = l.resolved.get(row.uid);
+          if (typeof uid === 'number') {
+            this.requireOk(c, await c.messageFlagsAdd(String(uid), [op.p.flag], { uid: true }), 'change');
+          }
+        }),
+      );
+    } catch (e) {
+      const err = toAppError(e);
+      if (shouldKeep(err, ops)) {
+        this.queue.noteFailure(ops, err.message);
+        return 'stalled';
+      }
+      this.ctx.log.debug({ code: err.code }, 'mark replied refused; dropped');
+    }
+    this.queue.removeMany(ops);
+    return 'done';
   }
 }

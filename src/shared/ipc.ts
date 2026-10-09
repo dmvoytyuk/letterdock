@@ -734,6 +734,21 @@ export type AppEvent =
       count: number;
       reason: 'uidvalidity' | 'gone';
     }
+  /**
+   * A folder change that waited in the offline queue (create, rename, delete, empty) met a
+   * difference on the server when it was sent. 'exists': the wanted name was taken, so the folder
+   * was renamed to `resolvedName` instead. 'gone': the folder no longer exists on the server, the
+   * change was dropped and the local folder removed. 'refused': the server refused it for good and
+   * the local change was undone. Show a short notice.
+   */
+  | {
+      type: 'folder:conflict';
+      accountId: AccountId;
+      op: 'create' | 'rename' | 'delete' | 'empty';
+      folderName: string;
+      reason: 'exists' | 'gone' | 'refused';
+      resolvedName?: string;
+    }
   | { type: 'outbox:changed' }
   | { type: 'send:result'; outboxId: number; ok: boolean; error?: AppError }
   | { type: 'update:status'; status: UpdateStatus }

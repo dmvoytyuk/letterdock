@@ -3,7 +3,7 @@ import type { Credential, OAuthSessionInfo } from '../shared/internal';
 import type { ContactService } from './contacts/contactService';
 import type { Db } from './db/connection';
 import type { AccountRepo } from './db/repos/accountRepo';
-import type { FolderRepo } from './db/repos/folderRepo';
+import type { FolderRepo, FolderRow, ListedFolder } from './db/repos/folderRepo';
 import type { MessageRepo } from './db/repos/messageRepo';
 import type { Logger } from './logger';
 
@@ -107,6 +107,23 @@ export interface PendingOpsApi {
   messageIdsWithFlagOps(accountId: string): Set<number>;
   /** The account was removed. */
   forgetAccount(accountId: string): void;
+  /** The path the server has for a local folder now (a rename that is still waiting is not applied). */
+  serverPath?(folder: FolderRow): string;
+  /** Apply waiting folder changes to a folder list read from the server. */
+  projectFolders?(accountId: string, listed: ListedFolder[]): ListedFolder[];
+  /** The namespace prefix the server uses for top-level folders (needed to create folders offline). */
+  rememberNamespace?(accountId: string, prefix: string): void;
+  /** Counts finished folder changes; a folder list read while it changed must be read again. */
+  folderGen?(accountId: string): number;
+  /** The folder is created or renamed here but not on the server yet: do not sync it. */
+  isFolderPending?(accountId: string, folderId: number): boolean;
+  /** The move of this message that waits or runs, if any. */
+  findMove?(
+    accountId: string,
+    msgId: number,
+  ):
+    | { srcFolderId: number; origUid: number; srcUv: number | null; mid: string | null; inFlight: boolean }
+    | undefined;
 }
 
 /** Drafts as the sync and action code sees them (implemented by ComposeService). */

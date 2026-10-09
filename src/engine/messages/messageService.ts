@@ -113,19 +113,57 @@ export class MessageService {
     return p;
   }
 
-  private async fetchSource(row: MessageRow): Promise<Buffer> {
-    if (row.uid <= 0) {
-      // A move to another folder is still running (the row has a placeholder UID).
-      throw new AppException('NOT_FOUND', 'This message is being moved. Try again in a moment.', {
-        retryable: true,
-      });
+  /** Where the server has this message right now: the folder path, uid and Message-ID to look for. */
+  private async sourceLocation(
+    row: MessageRow,
+  ): Promise<{ path: string; uid: number; uv: number | null; mid: string | null }> {
+    const pending = this.ctx.pendingOps;
+    let cur: MessageRow = row;
+    if (cur.uid <= 0) {
+      // The message was moved on this PC and the server has not done the move yet (or is doing it
+      // right now). Until then it is still in the folder it came from.
+      let mv = pending?.findMove?.(cur.account_id, cur.id);
+      if (mv?.inFlight) {
+        await pending!.barrier(cur.account_id).catch(() => undefined);
+        cur = this.requireRow(cur.id);
+        mv = cur.uid <= 0 ? pending?.findMove?.(cur.account_id, cur.id) : undefined;
+      }
+      if (cur.uid <= 0) {
+        const src = mv ? this.ctx.folders.row(mv.srcFolderId) : null;
+        if (!mv || !src) {
+          throw new AppException('NOT_FOUND', 'This message is being moved. Try again in a moment.', {
+            retryable: true,
+          });
+        }
+        return {
+          path: pending?.serverPath?.(src) ?? src.path,
+          uid: mv.origUid,
+          uv: mv.srcUv,
+          mid: mv.mid,
+        };
+      }
     }
-    const folder = this.ctx.folders.row(row.folder_id);
+    const folder = this.ctx.folders.row(cur.folder_id);
     if (!folder) throw new AppException('NOT_FOUND', 'Folder not found.');
+    return { path: pending?.serverPath?.(folder) ?? folder.path, uid: cur.uid, uv: null, mid: null };
+  }
+
+  private async fetchSource(row: MessageRow): Promise<Buffer> {
+    const loc = await this.sourceLocation(row);
     const session = this.sessions.get(row.account_id);
     return session.run('user', async (c) => {
-      await c.mailboxOpen(folder.path, { readOnly: true });
-      const m = await c.fetchOne(String(row.uid), { source: true }, { uid: true });
+      const mb = await c.mailboxOpen(loc.path, { readOnly: true });
+      let uid = loc.uid;
+      if (loc.uv !== null && Number(mb.uidValidity) !== loc.uv) {
+        // The folder was rebuilt on the server: find the message again by its Message-ID.
+        const found = loc.mid ? await c.search({ header: { 'message-id': loc.mid } }, { uid: true }) : [];
+        const list = found || [];
+        if (list.length === 0) {
+          throw new AppException('NOT_FOUND', 'This message is no longer on the server.');
+        }
+        uid = list[list.length - 1]!;
+      }
+      const m = await c.fetchOne(String(uid), { source: true }, { uid: true });
       if (!m || !m.source) {
         throw new AppException('NOT_FOUND', 'This message is no longer on the server.');
       }

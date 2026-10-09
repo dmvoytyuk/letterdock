@@ -378,7 +378,12 @@ export class AccountSession {
     const skip = findProviderByHost(this.account.imap.host)?.skipSyncRoles ?? [];
     return this.ctx.folders
       .rowsForAccount(this.account.id)
-      .filter((f) => f.selectable === 1 && !(f.role && (skip as string[]).includes(f.role)))
+      .filter(
+        (f) =>
+          f.selectable === 1 &&
+          !(f.role && (skip as string[]).includes(f.role)) &&
+          !this.ctx.pendingOps?.isFolderPending?.(this.account.id, f.id),
+      )
       .sort((a, b) => syncPriority(a.role) - syncPriority(b.role) || a.id - b.id);
   }
 
@@ -527,6 +532,8 @@ export class AccountSession {
 
   /** Coalesces concurrent requests: one run in flight, at most one queued re-run. */
   private syncFolderRow(folder: FolderRow, priority: Priority): Promise<void> {
+    // A folder that is created or renamed here but not on the server yet cannot be synced.
+    if (this.ctx.pendingOps?.isFolderPending?.(this.account.id, folder.id)) return Promise.resolve();
     const cur = this.inflight.get(folder.id);
     if (cur) {
       cur.rerun = true;
@@ -583,8 +590,19 @@ export class AccountSession {
   // ---------- folders ----------
 
   async discoverFolders(): Promise<void> {
-    const entries = await this.run('user', (c) => c.list());
-    const listed: ListedFolder[] = entries.map((e) => ({
+    // A folder change from the queue may finish while we read the list: then read it again.
+    let entries: Awaited<ReturnType<ImapFlow['list']>> = [];
+    for (let i = 0; i < 3; i++) {
+      const gen = this.ctx.pendingOps?.folderGen?.(this.account.id) ?? 0;
+      const got = await this.run('user', async (c) => ({
+        entries: await c.list(),
+        prefix: c.namespace?.prefix ?? '',
+      }));
+      entries = got.entries;
+      this.ctx.pendingOps?.rememberNamespace?.(this.account.id, got.prefix);
+      if ((this.ctx.pendingOps?.folderGen?.(this.account.id) ?? 0) === gen) break;
+    }
+    const listedFromServer: ListedFolder[] = entries.map((e) => ({
       path: e.path,
       name: e.name,
       delimiter: e.delimiter || null,
@@ -592,8 +610,9 @@ export class AccountSession {
       subscribed: e.subscribed !== false,
       selectable: !e.flags.has('\\Noselect') && !e.flags.has('\\NonExistent'),
     }));
-    const deduped = dedupeRoles(listed);
-    const changed = this.ctx.folders.syncListed(this.account.id, deduped);
+    const deduped = dedupeRoles(listedFromServer);
+    const listed = this.ctx.pendingOps?.projectFolders?.(this.account.id, deduped) ?? deduped;
+    const changed = this.ctx.folders.syncListed(this.account.id, listed);
     if (changed) {
       this.ctx.hub.emit({ type: 'folders:changed', accountId: this.account.id });
       this.ctx.hub.touchCounts();

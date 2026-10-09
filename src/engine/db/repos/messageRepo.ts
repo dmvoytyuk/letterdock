@@ -428,6 +428,16 @@ export class MessageRepo {
     return ids;
   }
 
+  /** Delete these rows (and their search entries). Ids that do not exist are ignored. */
+  deleteMany(ids: MessageId[]): void {
+    if (ids.length === 0) return;
+    this.db.transaction(() => {
+      const del = this.db.prepare('DELETE FROM message WHERE id = ?');
+      for (const id of ids) del.run(id);
+      this.ftsDelete(ids);
+    })();
+  }
+
   /** FTS cleanup for messages cascaded away with an account/folder delete. */
   ftsDeleteMany(ids: number[]): void {
     this.db.transaction(() => this.ftsDelete(ids))();

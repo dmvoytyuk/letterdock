@@ -247,6 +247,20 @@ export class FolderRepo {
     tx();
   }
 
+  /** A folder that exists on this PC only so far (its create waits in the offline queue). */
+  insertLocal(
+    accountId: string,
+    f: { path: string; name: string; delimiter: string | null; role: FolderRole | null },
+  ): FolderRow {
+    const res = this.db
+      .prepare(
+        `INSERT INTO folder (account_id,path,delimiter,name,role,subscribed,selectable)
+         VALUES (?,?,?,?,?,1,1)`,
+      )
+      .run(accountId, f.path, f.delimiter, f.name, f.role);
+    return this.row(Number(res.lastInsertRowid))!;
+  }
+
   delete(id: FolderId): void {
     this.db.prepare('DELETE FROM folder WHERE id = ?').run(id);
   }

@@ -71,7 +71,7 @@ describe('PendingQueue', () => {
     });
     q.addDelete('acc-1', { msgId: 7, mid: null, folderId: 2, uv: null });
     const again = new PendingQueue(ctx.db, () => 2000);
-    expect(again.forAccount('acc-1').map((o) => [o.kind, o.p.msgId])).toEqual([
+    expect(again.forAccount('acc-1').map((o) => [o.kind, (o.p as { msgId: number }).msgId])).toEqual([
       ['flag', 5],
       ['move', 6],
       ['delete', 7],
@@ -84,7 +84,7 @@ describe('PendingQueue', () => {
     q.addFlag('acc-1', flag({ msgId: 3 }));
     q.addFlag('acc-1', flag({ msgId: 4 }));
     q.addDelete('acc-1', { msgId: 3, mid: null, folderId: 1, uv: null });
-    expect(q.forAccount('acc-1').map((o) => [o.kind, o.p.msgId])).toEqual([
+    expect(q.forAccount('acc-1').map((o) => [o.kind, (o.p as { msgId: number }).msgId])).toEqual([
       ['flag', 4],
       ['delete', 3],
     ]);
@@ -96,9 +96,9 @@ describe('PendingQueue', () => {
     q.addFlag('acc-1', flag({ msgId: 2 }));
     q.addFlag('acc-1', flag({ msgId: 3, value: false, prev: true })); // other value
     q.addFlag('acc-1', flag({ msgId: 4 }));
-    expect(q.nextBatch('acc-1').map((o) => o.p.msgId)).toEqual([1, 2]);
+    expect(q.nextBatch('acc-1').map((o) => (o.p as { msgId: number }).msgId)).toEqual([1, 2]);
     q.removeMany(q.nextBatch('acc-1'));
-    expect(q.nextBatch('acc-1').map((o) => o.p.msgId)).toEqual([3]);
+    expect(q.nextBatch('acc-1').map((o) => (o.p as { msgId: number }).msgId)).toEqual([3]);
   });
 
   it('counts failures and ignores unreadable rows', () => {
@@ -114,5 +114,26 @@ describe('PendingQueue', () => {
     const again = new PendingQueue(ctx.db, () => 0);
     expect(again.count('acc-1')).toBe(1);
     expect((ctx.db.prepare('SELECT COUNT(*) AS n FROM pending_op').get() as { n: number }).n).toBe(1);
+  });
+
+  it('keeps folder ops across a restart and never batches them', () => {
+    const { q, ctx } = setup();
+    q.addRaw('acc-1', 'folderCreate', { folderId: 5, path: 'A' });
+    q.addRaw('acc-1', 'folderCreate', { folderId: 6, path: 'B' });
+    q.addRaw('acc-1', 'replied', { msgId: 1, mid: null, folderId: 1, flag: '$Forwarded' });
+    expect(q.nextBatch('acc-1')).toHaveLength(1);
+    const again = new PendingQueue(ctx.db, () => 0);
+    expect(again.forAccount('acc-1').map((o) => o.kind)).toEqual(['folderCreate', 'folderCreate', 'replied']);
+    expect(again.lastFolderOp('acc-1')?.kind).toBe('folderCreate');
+  });
+
+  it('serverPath undoes waiting renames, also for folders below the renamed one', () => {
+    const { q } = setup();
+    q.addRaw('acc-1', 'folderRename', { folderId: 1, fromPath: 'A', toPath: 'B' });
+    q.addRaw('acc-1', 'folderRename', { folderId: 1, fromPath: 'B', toPath: 'C' });
+    expect(q.serverPath('acc-1', 'C', '/')).toBe('A');
+    expect(q.serverPath('acc-1', 'C/Sub', '/')).toBe('A/Sub');
+    expect(q.serverPath('acc-1', 'Other', '/')).toBe('Other');
+    expect(q.serverPath('acc-1', 'CC', '/')).toBe('CC');
   });
 });

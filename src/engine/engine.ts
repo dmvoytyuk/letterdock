@@ -78,9 +78,9 @@ export function createEngine(opts: EngineOptions): Engine {
   ctx.contacts = new ContactService(ctx);
   const sessions = new SessionManager(ctx);
   const accounts = new AccountService(ctx, sessions, opts.discoverDeps ?? makeNetworkDeps());
-  const folderSvc = new FolderService(ctx, sessions);
   const messages = new MessageService(ctx, sessions);
   const actions = new ActionService(ctx, sessions);
+  const folderSvc = new FolderService(ctx, sessions, actions);
   const search = new SearchService(ctx, sessions);
   const compose = new ComposeService(ctx, sessions, messages, actions);
 

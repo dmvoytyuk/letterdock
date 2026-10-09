@@ -6,6 +6,7 @@
 // original order when the account is back online.
 //
 // This file only holds the data and the merge rules. It does no network work.
+import type { AppError } from '../../shared/ipc';
 import type { Db } from '../db/connection';
 
 export type FlagColumn = 'flag_seen' | 'flag_flagged';
@@ -31,6 +32,8 @@ export interface MovePayload {
   origUid: number;
   /** UIDVALIDITY of the source folder when the op was queued. */
   srcUv: number | null;
+  /** Set when the source folder was deleted on this PC after the move was queued: its server path. */
+  srcPath?: string;
 }
 
 /** Delete one message for good. */
@@ -39,6 +42,40 @@ export interface DeletePayload {
   mid: string | null;
   folderId: number;
   uv: number | null;
+}
+
+/** Create a folder. The local row (`folderId`) already exists; `path` is what to create on the server. */
+export interface FolderCreatePayload {
+  folderId: number;
+  path: string;
+}
+
+/** Rename a folder. `fromPath` is what the server has when this op runs, `toPath` the wanted path. */
+export interface FolderRenamePayload {
+  folderId: number;
+  fromPath: string;
+  toPath: string;
+}
+
+/** Delete a folder. The local row is already gone; `path` is the folder on the server. */
+export interface FolderDeletePayload {
+  path: string;
+  delimiter: string | null;
+}
+
+/** Delete every message of a folder (Trash / Junk). The local rows are hidden until it ran. */
+export interface FolderEmptyPayload {
+  folderId: number;
+  /** The rows that were hidden when the op was queued (they are removed when it ran). */
+  ids: number[];
+}
+
+/** Set the Answered or Forwarded flag on the source of a reply or forward. Best effort. */
+export interface RepliedPayload {
+  msgId: number;
+  mid: string | null;
+  folderId: number;
+  flag: '\\Answered' | '$Forwarded';
 }
 
 interface Base {
@@ -53,9 +90,56 @@ interface Base {
 export type FlagOp = Base & { kind: 'flag'; p: FlagPayload };
 export type MoveOp = Base & { kind: 'move'; p: MovePayload };
 export type DeleteOp = Base & { kind: 'delete'; p: DeletePayload };
-export type PendingOp = FlagOp | MoveOp | DeleteOp;
+export type FolderCreateOp = Base & { kind: 'folderCreate'; p: FolderCreatePayload };
+export type FolderRenameOp = Base & { kind: 'folderRename'; p: FolderRenamePayload };
+export type FolderDeleteOp = Base & { kind: 'folderDelete'; p: FolderDeletePayload };
+export type FolderEmptyOp = Base & { kind: 'folderEmpty'; p: FolderEmptyPayload };
+export type RepliedOp = Base & { kind: 'replied'; p: RepliedPayload };
+export type FolderOp = FolderCreateOp | FolderRenameOp | FolderDeleteOp | FolderEmptyOp;
+export type PendingOp = FlagOp | MoveOp | DeleteOp | RepliedOp | FolderOp;
+
+const KINDS = new Set<string>([
+  'flag',
+  'move',
+  'delete',
+  'replied',
+  'folderCreate',
+  'folderRename',
+  'folderDelete',
+  'folderEmpty',
+]);
+
+export function isFolderOp(o: PendingOp): o is FolderOp {
+  return o.kind.startsWith('folder');
+}
+
+/** The message an op is about (folder ops have none). */
+function msgIdOf(o: PendingOp): number | null {
+  switch (o.kind) {
+    case 'flag':
+    case 'move':
+    case 'delete':
+    case 'replied':
+      return o.p.msgId;
+    default:
+      return null;
+  }
+}
 
 const MAX_BATCH = 500;
+
+/** Errors that mean "the user must fix something": keep the changes and wait, never revert. */
+const WAIT_CODES = new Set(['AUTH_FAILED', 'OAUTH_REAUTH_REQUIRED', 'OAUTH_NOT_CONFIGURED', 'TLS_ERROR']);
+/** An unknown (INTERNAL) error that keeps coming back is treated as final after this many tries. */
+const MAX_UNKNOWN_TRIES = 6;
+
+/** A failed send: keep the changes and try again later (true), or is the refusal final (false)? */
+export function shouldKeep(err: AppError, ops: readonly { attempts: number }[]): boolean {
+  return (
+    WAIT_CODES.has(err.code) ||
+    (err.retryable && !(err.code === 'INTERNAL' && ops.some((o) => o.attempts + 1 >= MAX_UNKNOWN_TRIES)))
+  );
+}
 
 export class PendingQueue {
   private ops = new Map<string, PendingOp[]>();
@@ -90,7 +174,7 @@ export class PendingQueue {
       } catch {
         p = null;
       }
-      if (!p || (r.kind !== 'flag' && r.kind !== 'move' && r.kind !== 'delete')) {
+      if (!p || !KINDS.has(r.kind)) {
         del.run(r.id); // unreadable leftover (older version): drop it
         continue;
       }
@@ -147,9 +231,39 @@ export class PendingQueue {
     );
   }
 
+  /** The move of this message that is waiting or running, if any. */
+  findAnyMove(accountId: string, msgId: number): MoveOp | undefined {
+    return (this.ops.get(accountId) ?? []).find(
+      (o): o is MoveOp => o.kind === 'move' && o.p.msgId === msgId,
+    );
+  }
+
+  /**
+   * The path the SERVER has for a local folder path right now. A folder renamed on this PC keeps
+   * its old name on the server until the rename op ran, and ops queued before that rename must
+   * still use the old name. Waiting renames are undone, newest first.
+   */
+  serverPath(accountId: string, path: string, delimiter: string | null): string {
+    const renames = (this.ops.get(accountId) ?? []).filter(
+      (o): o is FolderRenameOp => o.kind === 'folderRename',
+    );
+    let cur = path;
+    for (let i = renames.length - 1; i >= 0; i--) {
+      const { fromPath, toPath } = renames[i]!.p;
+      if (cur === toPath) cur = fromPath;
+      else if (delimiter && cur.startsWith(toPath + delimiter)) {
+        cur = fromPath + cur.slice(toPath.length);
+      }
+    }
+    return cur;
+  }
+
   hasInFlight(accountId: string, msgIds: number[]): boolean {
     const set = new Set(msgIds);
-    return (this.ops.get(accountId) ?? []).some((o) => o.inFlight && set.has(o.p.msgId));
+    return (this.ops.get(accountId) ?? []).some((o) => {
+      const m = msgIdOf(o);
+      return o.inFlight && m !== null && set.has(m);
+    });
   }
 
   // ---------- adding (with merging) ----------
@@ -190,6 +304,25 @@ export class PendingQueue {
     for (const o of stale) this.removeQuiet(o);
     const op = this.insert(accountId, 'delete', p) as DeleteOp;
     return op;
+  }
+
+  /** Queue a folder change or a "replied" mark. Merging is done by the caller (FolderOps). */
+  addRaw<K extends 'folderCreate' | 'folderRename' | 'folderDelete' | 'folderEmpty' | 'replied'>(
+    accountId: string,
+    kind: K,
+    p: Extract<PendingOp, { kind: K }>['p'],
+  ): Extract<PendingOp, { kind: K }> {
+    return this.insert(accountId, kind, p) as Extract<PendingOp, { kind: K }>;
+  }
+
+  /** Waiting folder ops (not started), oldest first. */
+  folderOps(accountId: string): FolderOp[] {
+    return (this.ops.get(accountId) ?? []).filter((o): o is FolderOp => isFolderOp(o));
+  }
+
+  /** The newest folder op of the account (only a waiting one may be merged into). */
+  lastFolderOp(accountId: string): FolderOp | undefined {
+    return this.folderOps(accountId).at(-1);
   }
 
   private insert(accountId: string, kind: PendingOp['kind'], p: PendingOp['p']): PendingOp {
@@ -298,5 +431,7 @@ function sameBatch(a: PendingOp, b: PendingOp): boolean {
     }
     case 'delete':
       return true;
+    default:
+      return false; // folder changes and "replied" marks are sent one at a time
   }
 }

@@ -37,6 +37,8 @@ export interface FakeImapOptions {
   folders?: Record<string, SeedMessage[]>;
   /** Adds a top-level "All Mail" folder with the \All special use (Gmail-like layout). */
   gmailLayout?: boolean;
+  /** Leave these folders out of the default layout (e.g. ['Archive'] = a server without Archive). */
+  omitFolders?: string[];
 }
 
 export const DEFAULT_PLUGINS = [
@@ -140,17 +142,21 @@ function buildStorage(o: FakeImapOptions): Record<string, unknown> {
     ...seed(extra),
   });
   const extra = o.folders ?? {};
+  const all: Record<string, unknown> = {
+    Sent: f('\\Sent', extra['Sent']),
+    Drafts: f('\\Drafts', extra['Drafts']),
+    Trash: f('\\Trash', extra['Trash']),
+    Junk: f('\\Junk', extra['Junk']),
+    Archive: f('\\Archive', extra['Archive']),
+    Projects: f(null, extra['Projects']),
+  };
+  for (const name of o.omitFolders ?? []) delete all[name];
   return {
     INBOX: seed(o.inbox),
     '': {
       separator: '/',
       folders: {
-        Sent: f('\\Sent', extra['Sent']),
-        Drafts: f('\\Drafts', extra['Drafts']),
-        Trash: f('\\Trash', extra['Trash']),
-        Junk: f('\\Junk', extra['Junk']),
-        Archive: f('\\Archive', extra['Archive']),
-        Projects: f(null, extra['Projects']),
+        ...all,
         ...(o.gmailLayout ? { 'All Mail': f('\\All', extra['All Mail']) } : {}),
       },
     },
