@@ -1,0 +1,251 @@
+/* Conversations (DESIGN-SPEC 3.10): list rows and the stacked reading pane. */
+
+/* ---------- list row ---------- */
+.row .snd.conv {
+  display: flex;
+  align-items: baseline;
+  font-weight: 400;
+}
+.row.unread .snd.conv {
+  font-weight: 400;
+  color: var(--t1);
+}
+.cparts {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+}
+.cparts .cn {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cparts .cn .u {
+  font-weight: 600;
+}
+/* The count never gets cut off; only the names are shortened. */
+.cparts .cc {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  color: var(--t3);
+}
+.row .snp .you {
+  color: var(--t3);
+}
+
+/* ---------- stacked reading pane ---------- */
+.rsub-extra {
+  margin: -8px 0 12px;
+}
+.cstack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cstack .rsub {
+  margin-bottom: 4px;
+}
+.ctitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ctitle .cap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+}
+.ccard {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+.ccard.open {
+  background: var(--bg-surface);
+}
+.ccard.skel-card {
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 56px;
+}
+.cloading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chh {
+  margin: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+}
+.chead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 12px;
+  text-align: left;
+  border-radius: 8px;
+  position: relative;
+}
+.ccard.open .chead {
+  min-height: 52px;
+}
+.ccard:not(.open) .chead:hover {
+  background: var(--hover);
+}
+.chead:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 2px var(--ring-o),
+    inset 0 0 0 3px var(--ring-i);
+}
+.ccard .ud {
+  position: absolute;
+  left: 4px;
+  top: 21px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.cav {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-sub);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ccard.open .cav {
+  width: 32px;
+  height: 32px;
+  font-size: 13px;
+}
+.cmain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cl1 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
+  min-width: 0;
+}
+.cnm {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ccard.unread .cnm {
+  font-weight: 600;
+}
+.cdt {
+  margin-left: auto;
+  flex: none;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t3);
+}
+.cl2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t3);
+}
+.csn {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fchip {
+  flex: none;
+  font-size: 12px;
+  line-height: 16px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--t2);
+}
+.cbody {
+  padding: 0 14px 14px;
+}
+.cmeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.cmeta .cap {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+  overflow-wrap: anywhere;
+}
+.cbtns {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+.cbtns .ibtn {
+  width: 28px;
+  height: 28px;
+}
+.cbody .rdetails {
+  margin: 4px 0 8px;
+}
+.cstack .mbody {
+  margin-top: 12px;
+}
+.newpill {
+  position: sticky;
+  bottom: 12px;
+  display: block;
+  margin: 8px auto 0;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--e2);
+}
+.newpill:hover {
+  background: var(--accent-h);
+}

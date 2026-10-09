@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKE, type MouseEvent as RME } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Account, DraftSyncState, Folder, MessageHeader } from '../../../../shared/ipc';
+import type { Account, DraftSyncState, Folder } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import {
   AccountBadge,
@@ -14,7 +14,7 @@ import {
   type MenuEntry,
 } from '../../components/ui';
 import { useApp } from '../../store/app';
-import { useList } from '../../store/list';
+import { useList, type ListItem } from '../../store/list';
 import { ROW_HEIGHT, isUnified, useUi, type Density, type View } from '../../store/ui';
 import { useAccountColor, useAccountMap } from '../../lib/hooks';
 import {
@@ -35,10 +35,11 @@ import { reportActionError, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { SidebarToggle } from '../sidebar/SidebarToggle';
 import { SearchEmpty, SearchHeader, SearchNotes } from './SearchBits';
+import { ConversationParticipants, participantText } from './ConversationBits';
 
 type Flat =
   | { type: 'header'; key: string; label: string; count: number; collapsed: boolean }
-  | { type: 'row'; key: string; msg: MessageHeader; index: number; label: string };
+  | { type: 'row'; key: string; msg: ListItem; index: number; label: string };
 
 export function viewTitle(view: View, accounts: Account[], folders: Folder[]): string {
   switch (view.kind) {
@@ -90,6 +91,7 @@ export function MessageList({ className }: { className?: string }) {
   const accountMap = useAccountMap();
   const colorOf = useAccountColor();
   const folderMap = useMemo(() => new Map(folders.map((f) => [f.id, f])), [folders]);
+  const groupSetting = useApp((s) => !!s.settings?.groupConversations);
   const unified = isUnified(view);
   const alwaysBadge = useUi((s) => s.showAccountBadge);
   // "Always" means on every row, even with one account. Otherwise only in combined views with 2+ accounts.
@@ -100,7 +102,7 @@ export function MessageList({ className }: { className?: string }) {
   useEffect(() => {
     if (!loaded) return;
     void useList.getState().load(view, unreadOnly);
-  }, [view, unreadOnly, loaded, epoch]);
+  }, [view, unreadOnly, loaded, epoch, groupSetting]);
 
   // ----- scope accounts, for banners and sync state -----
   const scopeAccountIds = useMemo(() => {
@@ -122,7 +124,7 @@ export function MessageList({ className }: { className?: string }) {
       items.forEach((m, index) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index, label: '' }));
       return out;
     }
-    const groups = new Map<string, MessageHeader[]>();
+    const groups = new Map<string, ListItem[]>();
     const order: string[] = [];
     items.forEach((m) => {
       const label = groupLabel(m.date, now);
@@ -272,7 +274,7 @@ export function MessageList({ className }: { className?: string }) {
   }, [scrollTop, vItems, flat]);
 
   const onRowClick = useCallback(
-    (e: RME, m: MessageHeader) => {
+    (e: RME, m: ListItem) => {
       const st = useList.getState();
       if (e.shiftKey) st.rangeTo(m.id);
       else if (e.ctrlKey || e.metaKey || st.selectMode) st.toggle(m.id);
@@ -283,14 +285,14 @@ export function MessageList({ className }: { className?: string }) {
     [],
   );
 
-  const onRowMenu = useCallback((x: number, y: number, m: MessageHeader) => {
+  const onRowMenu = useCallback((x: number, y: number, m: ListItem) => {
     const st = useList.getState();
     if (!st.selectedIds.includes(m.id)) st.selectOnly(m.id);
     const ids = useList.getState().selectedIds;
     useMenu.getState().open(x, y, messageMenu(m, ids));
   }, []);
 
-  const onRowOpen = useCallback((m: MessageHeader) => {
+  const onRowOpen = useCallback((m: ListItem) => {
     openInWindow(m);
   }, []);
 
@@ -521,7 +523,7 @@ function FilterButton() {
   );
 }
 
-function SelectionBar({ count, ids, items }: { count: number; ids: number[]; items: MessageHeader[] }) {
+function SelectionBar({ count, ids, items }: { count: number; ids: number[]; items: ListItem[] }) {
   const sel = items.filter((m) => ids.includes(m.id));
   const sameAccount = new Set(sel.map((m) => m.accountId)).size <= 1;
   const allRead = sel.every((m) => m.seen);
@@ -746,7 +748,7 @@ export function signInAgain(a: Account): void {
 
 // ---------- row ----------
 interface RowProps {
-  msg: MessageHeader;
+  msg: ListItem;
   posinset: number;
   setsize: number;
   account: Account | undefined;
@@ -757,9 +759,9 @@ interface RowProps {
   showBadge: boolean;
   density: Density;
   terms: string[];
-  onClick: (e: RME, m: MessageHeader) => void;
-  onMenu: (x: number, y: number, m: MessageHeader) => void;
-  onOpen: (m: MessageHeader) => void;
+  onClick: (e: RME, m: ListItem) => void;
+  onMenu: (x: number, y: number, m: ListItem) => void;
+  onOpen: (m: ListItem) => void;
 }
 
 const MessageRow = memo(function MessageRow({
@@ -778,10 +780,18 @@ const MessageRow = memo(function MessageRow({
   onMenu,
   onOpen,
 }: RowProps) {
-  const outgoing = folder?.role === 'sent' || folder?.role === 'drafts' || m.draft;
+  // A conversation with 2 or more messages (DESIGN-SPEC 3.10.2). With one message it is a normal row.
+  const conv = m.conv && m.conv.count > 1 ? m.conv : null;
+  const outgoing = !conv && (folder?.role === 'sent' || folder?.role === 'drafts' || m.draft);
   // Half-typed text in an old draft ("To: dm") is not a recipient.
   const firstTo = outgoing ? m.to.find((a) => isValidEmail(a.address)) : undefined;
-  const who = outgoing ? (firstTo ? `To: ${senderName(firstTo)}` : '(no recipient)') : senderName(m.from);
+  const who = conv
+    ? participantText(conv.participants)
+    : outgoing
+      ? firstTo
+        ? `To: ${senderName(firstTo)}`
+        : '(no recipient)'
+      : senderName(m.from);
   const date = listDate(m.date);
   const label = [
     m.seen ? 'Read' : 'Unread',
@@ -790,7 +800,11 @@ const MessageRow = memo(function MessageRow({
   ]
     .filter(Boolean)
     .join(', ');
-  const aria = `${label}, from ${who}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${m.snippet}`;
+  const aria = conv
+    ? `${m.seen ? 'Read' : 'Unread'}, ${m.flagged ? 'Flagged, ' : ''}${m.hasAttachments ? 'Has attachment, ' : ''}conversation with ${who}, ${conv.count} messages${conv.unreadCount > 0 ? `, ${conv.unreadCount} unread` : ''}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${conv.latest.fromMe ? 'You: ' : ''}${m.snippet}`
+    : `${label}, from ${who}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${m.snippet}`;
+  const youPrefix = conv?.latest.fromMe ? 'You: ' : '';
+  const scopeWord = conv ? `conversation (${conv.count} messages)` : '';
   return (
     <div
       id={`msg-${m.id}`}
@@ -833,8 +847,8 @@ const MessageRow = memo(function MessageRow({
         </button>
       </span>
       <div className="l1">
-        <span className="snd" title={outgoing ? undefined : m.from?.address}>
-          <Highlight text={who} terms={terms} />
+        <span className={`snd ${conv ? 'conv' : ''}`} title={conv ? who : outgoing ? undefined : m.from?.address}>
+          {conv ? <ConversationParticipants conv={conv} /> : <Highlight text={who} terms={terms} />}
         </span>
         <span className="ico">
           {m.hasAttachments ? <Icon name="clip" /> : null}
@@ -860,6 +874,7 @@ const MessageRow = memo(function MessageRow({
       {density !== 'compact' ? (
         <div className="snp">
           <span className="t">
+            {youPrefix ? <span className="you">{youPrefix}</span> : null}
             <Highlight text={m.snippet} terms={terms} />
           </span>
           {showBadge && account ? (
@@ -870,10 +885,10 @@ const MessageRow = memo(function MessageRow({
           ) : null}
         </div>
       ) : null}
-      <div className="hov" role="group" aria-label={`Quick actions for ${who}`}>
+      <div className="hov" role="group" aria-label={conv ? `Quick actions for the conversation with ${who}` : `Quick actions for ${who}`}>
         <IconButton
           icon="trash"
-          label={`Delete message from ${who}`}
+          label={conv ? 'Delete conversation' : `Delete message from ${who}`}
           size="sm"
           tabIndex={-1}
           onClick={(e) => {
@@ -883,7 +898,7 @@ const MessageRow = memo(function MessageRow({
         />
         <IconButton
           icon="archive"
-          label="Archive"
+          label={conv ? `Archive ${scopeWord}` : 'Archive'}
           size="sm"
           tabIndex={-1}
           onClick={(e) => {
@@ -893,7 +908,7 @@ const MessageRow = memo(function MessageRow({
         />
         <IconButton
           icon="flag"
-          label={m.flagged ? 'Unflag' : 'Flag'}
+          label={`${m.flagged ? 'Unflag' : 'Flag'}${conv ? ' conversation' : ''}`}
           size="sm"
           tabIndex={-1}
           pressed={m.flagged}
@@ -904,7 +919,7 @@ const MessageRow = memo(function MessageRow({
         />
         <IconButton
           icon={m.seen ? 'unread' : 'mail-open'}
-          label={m.seen ? 'Mark as unread' : 'Mark as read'}
+          label={conv ? `Mark conversation as ${m.seen ? 'unread' : 'read'}` : m.seen ? 'Mark as unread' : 'Mark as read'}
           size="sm"
           tabIndex={-1}
           onClick={(e) => {
@@ -954,7 +969,7 @@ function DraftSyncHint({ sync }: { sync: DraftSyncState | undefined }) {
   return null;
 }
 
-function messageMenu(m: MessageHeader, ids: number[]): MenuEntry[] {
+function messageMenu(m: ListItem, ids: number[]): MenuEntry[] {
   const multi = ids.length > 1;
   const st = useList.getState();
   const sel = st.items.filter((x) => ids.includes(x.id));

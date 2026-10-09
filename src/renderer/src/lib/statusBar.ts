@@ -145,6 +145,8 @@ export interface MiddleInput {
     total: number | null;
     itemCount: number;
     selectedCount: number;
+    /** The list shows conversations (DESIGN-SPEC 3.10): the middle text counts conversations. */
+    grouped?: boolean;
   };
 }
 
@@ -180,6 +182,28 @@ export function middleText(i: MiddleInput): string {
   }
 
   const enabled = new Set(i.accounts.filter((a) => a.enabled).map((a) => a.id));
+  if (list.grouped && (view.kind === 'all' || view.kind === 'unread' || view.kind === 'flagged' || view.kind === 'account' || view.kind === 'folder')) {
+    // With conversations on, the sidebar counts stay in messages, so the bar counts only conversations.
+    if (list.loading && list.itemCount === 0) return '';
+    const n = shown;
+    const conv = `${num(n)} ${plural(n, 'conversation', 'conversations')}`;
+    switch (view.kind) {
+      case 'all':
+        return `All inboxes · ${conv}`;
+      case 'unread':
+        return `Unread · ${conv}`;
+      case 'flagged':
+        return `Flagged · ${conv}`;
+      case 'account': {
+        const a = i.accounts.find((x) => x.id === view.accountId);
+        return a ? `${a.displayName} · ${conv}` : '';
+      }
+      case 'folder': {
+        const f = i.folders.find((x) => x.id === view.folderId);
+        return f ? `${(f.role && FOLDER_NAMES[f.role]) || f.name} · ${conv}` : '';
+      }
+    }
+  }
   const withUnread = (name: string, total: number, unread: number) =>
     `${name} · ${messages(total)}${unread > 0 ? `, ${num(unread)} unread` : ''}`;
 

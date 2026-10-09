@@ -217,6 +217,42 @@ export function Checkbox({
   );
 }
 
+/** An on/off switch (role="switch"). The label sits to its right unless `label` is left out. */
+export function Switch({
+  checked,
+  onChange,
+  label,
+  ariaLabel,
+  disabled,
+  describedBy,
+  id,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label?: ReactNode;
+  ariaLabel?: string;
+  disabled?: boolean;
+  describedBy?: string;
+  id?: string;
+}) {
+  return (
+    <label className={`sw ${disabled ? 'dis' : ''}`}>
+      <input
+        id={id}
+        type="checkbox"
+        role="switch"
+        checked={checked}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-describedby={describedBy}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <i aria-hidden="true" />
+      {label ? <span className="swl">{label}</span> : null}
+    </label>
+  );
+}
+
 export function Radio({
   name,
   checked,

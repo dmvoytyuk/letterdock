@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import type {
   AppError,
+  ConversationRow,
   SearchRes,
   FolderId,
-  ListMessagesRes,
   ListScope,
   MessageHeader,
   MessageId,
@@ -14,6 +14,49 @@ import { useApp } from './app';
 import { scopeOf, type View } from './ui';
 
 export const PAGE = 50;
+
+/**
+ * A row of the list. With "Group messages into conversations" on, each row is a conversation: it
+ * looks like the newest message of the conversation (same id, subject, date) and carries the whole
+ * `ConversationRow` in `conv`. Selection, keys, grouping by date and drag work on it like on a message.
+ */
+export type ListItem = MessageHeader & { conv?: ConversationRow };
+
+/** Turn a conversation into a list row. `folderId` is the folder being viewed (0 in combined views). */
+export function conversationItem(row: ConversationRow, folderId: number): ListItem {
+  return {
+    id: row.latest.id,
+    accountId: row.accountId,
+    folderId,
+    uid: 0,
+    messageIdHeader: null,
+    subject: row.latest.title,
+    from: row.latest.from,
+    to: [],
+    cc: [],
+    date: row.latest.date,
+    snippet: row.latest.snippet,
+    seen: row.unreadCount === 0,
+    flagged: row.hasFlag,
+    answered: false,
+    draft: false,
+    hasAttachments: row.hasAttachment,
+    size: null,
+    bodyCached: true,
+    threadId: row.threadId,
+    conv: row,
+  };
+}
+
+/** Views that can show conversations (not search, Outbox or Scheduled). */
+export function canGroup(view: View): boolean {
+  return ['all', 'unread', 'flagged', 'account', 'folder'].includes(view.kind);
+}
+
+/** True when the list shows conversations for this view (setting on and a view that supports it). */
+export function wantsGrouped(view: View): boolean {
+  return !!useApp.getState().settings?.groupConversations && canGroup(view);
+}
 
 export interface SearchInfo {
   query: string;
@@ -34,7 +77,9 @@ interface ListState {
   searchSort: 'rank' | 'date';
   setSearchSort: (sort: 'rank' | 'date') => void;
   unreadOnly: boolean;
-  items: MessageHeader[];
+  /** Rows are conversations (see ListItem). */
+  grouped: boolean;
+  items: ListItem[];
   nextCursor: PageCursor | null;
   canLoadOlder: boolean;
   endReached: boolean;
@@ -49,10 +94,10 @@ interface ListState {
   focusId: MessageId | null;
   selectMode: boolean;
 
-  load: (view: View, unreadOnly: boolean) => Promise<void>;
+  load: (view: View, unreadOnly: boolean, grouped?: boolean) => Promise<void>;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
-  patch: (ids: MessageId[], p: Partial<MessageHeader>) => void;
+  patch: (ids: MessageId[], p: Partial<ListItem>) => void;
   /** Drop rows from the screen right away (optimistic move / delete). */
   removeLocal: (ids: MessageId[]) => void;
   searchOnServer: () => Promise<void>;
@@ -68,7 +113,42 @@ interface ListState {
 
 let seq = 0;
 
-const scopeKey = (scope: ListScope, unreadOnly: boolean) => JSON.stringify([scope, unreadOnly]);
+const scopeKey = (scope: ListScope, unreadOnly: boolean, grouped = false) =>
+  JSON.stringify([scope, unreadOnly, grouped]);
+
+/** The folder a conversation list is about (0 when it mixes folders). */
+function scopeFolderId(scope: ListScope): number {
+  return scope.kind === 'folder' ? scope.folderId : 0;
+}
+
+interface Page {
+  items: ListItem[];
+  nextCursor: PageCursor | null;
+  canLoadOlderFromServer: boolean;
+  total: number | null;
+}
+
+/** One page of messages or of conversations. */
+async function fetchPage(
+  scope: ListScope,
+  cursor: PageCursor | null,
+  limit: number,
+  unreadOnly: boolean,
+  grouped: boolean,
+): Promise<Page> {
+  if (grouped) {
+    const res = await call('conversations.list', { scope, cursor, limit, unreadOnly });
+    const folderId = scopeFolderId(scope);
+    return { ...res, items: res.items.map((r) => conversationItem(r, folderId)) };
+  }
+  return call('messages.list', { scope, cursor, limit, unreadOnly });
+}
+
+/** Cursor for "the page after this row". A conversation pages by its newest message id. */
+function cursorAfter(m: ListItem | undefined): PageCursor | null {
+  if (!m) return null;
+  return { date: m.date, id: m.conv ? Math.max(...m.conv.messageIds, m.id) : m.id };
+}
 const SEARCH_LIMIT = 300;
 
 /** Results arrive best match first; "Newest first" re-sorts them here. */
@@ -111,6 +191,7 @@ export const useList = create<ListState>((set, get) => ({
     set((cur) => ({ searchSort: sort, items: orderSearch(cur.items, sort) }));
   },
   unreadOnly: false,
+  grouped: false,
   items: [],
   nextCursor: null,
   canLoadOlder: false,
@@ -125,17 +206,29 @@ export const useList = create<ListState>((set, get) => ({
   focusId: null,
   selectMode: false,
 
-  async load(view, unreadOnly) {
+  async load(view, unreadOnly, groupedArg) {
     if (view.kind === 'search') return loadSearch(view.query, view.accountId, set, get);
     const scope = scopeOf(view);
-    const key = scopeKey(scope, unreadOnly);
+    const grouped = groupedArg ?? wantsGrouped(view);
+    const key = scopeKey(scope, unreadOnly, grouped);
     const mine = ++seq;
-    const sameScope = get().key === key;
+    const prev = get();
+    const sameScope = prev.key === key;
+    // Turning the setting on or off keeps the same mail selected: the conversation that holds the
+    // selected message, or the newest message of the selected conversation.
+    const baseKey = (k: string) => k.slice(0, k.lastIndexOf(','));
+    const toggled = !sameScope && prev.key !== '' && baseKey(prev.key) === baseKey(key) && !prev.search;
+    const carryIds = toggled
+      ? prev.items
+          .filter((m) => prev.selectedIds.includes(m.id))
+          .flatMap((m) => (m.conv ? m.conv.messageIds : [m.id]))
+      : [];
     set({
       key,
       scope,
       search: null,
       unreadOnly,
+      grouped,
       loading: true,
       error: null,
       ...(sameScope
@@ -153,14 +246,18 @@ export const useList = create<ListState>((set, get) => ({
           }),
     });
     try {
-      const res = await call('messages.list', { scope, cursor: null, limit: PAGE, unreadOnly });
+      const res = await fetchPage(scope, null, PAGE, unreadOnly, grouped);
       if (mine !== seq) return;
+      const carried = carryIds.length
+        ? res.items.find((m) => (m.conv ? m.conv.messageIds.some((i) => carryIds.includes(i)) : carryIds.includes(m.id)))
+        : undefined;
       set({
         items: res.items,
         nextCursor: res.nextCursor,
         canLoadOlder: res.canLoadOlderFromServer,
         total: res.total,
         loading: false,
+        ...(carried ? { selectedIds: [carried.id], anchorId: carried.id, focusId: carried.id } : {}),
       });
     } catch (e) {
       if (mine !== seq) return;
@@ -176,12 +273,7 @@ export const useList = create<ListState>((set, get) => ({
     if (s.nextCursor) {
       set({ loadingMore: true });
       try {
-        const res = await call('messages.list', {
-          scope,
-          cursor: s.nextCursor,
-          limit: PAGE,
-          unreadOnly: s.unreadOnly,
-        });
+        const res = await fetchPage(scope, s.nextCursor, PAGE, s.unreadOnly, s.grouped);
         if (mine !== seq) return;
         const have = new Set(get().items.map((m) => m.id));
         set({
@@ -209,12 +301,7 @@ export const useList = create<ListState>((set, get) => ({
           return;
         }
         const last = get().items[get().items.length - 1];
-        const res = await call('messages.list', {
-          scope,
-          cursor: last ? { date: last.date, id: last.id } : null,
-          limit: PAGE,
-          unreadOnly: s.unreadOnly,
-        });
+        const res = await fetchPage(scope, cursorAfter(last), PAGE, s.unreadOnly, s.grouped);
         if (mine !== seq) return;
         const have = new Set(get().items.map((m) => m.id));
         const fresh = res.items.filter((m) => !have.has(m.id));
@@ -256,37 +343,43 @@ export const useList = create<ListState>((set, get) => ({
     const scope = s.scope;
     const mine = seq;
     const want = Math.max(PAGE, s.items.length);
+    const grouped = s.grouped;
     set({ refreshing: true });
     try {
-      let items: MessageHeader[] = [];
+      let items: ListItem[] = [];
       let cursor: PageCursor | null = null;
-      let last: ListMessagesRes | null = null;
+      let last: Page | null = null;
       for (let i = 0; i < 10; i++) {
-        const res: ListMessagesRes = await call('messages.list', {
-          scope,
-          cursor,
-          limit: Math.min(200, want - items.length || PAGE),
-          unreadOnly: s.unreadOnly,
-        });
+        const res: Page = await fetchPage(scope, cursor, Math.min(200, want - items.length || PAGE), s.unreadOnly, grouped);
         items = items.concat(res.items);
         last = res;
         if (!res.nextCursor || items.length >= want) break;
         cursor = res.nextCursor;
       }
       if (mine !== seq || !last) return;
-      const fin: ListMessagesRes = last;
-      const ids = new Set(items.map((m) => m.id));
-      set((cur) => ({
-        items,
-        nextCursor: fin.nextCursor,
-        canLoadOlder: fin.canLoadOlderFromServer,
-        total: fin.total ?? cur.total,
-        refreshing: false,
-        error: null,
-        selectedIds: cur.selectedIds.filter((id) => ids.has(id)),
-        focusId: cur.focusId !== null && ids.has(cur.focusId) ? cur.focusId : null,
-        anchorId: cur.anchorId !== null && ids.has(cur.anchorId) ? cur.anchorId : null,
-      }));
+      const fin: Page = last;
+      set((cur) => {
+        // A conversation gets a new newest message (a new id): keep it selected by its thread.
+        const keep = (id: number | null): number | null => {
+          if (id === null) return null;
+          if (items.some((m) => m.id === id)) return id;
+          const old = cur.items.find((m) => m.id === id);
+          const thread = old?.conv?.threadId;
+          return thread ? (items.find((m) => m.conv?.threadId === thread)?.id ?? null) : null;
+        };
+        const selectedIds = [...new Set(cur.selectedIds.map(keep).filter((x): x is number => x !== null))];
+        return {
+          items,
+          nextCursor: fin.nextCursor,
+          canLoadOlder: fin.canLoadOlderFromServer,
+          total: fin.total ?? cur.total,
+          refreshing: false,
+          error: null,
+          selectedIds,
+          focusId: keep(cur.focusId),
+          anchorId: keep(cur.anchorId),
+        };
+      });
     } catch {
       if (mine === seq) set({ refreshing: false });
     }
@@ -369,6 +462,7 @@ async function loadSearch(
     loading: true,
     error: null,
     unreadOnly: false,
+    grouped: false,
     ...(same
       ? {}
       : {

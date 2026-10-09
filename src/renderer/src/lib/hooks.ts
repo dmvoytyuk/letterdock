@@ -9,6 +9,7 @@ import { call } from './api';
 import { handleOutboxEvent, useOutbox } from '../store/outbox';
 import { toast, toastError } from '../store/toasts';
 import { useUpdates } from '../store/updates';
+import { useConvSignal } from '../store/conversations';
 import { backOnlineText, reportDroppedChanges, reportQueueFailure } from './queueFailures';
 
 // ---------- theme ----------
@@ -91,7 +92,12 @@ export function useAppEvents(): void {
         call('compose.openWindow', { mode: 'new', mailto: e.mailto }).catch((err) =>
           toastError((err as { message?: string }).message ?? 'Could not open the message.'),
         );
+      } else if (e.type === 'conversations:changed') {
+        // The open conversation and the list reload. About 2000 ids mean "everything".
+        useConvSignal.getState().bump(e.threadIds);
+        if (useList.getState().grouped) scheduleRefresh(400);
       } else if (e.type === 'messages:changed') {
+        useConvSignal.getState().bump();
         const list = useList.getState();
         const scope = list.scope;
         if (list.search) {
@@ -139,10 +145,10 @@ export function useAppEvents(): void {
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-function scheduleRefresh(): void {
+function scheduleRefresh(ms = 150): void {
   if (refreshTimer) return;
   refreshTimer = setTimeout(() => {
     refreshTimer = null;
     void useList.getState().refresh();
-  }, 150);
+  }, ms);
 }

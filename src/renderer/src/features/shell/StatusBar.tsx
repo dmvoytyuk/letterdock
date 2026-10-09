@@ -91,6 +91,7 @@ export function StatusBar() {
   const loading = useList((s) => s.loading);
   const total = useList((s) => s.total);
   const itemCount = useList((s) => s.items.length);
+  const grouped = useList((s) => s.grouped);
   const selectedCount = useList((s) => s.selectedIds.length);
   const outbox = useOutbox((s) => s.items);
   const update = useUpdates((s) => s.status);
@@ -105,7 +106,7 @@ export function StatusBar() {
     folders,
     counts,
     outboxCount: outbox.length,
-    list: { scopeKind: listScopeKind, isSearch, loading, total, itemCount, selectedCount },
+    list: { scopeKind: listScopeKind, isSearch, loading, total, itemCount, selectedCount, grouped },
   });
   const rightAll = rightItems(update, outbox, now);
   const right = tier >= 3 ? rightAll.slice(0, 1) : rightAll;

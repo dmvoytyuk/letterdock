@@ -193,6 +193,51 @@ addFixture(
   null,
   4,
 );
+// ---------- conversations: a few real threads (DESIGN-SPEC 3.10) ----------
+// A thread across Inbox, Sent, Archive and a draft; one whose newest message is mine; one with 3 mails.
+function addMsg(accountId: string, role: string, o: Partial<MessageHeader> & { subject: string; minutesAgo: number }): void {
+  const f = roleFolder(accountId, role);
+  const { minutesAgo, ...rest } = o;
+  messages.push({
+    id: mid,
+    accountId,
+    folderId: f.id,
+    uid: mid,
+    messageIdHeader: `<th${mid}@x>`,
+    from: { name: 'Jane Cooper', address: 'jane@example.com' },
+    to: [{ address: accounts.find((a) => a.id === accountId)!.email }],
+    cc: [],
+    date: now - minutesAgo * 60_000,
+    snippet: 'Thanks, I will send it on Friday. Let me know if anything changes before then...',
+    seen: true,
+    flagged: false,
+    answered: false,
+    draft: role === 'drafts',
+    hasAttachments: false,
+    size: 3000,
+    bodyCached: true,
+    ...rest,
+  });
+  mid++;
+}
+{
+  const me = (id: string) => ({ name: 'Alex Rivera', address: accounts.find((a) => a.id === id)!.email });
+  const t1 = 'Planning the autumn offsite';
+  addMsg('a1', 'inbox', { subject: t1, minutesAgo: 60 * 24 * 5, snippet: 'Hi Alex, can we pick a date for the offsite? I think the second week of November works.' });
+  addMsg('a1', 'sent', { subject: `Re: ${t1}`, minutesAgo: 60 * 24 * 4, from: me('a1'), to: [{ name: 'Jane Cooper', address: 'jane@example.com' }], snippet: 'Second week of November is fine for me. I will check the venue.' });
+  addMsg('a1', 'inbox', { subject: `Re: ${t1}`, minutesAgo: 60 * 24 * 2, from: { name: 'Marcus Webb', address: 'marcus@example.com' }, seen: false, hasAttachments: true, snippet: 'I looked at the venue. Attached is the quote. It is a bit above budget.' });
+  addMsg('a1', 'archive', { subject: `Re: ${t1}`, minutesAgo: 60 * 24, flagged: true, snippet: 'Let us keep the quote on file. Priya will compare two other venues.' });
+  addMsg('a1', 'inbox', { subject: `Re: ${t1}`, minutesAgo: 190, seen: false, snippet: 'Great, so Thursday the 12th it is. I will send the invitation to everyone today.' });
+  addMsg('a1', 'drafts', { subject: `Re: ${t1}`, minutesAgo: 30, from: me('a1'), to: [{ name: 'Jane Cooper', address: 'jane@example.com' }], snippet: 'Sounds good. One more thing about the', seen: true });
+  const t2 = 'Invoice question';
+  addMsg('a1', 'inbox', { subject: t2, minutesAgo: 400, from: { name: 'Priya Nair', address: 'priya@example.com' }, snippet: 'Could you confirm the invoice number for the October order?' });
+  addMsg('a1', 'sent', { subject: `Re: ${t2}`, minutesAgo: 120, from: me('a1'), to: [{ name: 'Priya Nair', address: 'priya@example.com' }], snippet: 'It is INV-2041. I attached a copy to this message.', hasAttachments: true });
+  const t3 = 'Q4 roadmap sign-off';
+  addMsg('a2', 'inbox', { subject: t3, minutesAgo: 60 * 30, from: { name: 'Tom Ellery', address: 'tom@example.com' }, seen: false, snippet: 'Please sign off the Q4 roadmap by Wednesday.' });
+  addMsg('a2', 'inbox', { subject: `Re: ${t3}`, minutesAgo: 60 * 20, from: { name: 'Sofia Marchetti', address: 'sofia@example.com' }, seen: false, snippet: 'I added the tooling items. Please check the second page.' });
+  addMsg('a2', 'inbox', { subject: `Fwd: ${t3}`, minutesAgo: 60 * 6, from: { name: 'Tom Ellery', address: 'tom@example.com' }, seen: false, snippet: 'Forwarding the final version to the whole team.' });
+}
+
 messages.sort((a, b) => b.date - a.date || b.id - a.id);
 
 function recount(): void {
@@ -333,6 +378,9 @@ const LS = {
   },
 };
 
+// Settings survive a reload of the fake page, so a state can be set up once.
+Object.assign(settings, LS.get<Partial<AppSettings>>('settings', {}));
+
 interface StoredOutbox extends OutboxItem {
   req: SendReq;
 }
@@ -416,8 +464,9 @@ function scopeFilter(scope: { kind: string; folderId?: number; accountId?: strin
 }
 
 // ---------- conversations (simple fake: same account + same subject without Re:/Fwd:) ----------
-const plainSubject = (s: string) => s.replace(/^s*((re|fwd?|aw|sv)s*:s*)+/i, '').trim();
+const plainSubject = (s: string) => s.replace(/^\s*((re|fwd?|aw|sv)\s*:\s*)+/i, '').trim();
 const threadOfFake = (m: MessageHeader) => `fake:${m.accountId}:${plainSubject(m.subject).toLowerCase()}`;
+for (const m of messages) m.threadId = threadOfFake(m);
 function fakeConversationRows(scope: { kind: string; folderId?: number; accountId?: string }, unreadOnly: boolean): ConversationRow[] {
   const inScope = scopeFilter(scope);
   const own = new Set(accounts.map((a) => a.email.toLowerCase()));
@@ -632,6 +681,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       return delay(settings);
     case 'settings.set':
       Object.assign(settings, r);
+      LS.set('settings', settings);
       setTimeout(() => emit({ type: 'settings:changed', settings: { ...settings }, oauth: oauthNow() }), 20);
       return delay(settings);
     case 'oauth.getSettings':
@@ -705,7 +755,14 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       });
     }
     case 'conversations.get': {
-      const list = messages.filter((m) => threadOfFake(m) === r!.threadId).sort((a, b) => a.date - b.date || a.id - b.id);
+      const sc = r!.scope as { kind: string; folderId?: number } | undefined;
+      const folderOnly = !!sc && sc.kind === 'folder' && folderOf(sc.folderId!).role !== 'inbox';
+      const includes = (m: MessageHeader) => {
+        const role = folderOf(m.folderId).role;
+        if (folderOnly) return m.folderId === sc!.folderId;
+        return role === 'inbox' || role === 'sent' || role === 'archive' || role === 'drafts';
+      };
+      const list = messages.filter((m) => threadOfFake(m) === r!.threadId && includes(m)).sort((a, b) => a.date - b.date || a.id - b.id);
       if (list.length === 0) return err('NOT_FOUND', 'This conversation was moved or deleted.');
       const inScope = r!.scope ? scopeFilter(r!.scope as never) : () => false;
       const own = new Set(accounts.map((a) => a.email.toLowerCase()));
@@ -713,7 +770,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         threadId: r!.threadId,
         accountId: r!.accountId,
         title: plainSubject(list[list.length - 1]!.subject),
-        count: list.length,
+        count: list.filter((m) => !m.draft).length,
         messages: list.map((m) => ({ header: m, folderId: m.folderId, folderRole: folderOf(m.folderId).role, folderName: folderOf(m.folderId).name, inCurrentFolder: inScope(m), isDraft: m.draft, fromMe: own.has((m.from?.address ?? '').toLowerCase()) })),
       });
     }

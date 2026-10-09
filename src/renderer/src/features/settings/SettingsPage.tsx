@@ -9,6 +9,7 @@ import {
   PasswordField,
   Radio,
   SelectField,
+  Switch,
   TextField,
   Dialog,
 } from '../../components/ui';
@@ -737,6 +738,17 @@ function MailSettings() {
       >
         {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </SelectField>
+      <div style={{ margin: '4px 0 2px' }}>
+        <Switch
+          checked={settings.groupConversations}
+          onChange={(v) => void set({ groupConversations: v })}
+          label="Group messages into conversations"
+          describedBy="conv-help"
+        />
+      </div>
+      <p className="hint rad-hint" id="conv-help">
+        Shows replies to the same subject as one row. Messages you sent are included. Turn it off to see every message by itself.
+      </p>
       <h2>SENDING</h2>
       <SelectField
         label="Time to undo a sent message"

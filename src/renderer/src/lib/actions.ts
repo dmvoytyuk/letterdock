@@ -2,6 +2,8 @@ import type {
   AccountId,
   ApplyActionRes,
   ComposeMode,
+  ConversationActRes,
+  ConversationRow,
   Folder,
   FolderId,
   MarkAllReadScope,
@@ -12,7 +14,7 @@ import type {
 } from '../../../shared/ipc';
 import { asAppError, call } from './api';
 import { useApp } from '../store/app';
-import { useList } from '../store/list';
+import { useList, type ListItem } from '../store/list';
 import { isUnified, useUi } from '../store/ui';
 import { useUndo, undoWithToken } from '../store/undo';
 import { toast, toastError } from '../store/toasts';
@@ -35,9 +37,17 @@ function folderById(id: FolderId): Folder | undefined {
   return useApp.getState().folders.find((f) => f.id === id);
 }
 
-function messagesOf(ids: MessageId[]): MessageHeader[] {
+function messagesOf(ids: MessageId[]): ListItem[] {
   const set = new Set(ids);
   return useList.getState().items.filter((m) => set.has(m.id));
+}
+
+/** The list rows (conversations) these ids stand for, when the list shows conversations. */
+function conversationRows(ids: MessageId[]): ListItem[] | null {
+  const st = useList.getState();
+  if (!st.grouped || ids.length === 0) return null;
+  const rows = ids.map((id) => st.items.find((m) => m.id === id));
+  return rows.every((r) => !!r?.conv) ? (rows as ListItem[]) : null;
 }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? `1 ${one}` : `${n} ${many}`);
@@ -101,7 +111,7 @@ function nextToSelect(ids: MessageId[]): MessageId | null {
  * remove the rows at once, show an Undo toast, and come back by themselves if the server says no
  * (the engine then sends action:failed and messages:changed).
  */
-export async function applyToMessages(ids: MessageId[], action: MessageAction): Promise<boolean> {
+export async function applyToRealMessages(ids: MessageId[], action: MessageAction): Promise<boolean> {
   if (ids.length === 0) return false;
   const list = useList.getState();
   const msgs = messagesOf(ids);
@@ -164,6 +174,124 @@ export async function applyToMessages(ids: MessageId[], action: MessageAction): 
     if (dest) useUi.getState().rememberFolder(dest.accountId, dest.id);
   }
   return true;
+}
+
+/**
+ * Run an action on the selected rows. With conversations on, the ids are rows of the list and the
+ * action changes the messages of each conversation that are in the folder being viewed (3.10.3).
+ * Otherwise they are message ids.
+ */
+export async function applyToMessages(ids: MessageId[], action: MessageAction): Promise<boolean> {
+  const rows = conversationRows(ids);
+  if (rows) return applyToConversations(rows, action);
+  return applyToRealMessages(ids, action);
+}
+
+function convLabel(action: MessageAction, rows: ConversationRow[], n: number, permanent: boolean, suffix: string): string {
+  const one = rows.length === 1;
+  const noun = one ? 'Conversation' : `${rows.length} conversations`;
+  const tail = `(${plural(n, 'message', 'messages')})`;
+  switch (action.type) {
+    case 'delete':
+      return `${noun} deleted${permanent ? ' for good' : ''} ${tail}${suffix}`;
+    case 'archive':
+      return `${noun} archived ${tail}${suffix}`;
+    case 'spam':
+      return `${noun} moved to Spam ${tail}${suffix}`;
+    case 'notSpam':
+      return `${noun} moved to Inbox ${tail}${suffix}`;
+    case 'move': {
+      const dest = folderTitle(folderById(action.destFolderId));
+      return one ? `Moved conversation to ${dest} ${tail}${suffix}` : `Moved ${rows.length} conversations ${tail} to ${dest}${suffix}`;
+    }
+    default:
+      return '';
+  }
+}
+
+function patchRows(ids: MessageId[], header: Partial<MessageHeader>, conv: (c: ConversationRow) => Partial<ConversationRow>): void {
+  const set = new Set(ids);
+  useList.setState((s) => ({
+    items: s.items.map((m) => (set.has(m.id) ? { ...m, ...header, ...(m.conv ? { conv: { ...m.conv, ...conv(m.conv) } } : {}) } : m)),
+  }));
+}
+
+async function applyToConversations(rows: ListItem[], action: MessageAction): Promise<boolean> {
+  const list = useList.getState();
+  const scope = list.scope;
+  if (!scope) return false;
+  const ids = rows.map((r) => r.id);
+  const convs = rows.map((r) => r.conv!);
+  const threadIds = convs.map((c) => c.threadId);
+
+  if (!LEAVING.includes(action.type)) {
+    const before = new Map(rows.map((m) => [m.id, m]));
+    if (action.type === 'markRead') {
+      patchRows(ids, { seen: action.read }, (c) => ({ unreadCount: action.read ? 0 : Math.max(1, c.unreadCount) }));
+    }
+    if (action.type === 'flag') patchRows(ids, { flagged: action.flagged }, () => ({ hasFlag: action.flagged }));
+    const revert = () => {
+      useList.setState((s) => ({ items: s.items.map((m) => before.get(m.id) ?? m) }));
+    };
+    try {
+      const res = await call('conversations.act', { threadIds, scope, action });
+      if (res.failed.length > 0) {
+        revert();
+        toastError(res.failed[0]!.error.message);
+        return res.succeeded.length > 0;
+      }
+      return true;
+    } catch (e) {
+      revert();
+      toastError(asAppError(e).message);
+      return false;
+    }
+  }
+
+  const permanent =
+    action.type === 'delete' && rows.length > 0 && rows.every((m) => folderById(m.folderId)?.role === 'trash');
+  const next = nextToSelect(ids);
+  list.removeLocal(ids);
+  if (next !== null) list.selectOnly(next);
+  else if (useUi.getState().mode === 'narrow') useUi.setState({ readerOpen: false });
+
+  let res: ConversationActRes;
+  try {
+    res = await call('conversations.act', { threadIds, scope, action });
+  } catch (e) {
+    toastError(asAppError(e).message);
+    void useList.getState().refresh();
+    return false;
+  }
+  if (res.failed.length > 0) {
+    toastError(res.failed[0]!.error.message);
+    void useList.getState().refresh();
+  }
+  if (res.succeeded.length === 0) return false;
+  const n = res.messageCount;
+  const gone = permanent || (action.type === 'delete' && !res.undoToken);
+  const label =
+    rows.length === 1 && n <= 1 ? describe(action, rows, 1, gone) : convLabel(action, convs, n, gone, accountSuffix(rows));
+  const token = res.undoToken;
+  if (token) useUndo.getState().push(token, res.succeeded.length);
+  if (token) toast(label, { actionLabel: 'Undo', onAction: () => void undoWithToken(token), duration: 6000 });
+  else toast(label);
+  if (action.type === 'move') {
+    const dest = folderById(action.destFolderId);
+    if (dest) useUi.getState().rememberFolder(dest.accountId, dest.id);
+  }
+  return true;
+}
+
+/** One message of a conversation was marked read inside the open conversation: update its list row. */
+export function noteThreadRead(threadId: string): void {
+  useList.setState((s) => ({
+    items: s.items.map((m) => {
+      if (m.conv?.threadId !== threadId) return m;
+      const unreadCount = Math.max(0, m.conv.unreadCount - 1);
+      return { ...m, seen: unreadCount === 0, conv: { ...m.conv, unreadCount } };
+    }),
+  }));
 }
 
 /** Delete: asks first when the messages are already in Trash (that is final). */
@@ -229,9 +357,29 @@ export function newMessage(): void {
   openCompose({ mode: 'new', ...(accountId ? { accountId } : {}) });
 }
 
+/**
+ * The message to reply to in a conversation: the newest one that is not yours; if every message is
+ * yours, the newest one (3.10.3).
+ */
+export async function replyTargetOf(c: ConversationRow): Promise<MessageId> {
+  if (!c.latest.fromMe || c.count < 2) return c.latest.id;
+  const scope = useList.getState().scope ?? undefined;
+  const res = await call('conversations.get', { threadId: c.threadId, accountId: c.accountId, ...(scope ? { scope } : {}) });
+  const real = res.messages.filter((m) => !m.isDraft);
+  const theirs = real.filter((m) => !m.fromMe);
+  return (theirs[theirs.length - 1] ?? real[real.length - 1])?.header.id ?? c.latest.id;
+}
+
 export function composeFrom(mode: Exclude<ComposeMode, 'new'>, id: MessageId | undefined): void {
   if (id === undefined) {
     toast('Select a message first.');
+    return;
+  }
+  const row = conversationRows([id])?.[0];
+  if (row?.conv && row.conv.latest.fromMe && row.conv.count > 1) {
+    replyTargetOf(row.conv)
+      .then((target) => openCompose({ mode, sourceMessageId: target }))
+      .catch((e) => toastError(asAppError(e).message));
     return;
   }
   openCompose({ mode, sourceMessageId: id });

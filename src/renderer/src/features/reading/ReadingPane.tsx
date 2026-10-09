@@ -13,7 +13,7 @@ import {
   useMenu,
 } from '../../components/ui';
 import { useApp } from '../../store/app';
-import { openIdOf, useList } from '../../store/list';
+import { openIdOf, useList, type ListItem } from '../../store/list';
 import { useUi } from '../../store/ui';
 import { useAccountColor, useThemeState } from '../../lib/hooks';
 import { applyToMessages, composeFrom, deleteMessages, editDraft, openInWindow, roleOf } from '../../lib/actions';
@@ -25,6 +25,7 @@ import { planBody, verifyContrast, type RenderPlan } from '../../lib/emailTheme'
 import { reportActionError, toast, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { matchShortcut, type ShortcutId } from '../../lib/shortcuts';
+import { ConversationPane, ConversationView } from './ConversationView';
 
 type BodyState =
   | { status: 'loading' }
@@ -39,6 +40,8 @@ export function ReadingPane() {
   const readerOpen = useUi((s) => s.readerOpen);
 
   const header = openId !== null ? items.find((m) => m.id === openId) : undefined;
+  const search = useList((s) => s.search !== null);
+  const groupSetting = useApp((s) => !!s.settings?.groupConversations);
 
   let content;
   if (selectedIds.length >= 2) content = <MultiCard ids={selectedIds} items={items} />;
@@ -50,7 +53,9 @@ export function ReadingPane() {
         <p>Tip: press Ctrl+N to write a new message</p>
       </div>
     );
-  } else content = <MessageView key={openId} header={header} />;
+  } else if (header.conv) content = <ConversationPane key={header.conv.threadId} item={header} />;
+  else if (search && groupSetting && header.threadId) content = <SearchMessage key={openId} header={header} />;
+  else content = <MessageView key={openId} header={header} />;
 
   return (
     <main className="reading" aria-label="Message" id="pane-reading" style={{ containerType: 'inline-size' }}>
@@ -66,7 +71,40 @@ export function ReadingPane() {
   );
 }
 
-function MultiCard({ ids, items }: { ids: number[]; items: MessageHeader[] }) {
+/** A search result with "Show conversation (N)" under the subject (DESIGN-SPEC 3.10.5). */
+function SearchMessage({ header }: { header: MessageHeader }) {
+  const [count, setCount] = useState<number | null>(null);
+  const [showing, setShowing] = useState(false);
+  const threadId = header.threadId;
+  useEffect(() => {
+    if (!threadId) return;
+    let alive = true;
+    call('conversations.get', { threadId, accountId: header.accountId })
+      .then((r) => alive && setCount(r.count))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [threadId, header.accountId]);
+  if (showing && threadId) {
+    return <ConversationView threadId={threadId} accountId={header.accountId} onBack={() => setShowing(false)} />;
+  }
+  return (
+    <MessageView
+      header={header}
+      underSubject={
+        count !== null && count > 1 ? (
+          <Button size="sm" variant="subtle" icon="stack" onClick={() => setShowing(true)}>
+            Show conversation ({count})
+          </Button>
+        ) : null
+      }
+    />
+  );
+}
+
+function MultiCard({ ids, items }: { ids: number[]; items: ListItem[] }) {
+  const grouped = useList((s) => s.grouped);
   const sel = items.filter((m) => ids.includes(m.id));
   const sameAccount = new Set(sel.map((m) => m.accountId)).size <= 1;
   const allRead = sel.every((m) => m.seen);
@@ -74,7 +112,9 @@ function MultiCard({ ids, items }: { ids: number[]; items: MessageHeader[] }) {
   return (
     <div className="empty" style={{ height: '100%' }}>
       <Icon name="stack" size={48} />
-      <h3>{ids.length} messages selected</h3>
+      <h3>
+        {ids.length} {grouped ? 'conversations' : 'messages'} selected
+      </h3>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', marginTop: 8 }}>
         <Button icon="trash" onClick={() => deleteMessages(ids)}>Delete</Button>
         <Button icon="archive" onClick={() => void applyToMessages(ids, { type: 'archive' })}>Archive</Button>
@@ -102,10 +142,13 @@ export function MessageView({
   header,
   windowMode = false,
   gone = false,
+  underSubject = null,
 }: {
   header: MessageHeader;
   windowMode?: boolean;
   gone?: boolean;
+  /** Something small shown under the subject (the "Show conversation" button of a search result). */
+  underSubject?: React.ReactNode;
 }) {
   const accounts = useApp((s) => s.accounts);
   const folders = useApp((s) => s.folders);
@@ -195,6 +238,7 @@ export function MessageView({
       <div className="rbody">
         <div className="rin centered">
           <div className="rsub">{header.subject || '(no subject)'}</div>
+          {underSubject ? <div className="rsub-extra">{underSubject}</div> : null}
           <HeaderBlock
             header={header}
             body={body}
@@ -944,7 +988,7 @@ function AttachmentChip({ a }: { a: AttachmentInfo }) {
   );
 }
 
-function SourceDialog({ id, onClose }: { id: number; onClose: () => void }) {
+export function SourceDialog({ id, onClose }: { id: number; onClose: () => void }) {
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -973,3 +1017,99 @@ function SourceDialog({ id, onClose }: { id: number; onClose: () => void }) {
   );
 }
 
+
+/**
+ * The body of one open card in a conversation (DESIGN-SPEC 3.10.4): the same picture, images and
+ * attachments as a single message, without the toolbar and the subject (the card has its own header).
+ */
+export function CardBody({ header }: { header: MessageHeader }) {
+  const epoch = useApp((s) => s.epoch);
+  const remoteImages = useApp((s) => s.settings?.remoteImages ?? 'block');
+  const [state, setState] = useState<BodyState>({ status: 'loading' });
+  const [attempt, setAttempt] = useState(0);
+  const [imagesLoaded, setImagesLoaded] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [colorOverride, setColorOverride] = useState<'original' | 'dark' | null>(null);
+  const [autoFallback, setAutoFallback] = useState(false);
+  const [colorInfo, setColorInfo] = useState<{ dark: boolean } | null>(null);
+  const printRef = useRef<() => string | undefined | null>(() => null);
+  const toggleColors = colorInfo
+    ? {
+        label: colorInfo.dark ? 'Show original colors' : 'Show in dark mode',
+        icon: (colorInfo.dark ? 'sun' : 'moon') as 'sun' | 'moon',
+        run: () => setColorOverride(colorInfo.dark ? 'original' : 'dark'),
+      }
+    : null;
+
+  useEffect(() => {
+    let alive = true;
+    call('messages.get', { messageId: header.id })
+      .then((body) => alive && setState({ status: 'ready', body }))
+      .catch((e) => alive && setState({ status: 'error', error: asAppError(e) }));
+    return () => {
+      alive = false;
+    };
+  }, [header.id, attempt, epoch]);
+
+  const body = state.status === 'ready' ? state.body : null;
+  const autoImages = !!body?.senderImagesAllowed && remoteImages === 'allowKnownSenders';
+  const senderAddress = header.from?.address ?? null;
+  const alwaysLoad = async () => {
+    if (!senderAddress) return;
+    try {
+      await call('senders.allowImages', { address: senderAddress, allow: true });
+      if (remoteImages === 'block') await useApp.getState().updateSettings({ remoteImages: 'allowKnownSenders' });
+      setImagesLoaded(true);
+      toast(`Images from ${senderAddress} will load automatically. Change this in Settings, Mail.`);
+    } catch (e) {
+      reportActionError(e);
+    }
+  };
+
+  if (state.status === 'loading')
+    return (
+      <div className="mbody-skel" aria-busy="true" aria-label="Loading message">
+        {[90, 100, 80, 95, 60, 85].map((w, i) => (
+          <Skeleton key={i} w={`${w}%`} h={12} />
+        ))}
+      </div>
+    );
+  if (state.status === 'error')
+    return (
+      <div style={{ marginTop: 12 }}>
+        <Banner
+          tone="danger"
+          actions={
+            <Button size="sm" onClick={() => { setState({ status: 'loading' }); setAttempt((n) => n + 1); }}>
+              Retry
+            </Button>
+          }
+        >
+          {state.error.code === 'HOST_UNREACHABLE' || state.error.code === 'TIMEOUT'
+            ? "This message isn't available offline. Connect to the internet to read it."
+            : `Couldn't load this message. ${state.error.message}`}
+        </Banner>
+      </div>
+    );
+  return (
+    <>
+      <BodyView
+        body={state.body}
+        imagesLoaded={imagesLoaded || autoImages}
+        bannerDismissed={bannerDismissed}
+        senderAddress={senderAddress}
+        onLoadImages={() => setImagesLoaded(true)}
+        onAlways={() => void alwaysLoad()}
+        onDismiss={() => setBannerDismissed(true)}
+        colorOverride={colorOverride}
+        autoFallback={autoFallback}
+        onAutoFallback={() => setAutoFallback(true)}
+        onColorInfo={setColorInfo}
+        onToggleColors={toggleColors?.run ?? null}
+        printRef={printRef}
+        toggleLabel={toggleColors ? { label: toggleColors.label, icon: toggleColors.icon } : null}
+      />
+      <Attachments list={state.body.attachments.filter((a) => !a.inline)} />
+    </>
+  );
+}
