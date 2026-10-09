@@ -3,6 +3,8 @@ import type { AppError } from '../../../../shared/ipc';
 import { Banner, Button, Dialog, TextField } from '../../components/ui';
 import { useApp } from '../../store/app';
 import { useUi } from '../../store/ui';
+import { useScheduled } from '../../store/scheduled';
+import { useRules } from '../../store/rules';
 import { asAppError, call } from '../../lib/api';
 import { toast } from '../../store/toasts';
 import { SHORTCUTS } from '../../lib/shortcuts';
@@ -148,13 +150,23 @@ export function RemoveAccountDialogHost() {
   const account = useApp((s) => s.accounts.find((a) => a.id === id));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError | null>(null);
+  const scheduled = useScheduled((s) => s.count?.perAccount.find((p) => p.accountId === id)?.total ?? 0);
+  const ruleCount = useRules((s) => s.rules.filter((r) => r.accountId === id).length);
   if (!id || !account) return null;
   const close = () => useUi.getState().set({ removeAccountId: null });
   return (
     <Dialog title={`Remove ${account.displayName}?`} size="sm" onClose={close} busy={busy} initialFocus=".foot .btn:not(.danger)">
       <p>
-        Remove {account.displayName} from Letterdock? Mail on the server is not deleted. The copy on this PC and the saved password are removed.
+        Remove {account.displayName} from Letterdock? Mail on the server is not deleted. The copy on this PC{ruleCount > 0 ? ', its rules' : ''} and the saved password are removed.
       </p>
+      {scheduled > 0 ? (
+        <p style={{ marginTop: 8 }}>
+          <b>
+            {scheduled} scheduled {scheduled === 1 ? 'message' : 'messages'}
+          </b>{' '}
+          will be deleted and not sent.
+        </p>
+      ) : null}
       {error ? <Banner tone="danger" className="dlg-banner">{error.message}</Banner> : null}
       <div className="foot">
         <Button onClick={close}>Cancel</Button>

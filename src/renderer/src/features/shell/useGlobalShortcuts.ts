@@ -3,7 +3,7 @@ import { isTypingTarget, matchShortcut, type ShortcutId } from '../../lib/shortc
 import { useApp, accountInbox } from '../../store/app';
 import { useList } from '../../store/list';
 import { useUi } from '../../store/ui';
-import { applyToMessages, composeFrom, deleteMessages, newMessage, openInWindow } from '../../lib/actions';
+import { applyToMessages, composeFrom, deleteMessages, newMessage, openCompose, openInWindow } from '../../lib/actions';
 import { undoLast } from '../../store/undo';
 import { printOpenMessage } from '../../lib/print';
 import { toast } from '../../store/toasts';
@@ -81,6 +81,9 @@ export function useGlobalShortcuts(): void {
       // The outbox and Scheduled views have no message list on screen (Scheduled has its own keys): message keys must not touch rows that are hidden.
       const messageLevel = ui.page === 'mail' && ui.view.kind !== 'outbox' && ui.view.kind !== 'scheduled';
 
+      const cardAttr = target?.closest('.ccard[data-mid]')?.getAttribute('data-mid');
+      const cardId = cardAttr && !target?.closest('.ccard.isdraft') ? Number(cardAttr) : null;
+
       const run = (fn: () => void) => {
         e.preventDefault();
         fn();
@@ -139,12 +142,13 @@ export function useGlobalShortcuts(): void {
       }
       if (!messageLevel) return;
       switch (sc.id) {
+        // In a conversation the keys act on the card that has focus, else on the newest message that is not yours (3.10.4).
         case 'reply':
-          return run(() => composeFrom('reply', ids[0]));
+          return run(() => (cardId !== null ? openCompose({ mode: 'reply', sourceMessageId: cardId }) : composeFrom('reply', ids[0])));
         case 'replyAll':
-          return run(() => composeFrom('replyAll', ids[0]));
+          return run(() => (cardId !== null ? openCompose({ mode: 'replyAll', sourceMessageId: cardId }) : composeFrom('replyAll', ids[0])));
         case 'forward':
-          return run(() => composeFrom('forward', ids[0]));
+          return run(() => (cardId !== null ? openCompose({ mode: 'forward', sourceMessageId: cardId }) : composeFrom('forward', ids[0])));
         case 'move':
           return run(() => {
             if (ids.length > 0) ui.set({ moveDialog: ids });
