@@ -20,3 +20,28 @@
   DeleteRegKey HKCU "Software\Mailroom\Capabilities"
   DeleteRegValue HKCU "Software\RegisteredApplications" "Mailroom"
 !macroend
+
+; Robust updates: never abort because the OLD version's uninstaller could not run.
+;
+; electron-builder copies the previous uninstaller to a temp folder and runs it before installing.
+; Windows Smart App Control (or a group policy, or antivirus) can block that unsigned copy. The
+; stock template then shows an error and quits, which leaves the old version in place and the
+; update stuck. Defining these two hooks REPLACES the stock result check (handleUninstallResult
+; in installUtil.nsh): whatever the old uninstaller did, we clear the error and carry on. The new
+; files are then written over the old ones in the same folder. User data in %APPDATA%\Mailroom is
+; not touched either way. The new installer writes its own uninstaller and the Apps & features
+; entry afterwards, so these point to the NEW version.
+; Cost: the template tries up to 5 times with 1 second pauses before this check runs.
+!macro customUnInstallCheck
+  ${if} $R0 != 0
+    DetailPrint "Old uninstaller did not finish cleanly (code $R0). Installing over the existing files."
+  ${endif}
+  ClearErrors
+!macroend
+
+!macro customUnInstallCheckCurrentUser
+  ${if} $R0 != 0
+    DetailPrint "Old uninstaller did not finish cleanly (code $R0). Installing over the existing files."
+  ${endif}
+  ClearErrors
+!macroend

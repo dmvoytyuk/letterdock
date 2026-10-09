@@ -41,6 +41,12 @@ jobs:
       - name: Build installer
         run: npx electron-vite build && npx electron-builder --win nsis --publish never
 
+      # Proves that an update still works when the old uninstaller is broken or blocked.
+      # A failure here stops the release before anything is uploaded or published.
+      - name: Installer self-test (broken old uninstaller)
+        shell: pwsh
+        run: ./scripts/test-installer.ps1 -ReleaseDir release
+
       # Code signing (later): SignPath Foundation, free for open-source projects.
       # Upload the unsigned installer to SignPath, wait for the signed one, then replace it
       # in release/ BEFORE the upload steps below. Rebuild latest.yml hashes after signing.
