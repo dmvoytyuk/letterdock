@@ -49,29 +49,32 @@ import { ViewerWindows } from './viewerWindow';
 import { BoundsStore, COMPOSE_RULES } from './windowBounds';
 
 app.setName(APP_NAME);
-// Up to 0.2.9 the app was called Mailroom and kept its data in %APPDATA%Mailroom. Move that folder
+// Up to 0.2.9 the app was called Mailroom and kept its data in %APPDATA%\Mailroom. Move that folder
 // (whole: it holds Chromium's "Local State", the key for the saved passwords) BEFORE anything
-// opens a file in the data folder. Skipped when a custom data folder is set.
+// opens a file in the data folder. Only for the installed app with the default data folder:
+// development runs must never stop the installed Mailroom or move its data. They use their own
+// folder (Letterdock-dev), like they use their own AppUserModelID.
 const dataDirOverride = readEnv('DATA_DIR');
-const migration = dataDirOverride
-  ? null
-  : (() => {
-      const appData = app.getPath('appData');
-      const oldDir = join(appData, LEGACY_APP_NAME);
-      const result = migrateUserData({
-        oldDir,
-        newDir: join(appData, APP_NAME),
+const legacyDir = join(app.getPath('appData'), LEGACY_APP_NAME);
+const migration =
+  dataDirOverride || !app.isPackaged
+    ? null
+    : migrateUserData({
+        oldDir: legacyDir,
+        newDir: join(app.getPath('appData'), APP_NAME),
         stopOldApp: stopLegacyProcessesSync,
         appVersion: app.getVersion(),
       });
-      return result;
-    })();
 // If the migration failed, keep running on the old folder so nothing looks lost. It is tried
 // again at the next start.
+const useLegacyDir = migration?.status === 'failed' && existsSync(legacyDir);
 app.setPath(
   'userData',
   dataDirOverride ??
-    join(app.getPath('appData'), migration?.status === 'failed' ? LEGACY_APP_NAME : APP_NAME),
+    join(
+      app.getPath('appData'),
+      app.isPackaged ? (useLegacyDir ? LEGACY_APP_NAME : APP_NAME) : `${APP_NAME}-dev`,
+    ),
 );
 app.setAppUserModelId(resolveAppUserModelId(app.isPackaged));
 

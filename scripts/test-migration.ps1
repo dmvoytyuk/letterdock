@@ -69,7 +69,7 @@ if (-not (Find-Entry 'Mailroom')) { throw 'Old uninstall registry entry missing 
 Write-Host '== Step 3: create fake user data, an old start-at-sign-in entry and an old update cache'
 Remove-Item -Recurse -Force $oldData -ErrorAction SilentlyContinue   # the old app may have made real files
 New-Item -ItemType Directory -Force -Path (Join-Path $oldData 'image-cache'), (Join-Path $oldData 'logs') | Out-Null
-Set-Content -Path (Join-Path $oldData 'settings.json') -Encoding ascii -Value '{"launchAtLogin":true}'
+Set-Content -Path (Join-Path $oldData 'settings.json') -Encoding ascii -Value '{"app":{"launchAtLogin":true}}'
 Set-Content -Path (Join-Path $oldData 'Local State') -Encoding ascii -Value '{"ci_marker":"local-state-keep-me"}'
 [IO.File]::WriteAllBytes((Join-Path $oldData 'secrets.bin'), [byte[]](1..64))
 Set-Content -Path (Join-Path $oldData 'ci-marker.txt') -Encoding ascii -Value 'keep-me-1234'
@@ -120,6 +120,10 @@ Assert (-not (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Pr
 Assert (-not (Test-Path $oldUpdaterCache)) 'old updater cache still exists'
 
 Assert (Test-Path $newExe) 'Letterdock.exe missing at the end'
+# "Start at sign-in" was on in the old settings: the new app must have registered itself again.
+$runValues = (Get-ItemProperty -Path $runKey).PSObject.Properties | Where-Object { "$($_.Value)" -like '*ProgramsletterdockLetterdock.exe*' }
+Assert ($null -ne $runValues) 'start-at-sign-in was not re-applied for Letterdock'
+Assert (Test-Path (Join-Path $env:APPDATA 'MicrosoftWindowsStart MenuProgramsLetterdock.lnk')) 'Letterdock Start menu shortcut missing'
 $entry = Find-Entry 'Letterdock'
 Assert ($null -ne $entry) 'new uninstall registry entry missing'
 Assert ($entry.UninstallString -like '*Uninstall Letterdock.exe*') "unexpected UninstallString: $($entry.UninstallString)"

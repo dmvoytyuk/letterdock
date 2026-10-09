@@ -172,6 +172,9 @@ export function migrateUserData(d: MigrationDeps): MigrationResult {
         say('warn', `Could not stop the old app: ${String(e)}`);
       }
       sleep(1500);
+      // Another start of the app may have finished the job in the meantime.
+      if (existsSync(marker)) return done('already');
+      if (!existsSync(d.oldDir)) return done('none');
       try {
         rename(d.oldDir, d.newDir);
         renameError = null;
