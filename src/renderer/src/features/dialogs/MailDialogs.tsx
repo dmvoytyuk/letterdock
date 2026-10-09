@@ -155,32 +155,25 @@ function MoveDialog({ ids, onClose }: { ids: number[]; onClose: () => void }) {
   );
 }
 
-// ---------- delete for good ----------
+// ---------- delete permanently ----------
 function ConfirmPermanentHost() {
-  const ids = useUi((s) => s.confirmPermanent);
-  const items = useList((s) => s.items);
-  if (!ids) return null;
+  const req = useUi((s) => s.confirmPermanent);
+  if (!req) return null;
   const close = () => useUi.getState().set({ confirmPermanent: null });
-  // With conversations on, the ids are conversations: count the messages in this folder (DESIGN-SPEC 3.10.3).
-  const rows = items.filter((m) => ids.includes(m.id));
-  const n = rows.some((m) => m.conv) ? rows.reduce((sum, m) => sum + (m.conv ? m.conv.folderMessageIds.length : 1), 0) : ids.length;
+  const { ids, count: n } = req;
   return (
-    <Dialog title="Delete for good?" size="sm" onClose={close} initialFocus=".foot .btn:not(.danger)">
-      <p>
-        {n === 1 ? 'This message is' : `These ${n} messages are`} already in Trash. Deleting{' '}
-        {n === 1 ? 'it' : 'them'} now removes {n === 1 ? 'it' : 'them'} from the server. This cannot be
-        undone.
-      </p>
+    <Dialog title="Delete permanently?" size="sm" onClose={close} initialFocus=".foot .btn:not(.danger)">
+      <p>Delete {n === 1 ? '1 message' : `${n} messages`} permanently? This can&apos;t be undone.</p>
       <div className="foot">
         <Button onClick={close}>Cancel</Button>
         <Button
           variant="danger"
           onClick={() => {
             close();
-            void applyToMessages(ids, { type: 'delete' });
+            void applyToMessages(ids, { type: 'deletePermanent' }, { confirm: true });
           }}
         >
-          Delete for good
+          Delete permanently
         </Button>
       </div>
     </Dialog>

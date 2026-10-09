@@ -16,7 +16,7 @@ import { useApp } from '../../store/app';
 import { openIdOf, useList, type ListItem } from '../../store/list';
 import { useUi } from '../../store/ui';
 import { useAccountColor, useThemeState } from '../../lib/hooks';
-import { applyToMessages, composeFrom, deleteMessages, editDraft, openInWindow, roleOf } from '../../lib/actions';
+import { applyToMessages, composeFrom, deleteMessages, editDraft, openInWindow, roleOf, saveAsEml } from '../../lib/actions';
 import { printOpenMessage, registerPrintSource } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
 import { addressList, fileKind, fileSize, fullDate, initials, senderName } from '../../lib/format';
@@ -344,6 +344,7 @@ function Toolbar({
             'sep',
             ...(colorToggle ? [{ label: colorToggle.label, icon: colorToggle.icon, onSelect: colorToggle.run }] : []),
             { label: 'View source', onSelect: onSource },
+            { label: 'Save as .eml...', icon: 'download', onSelect: () => void saveAsEml(header.id) },
             {
               label: inJunk ? 'Not spam' : 'Report spam',
               icon: 'spam',
@@ -362,6 +363,7 @@ function Toolbar({
             },
             ...(colorToggle ? [{ label: colorToggle.label, icon: colorToggle.icon, onSelect: colorToggle.run }] : []),
             { label: 'View source', onSelect: onSource },
+            { label: 'Save as .eml...', icon: 'download', onSelect: () => void saveAsEml(header.id) },
             ...(header.from && canMakeRuleFrom(header)
               ? [{ label: 'Create rule from this sender...', icon: 'rules' as const, onSelect: () => createRuleFromSender(header.accountId, header.from) }]
               : []),

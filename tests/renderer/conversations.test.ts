@@ -192,4 +192,21 @@ describe('actions on conversation rows (3.10.3)', () => {
     await vi.waitFor(() => expect(calls.some((c) => c.channel === 'compose.openWindow')).toBe(true));
     expect(calls.find((c) => c.channel === 'compose.openWindow')!.req).toEqual({ mode: 'reply', sourceMessageId: 5 });
   });
+  it('Shift+Delete on a conversation: dry run with threadCount/messageCount, then confirm', async () => {
+    invoke = async (_c, r) =>
+      (r as { confirm?: boolean }).confirm
+        ? { succeeded: [1, 2, 3, 4], failed: [], permanent: true, threadCount: 1, messageCount: 4 }
+        : { succeeded: [], failed: [], requiresConfirm: true, permanent: true, threadCount: 1, messageCount: 4 };
+    const { list, toasts, actions } = await setup([row({ threadId: 't1', latestId: 10, count: 4, folderMessageIds: [7, 8, 9, 10] })]);
+    const ui = (await import('../../src/renderer/src/store/ui')).useUi;
+    await actions.applyToMessages([10], { type: 'deletePermanent' });
+    expect(calls[0]!.req).toMatchObject({ threadIds: ['t1'], action: { type: 'deletePermanent' } });
+    expect((calls[0]!.req as { confirm?: boolean }).confirm).toBeUndefined();
+    expect(ui.getState().confirmPermanent).toEqual({ ids: [10], count: 4 });
+    expect(list.getState().items).toHaveLength(1);
+    await actions.applyToMessages([10], { type: 'deletePermanent' }, { confirm: true });
+    expect(calls[1]!.req).toMatchObject({ confirm: true });
+    expect(list.getState().items).toHaveLength(0);
+    expect(toasts.getState().items.at(-1)!.message).toBe('Conversation deleted permanently (4 messages)');
+  });
 });

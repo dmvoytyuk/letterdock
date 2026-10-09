@@ -12,7 +12,7 @@ import { undoWithToken } from '../../store/undo';
 import { handleOutboxEvent } from '../../store/outbox';
 import { useThemeEffect } from '../../lib/hooks';
 import { asAppError, call } from '../../lib/api';
-import { applyToMessages, composeFrom, deleteMessages, setLeaveHandler } from '../../lib/actions';
+import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, setLeaveHandler } from '../../lib/actions';
 import { printOpenMessage } from '../../lib/print';
 import { matchShortcut, isTypingTarget } from '../../lib/shortcuts';
 import { useUi } from '../../store/ui';
@@ -121,8 +121,26 @@ export function ViewerApp({ messageId }: { messageId: number | null }) {
     return off;
   }, [messageId, refreshHeader]);
 
-  // Archive, delete and move: show an Undo panel, then close the window.
-  useEffect(() => setLeaveHandler((info) => setLeft(info)), []);
+  // Archive, delete and move: the main window shows the normal Undo toast and this window closes.
+  // Without a visible main window (closed to the tray, minimized) the toast would be missed, so this
+  // window keeps its own Undo panel for a few seconds.
+  useEffect(
+    () =>
+      setLeaveHandler((info) => {
+        if (!info.token) {
+          setLeft({ label: info.label });
+          return;
+        }
+        const token = info.token;
+        call('ui.showUndo', { label: info.label, undoToken: token, count: info.count })
+          .then((r) => {
+            if (r.delivered) window.close();
+            else setLeft({ label: info.label, token });
+          })
+          .catch(() => setLeft({ label: info.label, token }));
+      }),
+    [],
+  );
   useEffect(() => {
     if (!left) return;
     const h = setTimeout(() => window.close(), left.token ? UNDO_PANEL_MS : 600);
@@ -179,9 +197,12 @@ export function ViewerApp({ messageId }: { messageId: number | null }) {
         case 'forward':
           return run(() => composeFrom('forward', messageId));
         case 'delete':
-        case 'deletePermanent':
           return run(() => {
             if (live) deleteMessages([messageId]);
+          });
+        case 'deletePermanent':
+          return run(() => {
+            if (live) deleteMessagesPermanently([messageId]);
           });
         case 'archive':
           return run(() => {

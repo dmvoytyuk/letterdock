@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { AccountId, FolderId, ListScope, MessageId, Rule, RuleCondition } from '../../../shared/ipc';
+import type { AccountId, ConversationSort, FolderId, ListScope, MessageId, Rule, RuleCondition } from '../../../shared/ipc';
 
 // Settings saved by the app under its old name are still read once (the data folder is migrated
 // as a whole, including this storage).
@@ -29,6 +29,17 @@ export type View =
   /** Mail waiting to be sent later (DESIGN-SPEC 3.11). `accountId` null = every account. */
   | { kind: 'scheduled'; accountId: AccountId | null }
   | { kind: 'search'; query: string; accountId: AccountId | null };
+
+/** How the list of conversations is ordered (DESIGN-SPEC 3.5, 3.10.2). One choice for every folder. */
+export interface ListSort {
+  sort: ConversationSort;
+  direction: 'asc' | 'desc';
+}
+/** Date: newest first. Sender and Subject: A to Z. */
+export function defaultDirection(sort: ConversationSort): 'asc' | 'desc' {
+  return sort === 'date' ? 'desc' : 'asc';
+}
+export const DEFAULT_SORT: ListSort = { sort: 'date', direction: 'desc' };
 
 export type Page = 'mail' | 'settings';
 export type SettingsSection =
@@ -86,6 +97,8 @@ interface UiState {
   /** Last folders the user moved mail to, per account (newest first). */
   recentFolders: Record<AccountId, FolderId[]>;
   recentSearches: string[];
+  /** Order of the conversation list. The message list has no sort in the contract (newest first only). */
+  listSort: ListSort;
 
   // session
   page: Page;
@@ -110,8 +123,8 @@ interface UiState {
   /** Message to select once the list has it (from ui:openMessage). */
   pendingOpenMessageId: number | null;
   moveDialog: MessageId[] | null;
-  /** Messages waiting for the "delete for good?" confirmation. */
-  confirmPermanent: MessageId[] | null;
+  /** Messages waiting for the "delete permanently?" confirmation, and how many messages that is. */
+  confirmPermanent: { ids: MessageId[]; count: number } | null;
   /** Trash or Junk folder waiting for the "empty it?" confirmation. */
   emptyFolderId: FolderId | null;
   /** The rule editor, when open. `{}` is a new empty rule. */
@@ -131,6 +144,7 @@ interface UiState {
   /** Leave search or the outbox view (used before showing a specific message). */
   exitSearchOrOutbox: () => void;
   rememberFolder: (accountId: AccountId, folderId: FolderId) => void;
+  setListSort: (sort: ConversationSort, direction?: 'asc' | 'desc') => void;
 }
 
 export const useUi = create<UiState>()(
@@ -147,6 +161,7 @@ export const useUi = create<UiState>()(
       moreOpen: {},
       recentFolders: {},
       recentSearches: [],
+      listSort: DEFAULT_SORT,
 
       page: 'mail',
       settingsSection: 'accounts',
@@ -207,6 +222,7 @@ export const useUi = create<UiState>()(
               ? { view: { kind: 'all' } }
               : s,
         ),
+      setListSort: (sort, direction) => set({ listSort: { sort, direction: direction ?? defaultDirection(sort) } }),
       rememberFolder: (accountId, folderId) =>
         set((s) => ({
           recentFolders: {
@@ -234,6 +250,7 @@ export const useUi = create<UiState>()(
         moreOpen: s.moreOpen,
         recentFolders: s.recentFolders,
         recentSearches: s.recentSearches,
+        listSort: s.listSort,
       }),
     },
   ),

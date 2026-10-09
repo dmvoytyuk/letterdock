@@ -7,7 +7,7 @@ import { useList, type ListItem } from '../../store/list';
 import { useUi } from '../../store/ui';
 import { touches, useConvSignal } from '../../store/conversations';
 import { useAccountColor } from '../../lib/hooks';
-import { applyToMessages, applyToRealMessages, deleteMessages, editDraft, noteThreadRead, openCompose, openInWindow } from '../../lib/actions';
+import { applyToMessages, applyToRealMessages, deleteMessages, editDraft, noteThreadRead, openCompose, openInWindow, saveAsEml } from '../../lib/actions';
 import { printMessage } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
 import { addressList, fullDate, initials, senderName } from '../../lib/format';
@@ -497,6 +497,7 @@ function cardMenu(h: MessageHeader, onSource: () => void, onUnread: () => void):
     },
     { label: 'Print', icon: 'print', onSelect: () => void printMessage(h.id) },
     { label: 'View source', onSelect: onSource },
+    { label: 'Save as .eml...', icon: 'download', onSelect: () => void saveAsEml(h.id) },
     { label: 'Open in new window', icon: 'open-window', onSelect: () => openInWindow(h) },
     ...(h.from && canMakeRuleFrom(h)
       ? ([{ label: 'Create rule from this sender...', icon: 'rules', onSelect: () => createRuleFromSender(h.accountId, h.from) }] as MenuEntry[])

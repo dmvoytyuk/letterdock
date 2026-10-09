@@ -1444,6 +1444,8 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       return delay(undefined, 20);
     }
     case 'messages.saveEml': {
+      // Like the engine: the raw message comes from the server, so offline it fails before any dialog.
+      if (!navigator.onLine) return err('HOST_UNREACHABLE', 'You are offline. Connect to the internet to save this message.');
       const m = messages.find((x) => x.id === (r as { messageId: number }).messageId);
       if (!m) return err('NOT_FOUND', 'Message not found.');
       const path = `C:\\Users\\you\\Downloads\\${emlFileName(m.subject)}`;

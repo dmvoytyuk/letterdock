@@ -23,15 +23,21 @@ import { toast, toastError } from '../store/toasts';
  * The message window sets this to take over the "message left" feedback (its own Undo panel),
  * because a toast in a window that closes would be lost.
  */
-let leaveHandler: ((info: { label: string; token?: string }) => void) | null = null;
-export function setLeaveHandler(fn: (info: { label: string; token?: string }) => void): () => void {
+export interface LeaveInfo {
+  label: string;
+  token?: string;
+  /** How many messages the token covers. */
+  count: number;
+}
+let leaveHandler: ((info: LeaveInfo) => void) | null = null;
+export function setLeaveHandler(fn: (info: LeaveInfo) => void): () => void {
   leaveHandler = fn;
   return () => {
     if (leaveHandler === fn) leaveHandler = null;
   };
 }
 
-const LEAVING: MessageAction['type'][] = ['move', 'archive', 'delete', 'spam', 'notSpam'];
+const LEAVING: MessageAction['type'][] = ['move', 'archive', 'delete', 'deletePermanent', 'spam', 'notSpam'];
 
 function folderById(id: FolderId): Folder | undefined {
   return useApp.getState().folders.find((f) => f.id === id);
@@ -82,6 +88,8 @@ function describe(action: MessageAction, msgs: MessageHeader[], n: number, perma
       return permanent
         ? `${plural(n, 'message', 'messages')} deleted for good${suffix}`
         : `${plural(n, 'message', 'messages')} deleted${suffix}`;
+    case 'deletePermanent':
+      return `${plural(n, 'message', 'messages')} deleted permanently${suffix}`;
     case 'archive':
       return `${plural(n, 'message', 'messages')} archived${suffix}`;
     case 'spam':
@@ -111,8 +119,14 @@ function nextToSelect(ids: MessageId[]): MessageId | null {
  * remove the rows at once, show an Undo toast, and come back by themselves if the server says no
  * (the engine then sends action:failed and messages:changed).
  */
-export async function applyToRealMessages(ids: MessageId[], action: MessageAction): Promise<boolean> {
+export interface ApplyOptions {
+  /** `deletePermanent` only: the user said yes in the confirm dialog. */
+  confirm?: boolean;
+}
+
+export async function applyToRealMessages(ids: MessageId[], action: MessageAction, opts: ApplyOptions = {}): Promise<boolean> {
   if (ids.length === 0) return false;
+  if (action.type === 'deletePermanent' && !opts.confirm) return askPermanent(ids, null);
   const list = useList.getState();
   const msgs = messagesOf(ids);
 
@@ -140,7 +154,8 @@ export async function applyToRealMessages(ids: MessageId[], action: MessageActio
   }
 
   const permanent =
-    action.type === 'delete' && msgs.length > 0 && msgs.every((m) => folderById(m.folderId)?.role === 'trash');
+    action.type === 'deletePermanent' ||
+    (action.type === 'delete' && msgs.length > 0 && msgs.every((m) => folderById(m.folderId)?.role === 'trash'));
   const next = nextToSelect(ids);
   list.removeLocal(ids);
   if (next !== null) list.selectOnly(next);
@@ -148,7 +163,7 @@ export async function applyToRealMessages(ids: MessageId[], action: MessageActio
 
   let res: ApplyActionRes;
   try {
-    res = await call('messages.apply', { messageIds: ids, action });
+    res = await call('messages.apply', { messageIds: ids, action, ...(opts.confirm ? { confirm: true } : {}) });
   } catch (e) {
     toastError(asAppError(e).message);
     void useList.getState().refresh();
@@ -163,7 +178,7 @@ export async function applyToRealMessages(ids: MessageId[], action: MessageActio
   const token = res.undoToken;
   if (token) useUndo.getState().push(token, res.succeeded.length);
   if (leaveHandler) {
-    leaveHandler(token ? { label, token } : { label });
+    leaveHandler({ label, count: res.succeeded.length, ...(token ? { token } : {}) });
   } else if (token) {
     toast(label, { actionLabel: 'Undo', onAction: () => void undoWithToken(token), duration: 6000 });
   } else {
@@ -181,10 +196,53 @@ export async function applyToRealMessages(ids: MessageId[], action: MessageActio
  * action changes the messages of each conversation that are in the folder being viewed (3.10.3).
  * Otherwise they are message ids.
  */
-export async function applyToMessages(ids: MessageId[], action: MessageAction): Promise<boolean> {
+export async function applyToMessages(ids: MessageId[], action: MessageAction, opts: ApplyOptions = {}): Promise<boolean> {
   const rows = conversationRows(ids);
-  if (rows) return applyToConversations(rows, action);
-  return applyToRealMessages(ids, action);
+  if (action.type === 'deletePermanent' && !opts.confirm) return askPermanent(ids, rows);
+  if (rows) return applyToConversations(rows, action, opts);
+  return applyToRealMessages(ids, action, opts);
+}
+
+/**
+ * Shift+Delete, step 1: ask the engine what would be deleted (no `confirm`, so nothing changes), then
+ * open the confirm dialog with that number. Step 2 is the dialog's button, which sends the same action
+ * with `confirm: true` (DESIGN-SPEC 3.10.3). Returns false: nothing was deleted yet.
+ */
+async function askPermanent(ids: MessageId[], rows: ListItem[] | null): Promise<boolean> {
+  const action: MessageAction = { type: 'deletePermanent' };
+  try {
+    let requires: boolean | undefined;
+    let count = ids.length;
+    if (rows) {
+      const scope = useList.getState().scope;
+      if (!scope) return false;
+      const res = await call('conversations.act', { threadIds: rows.map((r) => r.conv!.threadId), scope, action });
+      requires = res.requiresConfirm;
+      count = res.messageCount;
+    } else {
+      requires = (await call('messages.apply', { messageIds: ids, action })).requiresConfirm;
+    }
+    if (!requires) {
+      // The engine did not ask (it always should): show what is really there.
+      void useList.getState().refresh();
+      return false;
+    }
+    if (count === 0) {
+      toast('There is nothing to delete here.');
+      return false;
+    }
+    useUi.getState().set({ confirmPermanent: { ids, count } });
+    return false;
+  } catch (e) {
+    toastError(asAppError(e).message);
+    return false;
+  }
+}
+
+/** How many messages a delete-for-good of these list rows removes (a conversation counts its messages in this folder). */
+export function permanentCount(ids: MessageId[]): number {
+  const rows = useList.getState().items.filter((m) => ids.includes(m.id));
+  return rows.some((m) => m.conv) ? rows.reduce((sum, m) => sum + (m.conv ? m.conv.folderMessageIds.length : 1), 0) : ids.length;
 }
 
 function convLabel(action: MessageAction, rows: ConversationRow[], n: number, permanent: boolean, suffix: string): string {
@@ -194,6 +252,8 @@ function convLabel(action: MessageAction, rows: ConversationRow[], n: number, pe
   switch (action.type) {
     case 'delete':
       return `${noun} deleted${permanent ? ' for good' : ''} ${tail}${suffix}`;
+    case 'deletePermanent':
+      return `${noun} deleted permanently ${tail}${suffix}`;
     case 'archive':
       return `${noun} archived ${tail}${suffix}`;
     case 'spam':
@@ -216,7 +276,7 @@ function patchRows(ids: MessageId[], header: Partial<MessageHeader>, conv: (c: C
   }));
 }
 
-async function applyToConversations(rows: ListItem[], action: MessageAction): Promise<boolean> {
+async function applyToConversations(rows: ListItem[], action: MessageAction, opts: ApplyOptions = {}): Promise<boolean> {
   const list = useList.getState();
   const scope = list.scope;
   if (!scope) return false;
@@ -249,7 +309,8 @@ async function applyToConversations(rows: ListItem[], action: MessageAction): Pr
   }
 
   const permanent =
-    action.type === 'delete' && rows.length > 0 && rows.every((m) => folderById(m.folderId)?.role === 'trash');
+    action.type === 'deletePermanent' ||
+    (action.type === 'delete' && rows.length > 0 && rows.every((m) => folderById(m.folderId)?.role === 'trash'));
   const next = nextToSelect(ids);
   list.removeLocal(ids);
   if (next !== null) list.selectOnly(next);
@@ -257,7 +318,7 @@ async function applyToConversations(rows: ListItem[], action: MessageAction): Pr
 
   let res: ConversationActRes;
   try {
-    res = await call('conversations.act', { threadIds, scope, action });
+    res = await call('conversations.act', { threadIds, scope, action, ...(opts.confirm ? { confirm: true } : {}) });
   } catch (e) {
     toastError(asAppError(e).message);
     void useList.getState().refresh();
@@ -299,8 +360,24 @@ export function deleteMessages(ids: MessageId[]): void {
   if (ids.length === 0) return;
   const msgs = messagesOf(ids);
   const final = msgs.length > 0 && msgs.every((m) => folderById(m.folderId)?.role === 'trash');
-  if (final) useUi.getState().set({ confirmPermanent: ids });
+  if (final) useUi.getState().set({ confirmPermanent: { ids, count: permanentCount(ids) } });
   else void applyToMessages(ids, { type: 'delete' });
+}
+
+/** Shift+Delete: delete for good, from any folder, after a confirmation. There is no Undo. */
+export function deleteMessagesPermanently(ids: MessageId[]): void {
+  if (ids.length === 0) return;
+  void applyToMessages(ids, { type: 'deletePermanent' });
+}
+
+/** "Save as .eml...": the raw message into a file the user picks (needs a connection). */
+export async function saveAsEml(messageId: MessageId): Promise<void> {
+  try {
+    const r = await call('messages.saveEml', { messageId });
+    if (r.saved) toast(r.path ? `Saved to ${r.path}` : 'Message saved.', { duration: 8000 });
+  } catch (e) {
+    toastError(asAppError(e).message);
+  }
 }
 
 export function moveMessages(ids: MessageId[], destFolderId: FolderId): Promise<boolean> {

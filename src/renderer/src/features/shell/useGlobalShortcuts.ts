@@ -3,7 +3,7 @@ import { isTypingTarget, matchShortcut, type ShortcutId } from '../../lib/shortc
 import { useApp, accountInbox } from '../../store/app';
 import { useList } from '../../store/list';
 import { useUi } from '../../store/ui';
-import { applyToMessages, composeFrom, deleteMessages, newMessage, openCompose, openInWindow } from '../../lib/actions';
+import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, newMessage, openCompose, openInWindow } from '../../lib/actions';
 import { undoLast } from '../../store/undo';
 import { printOpenMessage } from '../../lib/print';
 import { toast } from '../../store/toasts';
@@ -162,11 +162,11 @@ export function useGlobalShortcuts(): void {
             if (ids.length !== 1 || !first) toast('Select one message to print it.');
             else printOpenMessage(first.id);
           });
-        // Shift+Delete: the contract has no "permanent delete" for mail outside Trash, so both keys
-        // move the message to Trash (mail already in Trash is deleted for good after a confirmation).
         case 'delete':
-        case 'deletePermanent':
           return run(() => deleteMessages(ids));
+        // Shift+Delete: delete for good from any folder, after a confirmation. No Undo.
+        case 'deletePermanent':
+          return run(() => deleteMessagesPermanently(ids));
         case 'archive':
           return run(() => void applyToMessages(ids, { type: 'archive' }));
         case 'markRead':

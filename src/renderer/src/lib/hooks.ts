@@ -10,6 +10,7 @@ import { handleOutboxEvent, useOutbox } from '../store/outbox';
 import { toast, toastError } from '../store/toasts';
 import { useUpdates } from '../store/updates';
 import { useConvSignal } from '../store/conversations';
+import { undoWithToken, useUndo } from '../store/undo';
 import { handleScheduledEvent, useScheduled } from '../store/scheduled';
 import { handleRulesEvent, useRules } from '../store/rules';
 import { backOnlineText, reportDroppedChanges, reportFolderConflict, reportQueueFailure } from './queueFailures';
@@ -97,6 +98,10 @@ export function useAppEvents(): void {
       } else if (e.type === 'folder:conflict') {
         // A folder change from the offline queue met a difference on the server.
         reportFolderConflict(e);
+      } else if (e.type === 'ui:undoAvailable') {
+        // A message window archived, deleted or moved a message and closed: its Undo lives here now.
+        useUndo.getState().push(e.undoToken, e.count);
+        toast(e.label, { actionLabel: 'Undo', onAction: () => void undoWithToken(e.undoToken), duration: 6000 });
       } else if (e.type === 'ui:compose') {
         call('compose.openWindow', { mode: 'new', mailto: e.mailto }).catch((err) =>
           toastError((err as { message?: string }).message ?? 'Could not open the message.'),

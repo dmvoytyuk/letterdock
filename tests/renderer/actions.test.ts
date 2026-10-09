@@ -108,8 +108,38 @@ describe('applyToMessages', () => {
     const ui = (await import('../../src/renderer/src/store/ui')).useUi;
     list.setState({ items: [msg(5, 2)] });
     actions.deleteMessages([5]);
-    expect(ui.getState().confirmPermanent).toEqual([5]);
+    expect(ui.getState().confirmPermanent).toEqual({ ids: [5], count: 1 });
     expect(calls.some((c) => c.channel === 'messages.apply')).toBe(false);
+  });
+});
+
+describe('Shift+Delete (permanent delete)', () => {
+  beforeEach(() => {
+    calls.length = 0;
+  });
+
+  it('asks the engine first (no confirm), changes nothing, and opens the dialog with the count', async () => {
+    invoke = async () => ({ succeeded: [], failed: [], requiresConfirm: true, permanent: true });
+    const { list, actions } = await setup();
+    const ui = (await import('../../src/renderer/src/store/ui')).useUi;
+    const ok = await actions.applyToMessages([1, 2], { type: 'deletePermanent' });
+    expect(ok).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.req).toEqual({ messageIds: [1, 2], action: { type: 'deletePermanent' } });
+    expect(list.getState().items.map((m) => m.id)).toEqual([1, 2, 3]);
+    expect(ui.getState().confirmPermanent).toEqual({ ids: [1, 2], count: 2 });
+  });
+
+  it('after the dialog it sends confirm: true, removes the rows and offers no Undo', async () => {
+    invoke = async () => ({ succeeded: [2], failed: [], permanent: true });
+    const { list, toasts, undo, actions } = await setup();
+    await actions.applyToMessages([2], { type: 'deletePermanent' }, { confirm: true });
+    expect(calls[0]!.req).toEqual({ messageIds: [2], action: { type: 'deletePermanent' }, confirm: true });
+    expect(list.getState().items.map((m) => m.id)).toEqual([1, 3]);
+    expect(undo.getState().token).toBeNull();
+    const t = toasts.getState().items.at(-1)!;
+    expect(t.message).toBe('1 message deleted permanently');
+    expect(t.actionLabel).toBeUndefined();
   });
 });
 
