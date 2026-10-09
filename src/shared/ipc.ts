@@ -182,6 +182,11 @@ export type ListScope =
 export interface PageCursor {
   date: EpochMs;
   id: MessageId;
+  /**
+   * `conversations.list` with sort 'sender' or 'subject' only: the sort key of the last row of the
+   * page. Pass `nextCursor` back as it is. Never built by the UI.
+   */
+  key?: string;
 }
 
 // ---------- conversations (DESIGN-SPEC 3.10) ----------
@@ -222,12 +227,24 @@ export interface ConversationRow {
   messageIds: MessageId[];
 }
 
+/** How `conversations.list` orders the rows (DESIGN-SPEC 3.10.2). */
+export type ConversationSort = 'date' | 'sender' | 'subject';
 export interface ListConversationsReq {
   scope: ListScope;
-  /** `date` = latest date of the conversation, `id` = tie-breaker given back as nextCursor. */
+  /**
+   * `date` = latest date of the conversation, `id` = tie-breaker, `key` = the sort key (sender and
+   * subject sorts). Pass `nextCursor` back as it is, with the same `sort` and `direction`.
+   */
   cursor: PageCursor | null;
   limit: number; // 1..200, default 50
   unreadOnly?: boolean;
+  /**
+   * 'date' (default): latest date of the conversation. 'sender': the latest sender (display name,
+   * else address). 'subject': the subject without Re:/Fwd: prefixes. Equal keys: newest first.
+   */
+  sort?: ConversationSort;
+  /** Default: 'desc' for date (newest first), 'asc' for sender and subject (A to Z). */
+  direction?: 'asc' | 'desc';
 }
 export interface ListConversationsRes {
   items: ConversationRow[];
@@ -275,10 +292,18 @@ export interface ConversationActReq {
    * flag false: unflag all of them; flag true: flag only the newest.
    */
   action: MessageAction;
+  /**
+   * Needed for `deletePermanent`: without `confirm: true` nothing is changed, the answer has
+   * `requiresConfirm: true` and `messageCount` (what would be deleted) so the UI can ask first.
+   */
+  confirm?: boolean;
 }
 export interface ConversationActRes extends ApplyActionRes {
   threadCount: number;
-  /** Messages the action was applied to (for the toast: "Conversation archived (4 messages)"). */
+  /**
+   * Messages the action was applied to (for the toast: "Conversation archived (4 messages)"). With
+   * `requiresConfirm`: the messages that would be deleted.
+   */
   messageCount: number;
 }
 
@@ -428,6 +453,20 @@ export interface RenameFolderReq {
 export interface DeleteFolderReq {
   folderId: FolderId;
 }
+export interface FolderCountReq {
+  /** One folder, or `'allInboxes'` (the Inbox of `accountId`, or of every account). */
+  folderId: FolderId | 'allInboxes';
+  /** With 'allInboxes': only this account. With a folder: the folder must belong to it. */
+  accountId?: AccountId | null;
+}
+export interface FolderCountRes {
+  /**
+   * Messages in it, counted the way "Run rules on this folder" counts them: no drafts, no hidden
+   * (deleted) ones, no local-only rows.
+   */
+  total: number;
+  unread: number;
+}
 
 // ---------- actions ----------
 export type MessageAction =
@@ -436,11 +475,21 @@ export type MessageAction =
   | { type: 'move'; destFolderId: FolderId }
   | { type: 'archive' }
   | { type: 'delete' } // to trash, or permanent if already in trash
+  /**
+   * Shift+Delete: delete for good, from any folder, with no undo. Needs `confirm: true` (see
+   * ApplyActionReq). Queued like every other change, so it also works offline.
+   */
+  | { type: 'deletePermanent' }
   | { type: 'spam' } // move to the Junk folder
   | { type: 'notSpam' }; // move from Junk back to the Inbox
 export interface ApplyActionReq {
   messageIds: MessageId[];
   action: MessageAction;
+  /**
+   * Needed for `deletePermanent`. Without `confirm: true` nothing is changed and the answer has
+   * `requiresConfirm: true`.
+   */
+  confirm?: boolean;
 }
 export interface ApplyActionRes {
   succeeded: MessageId[];
@@ -450,6 +499,14 @@ export interface ApplyActionRes {
    * within UNDO_WINDOW_MS. Absent for read/flag changes and for permanent deletes.
    */
   undoToken?: string;
+  /**
+   * `deletePermanent` was asked without `confirm: true`: nothing was changed (`succeeded` is empty).
+   * Ask the user ("Delete N messages permanently? This can't be undone."), then send it again with
+   * `confirm: true`.
+   */
+  requiresConfirm?: boolean;
+  /** Messages were deleted for good (`deletePermanent`, or `delete` in Trash). They cannot be undone. */
+  permanent?: boolean;
 }
 /** How long an undo token stays valid in the engine. */
 export const UNDO_WINDOW_MS = 60_000;
@@ -503,6 +560,12 @@ export interface ComposeDraft {
   inReplyToMessageId: MessageId | null;
   mode: ComposeMode;
   attachments: DraftAttachment[];
+  /**
+   * Set when this draft was a scheduled message that "Edit" (or "Cancel send" in the Outbox) turned
+   * back into a draft: the time it was scheduled for. The compose window offers "Same time" with
+   * it. Kept until `compose.clearPaused`, or until the message is sent, scheduled again or discarded.
+   */
+  pausedSendAt?: EpochMs | null;
 }
 export interface PickFilesRes {
   attachments: DraftAttachment[];
@@ -777,6 +840,30 @@ export interface ContactSuggestion {
 export interface ContactForgetReq {
   address: string;
 }
+export interface ContactGetReq {
+  address: string;
+}
+/** What Letterdock knows about one address (the address popover). Always answers, also for unknown addresses. */
+export interface ContactInfo {
+  /** Lower case, as given (trimmed). */
+  address: string;
+  /** Display name, or null when only the address is known. */
+  name: string | null;
+  /** The address is in the contact list (has been seen in mail and was not removed). */
+  known: boolean;
+  /** How many messages the user sent to this address. */
+  sentCount: number;
+  /** How many messages came from or with this address. */
+  receivedCount: number;
+  /** Epoch ms of the latest message sent to it, else the latest one seen; 0 when unknown. */
+  lastUsed: EpochMs;
+  /** The accounts that know this address, most used first. */
+  accountIds: AccountId[];
+  /** One of the user's own addresses. */
+  isOwn: boolean;
+  /** The user removed it from the suggestions ("Remove from suggestions"). */
+  forgotten: boolean;
+}
 
 // ---------- own window, print, mailto: ----------
 export interface OpenMessageWindowReq {
@@ -790,6 +877,30 @@ export interface PrintMessageReq {
    * as untrusted: the print window runs no scripts and a strict CSP. Omit it to print the plain text.
    */
   bodyHtml?: string;
+}
+export interface SaveEmlReq {
+  messageId: MessageId;
+}
+export interface SaveEmlRes {
+  /** false if the user closed the save dialog. */
+  saved: boolean;
+  /** Where the file was written (only when saved). */
+  path?: string;
+}
+export interface ShowUndoReq {
+  /** The text of the toast, for example "Message archived". */
+  label: string;
+  /** From the action's answer; the toast's Undo button calls `messages.undo` with it. */
+  undoToken: string;
+  /** How many messages the token covers. */
+  count?: number;
+}
+export interface ShowUndoRes {
+  /**
+   * The main window got the toast. false: there is no main window the user can see (closed to the
+   * tray or minimized); the message window should keep its own Undo panel then.
+   */
+  delivered: boolean;
 }
 export interface PrintMessageRes {
   /** false if the user closed the print dialog without printing. */
@@ -904,12 +1015,20 @@ export interface IpcMethods {
   'folders.delete': { req: DeleteFolderReq; res: void };
   /** Permanently delete every message in Trash or Junk. Other folders: INVALID_INPUT. */
   'folders.empty': { req: { folderId: FolderId }; res: { deleted: number } };
+  /** Message count of a folder (or all Inboxes), the way "Run rules on this folder" counts. */
+  'folders.count': { req: FolderCountReq; res: FolderCountRes };
 
   // messages
   'messages.list': { req: ListMessagesReq; res: ListMessagesRes };
   'messages.get': { req: { messageId: MessageId }; res: MessageBody }; // fetches+caches body if needed
   'messages.getHeaders': { req: { messageIds: MessageId[] }; res: MessageHeader[] };
   'messages.rawSource': { req: { messageId: MessageId }; res: { source: string } };
+  /**
+   * Save the raw message (RFC 822) as a .eml file. Opens a native save dialog (main); the file name
+   * comes from the subject. The message is fetched from the server: offline it rejects with
+   * HOST_UNREACHABLE.
+   */
+  'messages.saveEml': { req: SaveEmlReq; res: SaveEmlRes };
   'messages.apply': { req: ApplyActionReq; res: ApplyActionRes };
   'messages.undo': { req: UndoReq; res: UndoRes };
   'messages.markAllRead': { req: MarkAllReadReq; res: { count: number } };
@@ -923,9 +1042,16 @@ export interface IpcMethods {
   'message.openWindow': { req: OpenMessageWindowReq; res: void };
   /** Print through the system print dialog (also "Save as PDF"). See PrintMessageReq. */
   'message.print': { req: PrintMessageReq; res: PrintMessageRes };
+  /**
+   * The message window did an action that has an Undo (archive, delete, move, spam) and is about to
+   * close: main shows the normal Undo toast in the main window (event `ui:undoAvailable`).
+   */
+  'ui.showUndo': { req: ShowUndoReq; res: ShowUndoRes };
   'contacts.suggest': { req: ContactSuggestReq; res: ContactSuggestion[] };
   /** Remove a suggestion for good (it is not learned again from old or new mail). */
   'contacts.forget': { req: ContactForgetReq; res: void };
+  /** What is known about one address (name, counts, accounts, own, removed from suggestions). */
+  'contacts.get': { req: ContactGetReq; res: ContactInfo };
   'attachments.open': { req: { attachmentId: number }; res: void }; // saves to cache dir, shell.openPath
   'attachments.saveAs': { req: { attachmentId: number }; res: { saved: boolean } }; // native save dialog
   'attachments.cidData': {
@@ -939,6 +1065,8 @@ export interface IpcMethods {
   'compose.pickFiles': { req: void; res: PickFilesRes };
   'compose.attachData': { req: AttachDataReq; res: DraftAttachment };
   'compose.discard': { req: { draftId: string }; res: void };
+  /** Forget `ComposeDraft.pausedSendAt` (the "scheduling is paused" strip was shown or dismissed). */
+  'compose.clearPaused': { req: { draftId: string }; res: void };
   'compose.saveDraft': { req: SaveDraftReq; res: SaveDraftRes };
   'compose.send': { req: SendReq; res: SendRes };
   /** Upload a draft whose server copy is waiting or failed, now (the "Retry" action on a draft row). No-op for other messages. */
@@ -1095,6 +1223,11 @@ export type AppEvent =
    */
   | { type: 'settings:changed'; settings: AppSettings; oauth: OAuthSettings }
   | { type: 'ui:openMessage'; messageId: MessageId }
+  /**
+   * Sent to the MAIN window only, after `ui.showUndo` from a message window: show the normal Undo
+   * toast (`label`, Undo button calls `messages.undo({ undoToken })`).
+   */
+  | { type: 'ui:undoAvailable'; label: string; undoToken: string; count: number }
   | { type: 'ui:compose'; mailto: string }
   | { type: 'engine:restarted' }; // renderer must reload state
 

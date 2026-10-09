@@ -58,6 +58,8 @@ export interface MainToEngineMethods {
   'engine.init': { req: EngineInit; res: void };
   'engine.settings': { req: AppSettings; res: void };
   'attachments.prepare': { req: { attachmentId: number }; res: PreparedAttachment };
+  /** The raw message (RFC 822 bytes) and its subject, for "Save as .eml". Needs a connection. */
+  'messages.sourceBytes': { req: { messageId: number }; res: { data: Uint8Array; subject: string } };
   /** Files picked in the native dialog: the engine copies them and returns opaque tokens. */
   'attachments.register': {
     req: { files: { path: string; filename: string; contentType: string }[] };

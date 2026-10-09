@@ -82,6 +82,7 @@ const action = z.discriminatedUnion('type', [
   z.object({ type: z.literal('move'), destFolderId: id }),
   z.object({ type: z.literal('archive') }),
   z.object({ type: z.literal('delete') }),
+  z.object({ type: z.literal('deletePermanent') }),
   z.object({ type: z.literal('spam') }),
   z.object({ type: z.literal('notSpam') }),
 ]);
@@ -171,6 +172,10 @@ export const schemas: Schemas = {
   'folders.rename': z.object({ folderId: id, newName: str(200) }),
   'folders.delete': z.object({ folderId: id }),
   'folders.empty': z.object({ folderId: id }),
+  'folders.count': z.object({
+    folderId: z.union([id, z.literal('allInboxes')]),
+    accountId: accountId.nullable().optional(),
+  }),
 
   'messages.list': z.object({
     scope,
@@ -181,22 +186,30 @@ export const schemas: Schemas = {
   'messages.get': z.object({ messageId: id }),
   'messages.getHeaders': z.object({ messageIds: z.array(id).max(500) }),
   'messages.rawSource': z.object({ messageId: id }),
-  'messages.apply': z.object({ messageIds: z.array(id).min(1).max(1000), action }),
+  'messages.saveEml': z.object({ messageId: id }),
+  'messages.apply': z.object({
+    messageIds: z.array(id).min(1).max(1000),
+    action,
+    confirm: z.boolean().optional(),
+  }),
   'messages.undo': z.object({ undoToken: str(200) }),
   'messages.markAllRead': z.object({
     scope: z.union([scope, z.object({ kind: z.literal('account'), accountId })]),
   }),
   'conversations.list': z.object({
     scope,
-    cursor: z.object({ date: z.number(), id: z.number() }).nullable(),
+    cursor: z.object({ date: z.number(), id: z.number(), key: str(500).optional() }).nullable(),
     limit: z.number().int().min(1).max(200),
     unreadOnly: z.boolean().optional(),
+    sort: z.enum(['date', 'sender', 'subject']).optional(),
+    direction: z.enum(['asc', 'desc']).optional(),
   }),
   'conversations.get': z.object({ threadId: str(300).min(1), accountId, scope: scope.optional() }),
   'conversations.act': z.object({
     threadIds: z.array(str(300).min(1)).min(1).max(1000),
     scope,
     action,
+    confirm: z.boolean().optional(),
   }),
   'senders.allowImages': z.object({ address: str(320), allow: z.boolean() }),
   'senders.listAllowed': none,
@@ -214,6 +227,12 @@ export const schemas: Schemas = {
     limit: z.number().int().min(1).max(50).optional(),
   }),
   'contacts.forget': z.object({ address: str(320).min(3) }),
+  'contacts.get': z.object({ address: str(320).min(3) }),
+  'ui.showUndo': z.object({
+    label: str(300).min(1),
+    undoToken: str(200).min(1),
+    count: z.number().int().min(0).max(100000).optional(),
+  }),
   'attachments.open': z.object({ attachmentId: id }),
   'attachments.saveAs': z.object({ attachmentId: id }),
   'attachments.cidData': z.object({ messageId: id, contentId: str(500) }),
@@ -227,6 +246,7 @@ export const schemas: Schemas = {
     data: z.instanceof(Uint8Array).refine((d) => d.byteLength <= 25 * 1024 * 1024),
   }),
   'compose.discard': z.object({ draftId: str(100) }),
+  'compose.clearPaused': z.object({ draftId: str(100) }),
   'compose.saveDraft': sendReq,
   'compose.send': sendReq,
   'drafts.retrySave': z.object({ messageId: id }),

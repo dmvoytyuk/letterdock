@@ -14,6 +14,8 @@ export const MAIN_CHANNELS = [
   'compose.openWindow',
   'message.openWindow',
   'message.print',
+  'messages.saveEml',
+  'ui.showUndo',
   'settings.get',
   'settings.set',
   'images.cacheInfo',
