@@ -11,7 +11,6 @@ import type {
   MessageHeader,
   PrepareComposeReq,
   AppSettings,
-  UpdateStatus,
 } from '../shared/ipc';
 import type { MainChannel } from '../shared/channels';
 import { AppException } from '../shared/errors';
@@ -20,6 +19,7 @@ import { isExecutableName, isSafeExternalUrl } from '../shared/safety';
 import type { EngineHost } from './engineHost';
 import type { OAuthService } from './oauth/service';
 import type { Logger } from './logger';
+import type { AppUpdater } from './updater';
 import type { SettingsStore } from './settings';
 import type { ImageDiskCache } from './imageCache/store';
 import { computeMailtoStatus, DEFAULT_APPS_URI } from './mailto';
@@ -35,6 +35,7 @@ export interface HandlerDeps {
   imageCache: ImageDiskCache;
   engine: EngineHost;
   log: Logger;
+  updater: Pick<AppUpdater, 'status' | 'check' | 'install'>;
   logsDir: string;
   dbPath: string;
   getWindow: () => BrowserWindow | null;
@@ -205,15 +206,9 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
       else d.log.warn({ source: 'renderer' }, r.msg);
     },
 
-    // There is no update server yet (no website). These never throw: the UI reads "unavailable".
-    'updates.status': () => unavailableUpdates(),
-    'updates.check': () => unavailableUpdates(),
-    'updates.install': () => {
-      throw new AppException('UNSUPPORTED', 'There is no update to install.');
-    },
+    // Updates from GitHub Releases. status and check never throw: problems are in the status.
+    'updates.status': () => d.updater.status(),
+    'updates.check': () => d.updater.check(),
+    'updates.install': () => d.updater.install(),
   };
-
-  function unavailableUpdates(): UpdateStatus {
-    return { state: 'unavailable', currentVersion: app.getVersion(), reason: 'no-update-server' };
-  }
 }

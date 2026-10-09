@@ -571,20 +571,18 @@ export interface AppSettings {
   suggestFromAllAccounts: boolean;
 }
 
-// ---------- app updates (section 0, item 7; implemented in M4) ----------
+// ---------- app updates (section 0, item 7; GitHub Releases via electron-updater) ----------
 export type UpdateStatus =
   | { state: 'idle'; currentVersion: string }
   | { state: 'checking'; currentVersion: string }
   | { state: 'upToDate'; currentVersion: string; checkedAt: EpochMs }
   | { state: 'available'; currentVersion: string; newVersion: string; releaseNotes: string | null }
   | { state: 'downloading'; currentVersion: string; newVersion: string; percent: number }
-  | { state: 'ready'; currentVersion: string; newVersion: string } // restart to install
+  /** Downloaded. It installs when the app quits, or at once with `updates.install`. */
+  | { state: 'ready'; currentVersion: string; newVersion: string; releaseNotes?: string | null }
   | { state: 'error'; currentVersion: string; error: AppError }
-  /**
-   * There is no update server yet (no website). `updates.status` and `updates.check` return this
-   * and never throw. The UI hides or disables the update controls. `autoUpdateCheck` stays saved.
-   */
-  | { state: 'unavailable'; currentVersion: string; reason: 'no-update-server' };
+  /** Development builds (not installed from the installer) cannot update. The UI hides the controls. */
+  | { state: 'unavailable'; currentVersion: string; reason: 'dev-build' };
 
 // ============================ request/response map ============================
 export interface FolderCounts {
@@ -684,7 +682,7 @@ export interface IpcMethods {
   'system.networkChanged': { req: { online: boolean }; res: void };
   'log.write': { req: { level: 'warn' | 'error'; msg: string }; res: void };
 
-  // app updates (M4: stubbed)
+  // app updates
   'updates.status': { req: void; res: UpdateStatus };
   'updates.check': { req: void; res: UpdateStatus };
   'updates.install': { req: void; res: void }; // quits and installs a downloaded update

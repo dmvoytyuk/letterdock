@@ -40,6 +40,7 @@ import { TokenManager } from './oauth/tokenManager';
 import { SecretStore } from './secrets/secretStore';
 import { SettingsStore } from './settings';
 import { createMainWindow } from './window';
+import { AppUpdater, type UpdaterLike } from './updater';
 import { findMailtoArg } from './mailto';
 import { cleanPrintTemp } from './print/printWindow';
 import { ViewerWindows } from './viewerWindow';
@@ -105,6 +106,8 @@ async function boot(): Promise<void> {
   const tray = new AppTray();
   /** Set when the app is really quitting, so closing the main window then does not hide it. */
   let isQuitting = false;
+  /** Set once drafts are saved and the engine is stopped; then before-quit lets the app exit. */
+  let quitReady = false;
 
   // ---- notifications ----
   const accountNames = new Map<string, string>();
@@ -232,7 +235,27 @@ async function boot(): Promise<void> {
   const printTemp = join(app.getPath('temp'), 'mailroom-print');
   void cleanPrintTemp(printTemp);
 
+  // ---- automatic updates (GitHub Releases). Packaged builds only. ----
+  const updater = new AppUpdater({
+    updater: app.isPackaged ? await loadAutoUpdater(log) : noopUpdater(),
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    log,
+    autoCheckEnabled: () => settings.get().autoUpdateCheck,
+    emit: (status) => send({ type: 'update:status', status }),
+    // Same wait as a normal quit, done BEFORE the installer starts: a draft that was just saved
+    // reaches the database, then the engine stops. Close-to-tray must not keep the window alive.
+    prepareInstall: async () => {
+      isQuitting = true;
+      await waitForPendingSaves(3000);
+      tray.destroy();
+      engine.stop();
+      quitReady = true;
+    },
+  });
+
   const mainHandlers = createMainHandlers({
+    updater,
     settings,
     imageCache,
     engine,
@@ -364,7 +387,7 @@ async function boot(): Promise<void> {
   app.on('window-all-closed', () => {
     app.quit();
   });
-  let quitReady = false;
+  updater.start();
   app.on('before-quit', (e) => {
     isQuitting = true;
     if (!quitReady) {
@@ -378,6 +401,35 @@ async function boot(): Promise<void> {
       });
     }
   });
+}
+
+/** Loads electron-updater (only when packaged) and routes its log lines to our logger. */
+async function loadAutoUpdater(log: Logger): Promise<UpdaterLike> {
+  const mod = (await import('electron-updater')) as unknown as {
+    autoUpdater?: UpdaterLike;
+    default?: { autoUpdater: UpdaterLike };
+  };
+  const u = (mod.autoUpdater ?? mod.default?.autoUpdater) as UpdaterLike;
+  u.logger = {
+    info: (m: unknown) => log.info({ src: 'updater' }, String(m)),
+    warn: (m: unknown) => log.warn({ src: 'updater' }, String(m)),
+    error: (m: unknown) => log.error({ src: 'updater' }, String(m)),
+    debug: (m: unknown) => log.debug({ src: 'updater' }, String(m)),
+  };
+  return u;
+}
+
+/** Stand-in for development runs: AppUpdater never touches it because it is not packaged. */
+function noopUpdater(): UpdaterLike {
+  return {
+    autoDownload: false,
+    autoInstallOnAppQuit: false,
+    allowPrerelease: false,
+    allowDowngrade: false,
+    on: () => undefined,
+    checkForUpdates: () => Promise.resolve(null),
+    quitAndInstall: () => undefined,
+  };
 }
 
 /**

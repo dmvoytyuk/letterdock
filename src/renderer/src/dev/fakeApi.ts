@@ -929,7 +929,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       return delay(undefined, 20);
     case 'updates.status':
     case 'updates.check':
-      return delay({ state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'no-update-server' }, 60);
+      return delay({ state: 'unavailable', currentVersion: '0.1.0-fake', reason: 'dev-build' }, 60);
     case 'sync.loadOlder':
       return delay({ fetched: 0, reachedStart: true }, 10);
     case 'images.cacheInfo':

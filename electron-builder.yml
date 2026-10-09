@@ -50,6 +50,9 @@ win:
     - target: nsis
       arch: [x64]
   artifactName: Mailroom-Setup-${version}.${ext}
+  # TODO(SignPath): the installer is unsigned for now, so there is no publisher name to check.
+  # Turn this on (remove the line) together with code signing, or unsigned updates stay accepted.
+  verifyUpdateCodeSignature: false
 nsis:
   include: build/installer.nsh
   # One click: no wizard pages, installs per-user into %LOCALAPPDATA%\Programs and starts the app.
@@ -65,10 +68,13 @@ nsis:
   installerHeaderIcon: build/icon.ico
   # Keep %APPDATA%\Mailroom (accounts, mail, settings) when uninstalling or updating.
   deleteAppDataOnUninstall: false
-# Auto-update (ARCHITECTURE section 0, item 7): generic provider on the project website.
-# PLACEHOLDER URL: replace with the real website path before the first public release
-# No code signing yet (section 0, item 8): to add it later, set
-# win.signtoolOptions / azureSignOptions here, no code changes needed.
+# Auto-update (ARCHITECTURE section 0, item 7): GitHub Releases. The release workflow uploads
+# Mailroom-Setup-<version>.exe, its .blockmap and latest.yml (electron-builder runs with
+# --publish never). The app reads latest.yml from the latest non-prerelease release.
+# No code signing yet (section 0, item 8): to add it later, set win.signtoolOptions /
+# azureSignOptions here and remove win.verifyUpdateCodeSignature.
 publish:
-  provider: generic
-  url: https://example.invalid/mailroom/updates
+  provider: github
+  owner: voydapps
+  repo: mailroom
+  releaseType: release

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Account, AppSettings, OAuthSettings, UpdateStatus } from '../../../../shared/ipc';
+import type { Account, AppSettings, OAuthSettings } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import {
   AccountAvatar,
@@ -21,6 +21,8 @@ import { badgeOf, fileSize, megabytes } from '../../lib/format';
 import { cleanPassword, isAppPasswordProvider } from '../../lib/password';
 import { asAppError, call } from '../../lib/api';
 import { reportActionError, toast, toastError } from '../../store/toasts';
+import { useUpdates } from '../../store/updates';
+import { updateLine } from '../../lib/updateText';
 import { ShortcutTable } from '../dialogs/Dialogs';
 
 const NAV: [SettingsSection, string][] = [
@@ -524,26 +526,16 @@ function General() {
   const settings = useApp((s) => s.settings);
   const set = useSetting();
   const defaultApp = useDefaultApp();
-  const [update, setUpdate] = useState<UpdateStatus | 'unavailable' | null>(null);
-  const [checking, setChecking] = useState(false);
+  const update = useUpdates((s) => s.status);
   useEffect(() => {
-    // No update server yet: the backend answers "unavailable". Any failure counts as unavailable too.
+    // The live status also arrives as "update:status" events (see useAppEvents).
     call('updates.status')
-      .then((s) => setUpdate(s.state === 'unavailable' ? 'unavailable' : s))
-      .catch(() => setUpdate('unavailable'));
+      .then((s) => useUpdates.getState().setStatus(s))
+      .catch(() => undefined);
   }, []);
   if (!settings) return null;
-  const unavailable = update === 'unavailable';
-  const updateText =
-    update && update !== 'unavailable'
-      ? update.state === 'upToDate'
-        ? 'You have the latest version.'
-        : update.state === 'available'
-          ? `Version ${update.newVersion} is available.`
-          : update.state === 'error'
-            ? "Couldn't check for updates."
-            : null
-      : null;
+  const unavailable = update?.state === 'unavailable';
+  const busy = update?.state === 'checking' || update?.state === 'downloading';
   return (
     <>
       <h1>General</h1>
@@ -573,30 +565,39 @@ function General() {
       <h2>UPDATES</h2>
       <Checkbox
         checked={settings.autoUpdateCheck}
-        disabled={unavailable || update === null}
+        disabled={unavailable}
         label="Check for updates automatically"
         onChange={(v) => void set({ autoUpdateCheck: v })}
       />
       {unavailable ? (
-        <p className="hint indent">Automatic updates will come with the project website.</p>
-      ) : update !== null ? (
+        <p className="hint indent">Updates work in the installed app. This is a development run.</p>
+      ) : (
         <div className="btn-row" style={{ marginTop: 8 }}>
-          <Button
-            loading={checking}
-            disabled={checking}
-            onClick={() => {
-              setChecking(true);
-              call('updates.check')
-                .then((s) => setUpdate(s.state === 'unavailable' ? 'unavailable' : s))
-                .catch(() => setUpdate('unavailable'))
-                .finally(() => setChecking(false));
-            }}
-          >
-            {checking ? 'Checking...' : 'Check for updates'}
-          </Button>
-          {updateText ? <span className="hint" role="status">{updateText}</span> : null}
+          {update?.state === 'ready' ? (
+            <Button
+              variant="primary"
+              onClick={() => void call('updates.install').catch((e) => reportActionError(e))}
+            >
+              Restart now
+            </Button>
+          ) : (
+            <Button
+              loading={update?.state === 'checking'}
+              disabled={busy}
+              onClick={() =>
+                void call('updates.check')
+                  .then((s) => useUpdates.getState().setStatus(s))
+                  .catch((e) => reportActionError(e))
+              }
+            >
+              {update?.state === 'checking' ? 'Checking...' : 'Check now'}
+            </Button>
+          )}
+          <span className="hint" role="status" aria-live="polite">
+            {updateLine(update)}
+          </span>
         </div>
-      ) : null}
+      )}
     </>
   );
 }

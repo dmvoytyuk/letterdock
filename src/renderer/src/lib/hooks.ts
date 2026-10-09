@@ -8,6 +8,7 @@ import { resolveAccountColor } from './colors';
 import { call } from './api';
 import { handleOutboxEvent, useOutbox } from '../store/outbox';
 import { toast, toastError } from '../store/toasts';
+import { useUpdates } from '../store/updates';
 import { backOnlineText, reportDroppedChanges, reportQueueFailure } from './queueFailures';
 
 // ---------- theme ----------
@@ -72,10 +73,15 @@ export function useAppEvents(): void {
   useEffect(() => {
     void useApp.getState().loadAll();
     void useOutbox.getState().refetch();
+    call('updates.status')
+      .then((s) => useUpdates.getState().setStatus(s))
+      .catch(() => undefined);
     const off = window.api.on((e) => {
       useApp.getState().handleEvent(e);
       handleOutboxEvent(e);
-      if (e.type === 'action:failed') {
+      if (e.type === 'update:status') {
+        useUpdates.getState().setStatus(e.status);
+      } else if (e.type === 'action:failed') {
         // The server refused a change for good and the engine undid it. Tell the user (grouped).
         reportQueueFailure(e);
         scheduleRefresh();

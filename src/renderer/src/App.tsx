@@ -10,6 +10,7 @@ import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { Banner, Button, MenuHost, ToastHost } from './components/ui';
 import { useApp } from './store/app';
 import { useUi } from './store/ui';
+import { UpdateBanner } from './features/shell/UpdateBanner';
 import { useAppEvents, useLayoutModeEffect, useThemeEffect } from './lib/hooks';
 import { logRenderer } from './lib/api';
 
@@ -78,6 +79,7 @@ export function App() {
     <ErrorBoundary>
       <div className="app">
         <TitleBar />
+        <UpdateBanner />
         {body}
         {addAccount ? <AddAccountDialog request={addAccount} /> : null}
         <FolderDialogHost />
