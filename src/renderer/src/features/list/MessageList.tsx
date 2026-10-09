@@ -28,6 +28,7 @@ import {
   roleOf,
 } from '../../lib/actions';
 import { call } from '../../lib/api';
+import { LIST_MOVE_EVENT } from '../../lib/shortcuts';
 import { endDrag, startDrag } from '../../lib/dnd';
 import { groupLabel, isValidEmail, listDate, fullDate, senderName } from '../../lib/format';
 import { Highlight, searchTerms } from '../../lib/search';
@@ -207,6 +208,13 @@ export function MessageList({ className }: { className?: string }) {
     },
     [idToFlat, virtualizer],
   );
+
+  // Gmail style: the j and k keys (handled in useGlobalShortcuts) move through the list.
+  useEffect(() => {
+    const onMove = (e: Event) => moveFocus((e as CustomEvent<number>).detail > 0 ? 1 : -1, false);
+    window.addEventListener(LIST_MOVE_EVENT, onMove);
+    return () => window.removeEventListener(LIST_MOVE_EVENT, onMove);
+  }, [moveFocus]);
 
   const onKeyDown = (e: RKE<HTMLDivElement>) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;

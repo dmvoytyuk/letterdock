@@ -11,12 +11,18 @@ import type {
   OAuthSettings,
 } from '../../../shared/ipc';
 import { asAppError, call } from '../lib/api';
+import type { ShortcutPreset } from '../lib/shortcuts';
 
 export interface SyncProgress {
   folderId: number | null;
   phase: 'folders' | 'initial' | 'incremental' | 'older' | 'idle';
   done: number;
   total: number | null;
+}
+
+/** The shortcut style the user picked (Outlook until settings are loaded). */
+export function activePreset(): ShortcutPreset {
+  return useApp.getState().settings?.shortcutPreset === 'gmail' ? 'gmail' : 'outlook';
 }
 
 interface AppState {

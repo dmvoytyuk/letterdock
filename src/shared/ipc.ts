@@ -974,6 +974,8 @@ export interface AppSettings {
   suggestFromAllAccounts: boolean;
   /** Show one row per conversation (DESIGN-SPEC 3.10). Default false. */
   groupConversations: boolean;
+  /** Key set of Settings > Shortcuts: Outlook style (default) or Gmail style (adds single-key shortcuts). */
+  shortcutPreset: 'outlook' | 'gmail';
 }
 
 // ---------- app updates (section 0, item 7; GitHub Releases via electron-updater) ----------

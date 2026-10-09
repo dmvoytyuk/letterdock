@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rememberComposeBounds: true,
   suggestFromAllAccounts: true,
   groupConversations: false,
+  shortcutPreset: 'outlook',
 };
 
 interface StoredFile {
@@ -48,6 +49,7 @@ export function mergeSettings(stored: Partial<AppSettings> | undefined): AppSett
       o[key] = v;
     }
   }
+  if (out.shortcutPreset !== 'gmail') out.shortcutPreset = 'outlook'; // only the two known styles
   return out;
 }
 

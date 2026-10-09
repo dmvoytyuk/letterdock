@@ -282,6 +282,7 @@ const settings: AppSettings = {
   rememberComposeBounds: true,
   suggestFromAllAccounts: true,
   groupConversations: false,
+  shortcutPreset: 'outlook',
   ...(demo?.settings ?? {}),
 };
 

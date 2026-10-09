@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
-import { isTypingTarget, matchShortcut, type ShortcutId } from '../../lib/shortcuts';
-import { useApp, accountInbox } from '../../store/app';
+import { CONV_MOVE_EVENT, LIST_MOVE_EVENT, isPlainKey, isTypingTarget, matchShortcut, startsSequence, worksWhileTyping, type ShortcutId } from '../../lib/shortcuts';
+import { useApp, accountInbox, activePreset } from '../../store/app';
 import { useList } from '../../store/list';
 import { useUi } from '../../store/ui';
 import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, newMessage, openCompose, openInWindow } from '../../lib/actions';
@@ -11,20 +11,18 @@ import { useMenu } from '../../components/ui';
 import { syncAll } from './TitleBar';
 import { toggleSidebar } from '../sidebar/SidebarToggle';
 
-/** Shortcuts that still work while the user types in a field. */
-const WORKS_WHILE_TYPING: ShortcutId[] = [
-  'compose',
-  'addAccount',
-  'search',
-  'settings',
-  'toggleSidebar',
-  'nextPane',
-  'prevPane',
-  'syncAll',
-  'cheatsheet',
-];
-/** Plain keys (no Ctrl) that only act when focus is in the list or reading pane. */
+/** Keys that act on messages only when focus is in the list or reading pane (or nowhere). */
 const PLAIN_KEYS: ShortcutId[] = ['delete', 'deletePermanent', 'archive', 'flag', 'open'];
+/** Gmail-style single keys that work wherever focus is, except in a text field. */
+const ANYWHERE_KEYS: ShortcutId[] = ['compose', 'search', 'goInbox'];
+/** "g" then "i": how long the second key may take. */
+const SEQUENCE_MS = 1500;
+
+function focusList(): void {
+  const el =
+    document.querySelector<HTMLElement>('#pane-list [role=listbox]') ?? document.querySelector<HTMLElement>('#pane-list');
+  el?.focus();
+}
 
 function focusPane(dir: 1 | -1): void {
   // The status bar (DESIGN-SPEC 4.8) is the last stop. It is skipped when it is not on screen.
@@ -55,13 +53,23 @@ function focusPane(dir: 1 | -1): void {
 
 export function useGlobalShortcuts(): void {
   useEffect(() => {
+    // The key pressed just before, for "g then i" (Gmail style).
+    let prev: { key: string; at: number } | null = null;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
-      const sc = matchShortcut(e);
-      if (!sc) return;
-      const ui = useUi.getState();
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return; // a modifier alone is not a key press
+      const preset = activePreset();
+      const previousKey = prev && Date.now() - prev.at < SEQUENCE_MS ? prev.key : null;
+      prev = null;
+      const sc = matchShortcut(e, preset, previousKey);
       const typing = isTypingTarget(e.target);
-      if (typing && !WORKS_WHILE_TYPING.includes(sc.id) && sc.id !== 'back') return;
+      const blocked = !!document.querySelector('.modal') || !!useMenu.getState().menu;
+      if (!sc) {
+        if (!typing && !blocked && startsSequence(e, preset)) prev = { key: 'g', at: Date.now() };
+        return;
+      }
+      const ui = useUi.getState();
+      if (typing && !worksWhileTyping(sc, e)) return;
       if (document.querySelector('.modal') && sc.id !== 'back') {
         // A dialog is open: only Esc (handled by the dialog itself) matters.
         return;
@@ -70,6 +78,8 @@ export function useGlobalShortcuts(): void {
       const target = e.target as HTMLElement | null;
       const inMail = !target || target === document.body || !!target.closest('#pane-list, #pane-reading');
       if (PLAIN_KEYS.includes(sc.id) && !inMail) return;
+      // Single character keys of the Gmail style act on messages only when focus is on the list or reading pane.
+      if (isPlainKey(e) && !ANYWHERE_KEYS.includes(sc.id) && !inMail) return;
       if (sc.id === 'open' && !target?.closest('#pane-list')) return;
       if ((sc.id === 'archive' || sc.id === 'delete' || sc.id === 'flag') && target?.closest('#pane-reading button')) {
         // Enter/Space on a toolbar button is theirs; these keys are fine though.
@@ -179,6 +189,26 @@ export function useGlobalShortcuts(): void {
           return run(() => list.selectAll());
         case 'undo':
           return run(undoLast);
+        // Gmail style: j and k move through the list, x checks the row, n and p move between the cards of a conversation.
+        case 'listNext':
+        case 'listPrev':
+          return run(() => window.dispatchEvent(new CustomEvent(LIST_MOVE_EVENT, { detail: sc.id === 'listNext' ? 1 : -1 })));
+        case 'convNext':
+        case 'convPrev':
+          return run(() => window.dispatchEvent(new CustomEvent(CONV_MOVE_EVENT, { detail: sc.id === 'convNext' ? 1 : -1 })));
+        case 'selectRow':
+          return run(() => {
+            const id = list.focusId ?? list.selectedIds[list.selectedIds.length - 1] ?? null;
+            if (id === null) return;
+            // The first press turns on the check boxes and keeps a row that is already selected checked.
+            if (!list.selectMode) list.setSelectMode(true);
+            if (list.selectMode || !list.selectedIds.includes(id)) list.toggle(id);
+          });
+        case 'toList':
+          return run(() => {
+            if (ui.mode === 'narrow' && ui.readerOpen) ui.set({ readerOpen: false });
+            else focusList();
+          });
         default:
           break;
       }

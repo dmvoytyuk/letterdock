@@ -90,6 +90,13 @@ describe('settings', () => {
     expect(s.notifications).toEqual({ ...DEFAULT_SETTINGS.notifications, enabled: false });
   });
 
+  it('the shortcut style is Outlook unless the stored value is exactly "gmail"', () => {
+    expect(DEFAULT_SETTINGS.shortcutPreset).toBe('outlook');
+    expect(mergeSettings({ shortcutPreset: 'gmail' }).shortcutPreset).toBe('gmail');
+    expect(mergeSettings({ shortcutPreset: 'vim' as never }).shortcutPreset).toBe('outlook');
+    expect(mergeSettings({}).shortcutPreset).toBe('outlook');
+  });
+
   it('persists settings and the Microsoft override; effective ID falls back to built-in', () => {
     const path = join(dir, 'settings.json');
     const a = new SettingsStore(path);

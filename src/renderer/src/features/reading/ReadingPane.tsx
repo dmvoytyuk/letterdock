@@ -26,6 +26,7 @@ import { QUOTE_HIDE, QUOTE_SHOW, QUOTE_TOGGLE_ATTR, foldQuotedHtml, setQuoteOpen
 import { reportActionError, toast, toastError } from '../../store/toasts';
 import { folderLabel } from '../sidebar/Sidebar';
 import { matchShortcut, type ShortcutId } from '../../lib/shortcuts';
+import { activePreset } from '../../store/app';
 import { ConversationPane, ConversationView } from './ConversationView';
 import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 import { AddressButton, AddressLinks } from '../../components/ContactPopover';
@@ -837,7 +838,7 @@ function HtmlFrame({ html, plan, onReject }: { html: string; plan: RenderPlan; o
       // shortcuts (reply, print, close...) so they work while the body has focus.
       if (document.documentElement.dataset.window === 'message') {
         doc.addEventListener('keydown', (ev) => {
-          const sc = matchShortcut(ev);
+          const sc = matchShortcut(ev, activePreset());
           if (!sc || !FRAME_KEYS.includes(sc.id)) return;
           ev.preventDefault();
           window.dispatchEvent(

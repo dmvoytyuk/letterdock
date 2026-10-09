@@ -97,7 +97,7 @@ interface UiState {
   /** Last folders the user moved mail to, per account (newest first). */
   recentFolders: Record<AccountId, FolderId[]>;
   recentSearches: string[];
-  /** Order of the conversation list. The message list has no sort in the contract (newest first only). */
+  /** Order of the message list and of the conversation list (one global choice). */
   listSort: ListSort;
 
   // session

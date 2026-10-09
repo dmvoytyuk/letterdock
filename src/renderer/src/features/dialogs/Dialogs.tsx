@@ -7,7 +7,7 @@ import { useScheduled } from '../../store/scheduled';
 import { useRules } from '../../store/rules';
 import { asAppError, call } from '../../lib/api';
 import { toast } from '../../store/toasts';
-import { SHORTCUTS } from '../../lib/shortcuts';
+import { shortcutsFor } from '../../lib/shortcuts';
 import { folderLabel } from '../sidebar/Sidebar';
 
 const BAD_CHARS = /[\\/*%#]/;
@@ -237,10 +237,15 @@ function KeyChips({ keys }: { keys: string }) {
       {keys.split(' / ').map((alt, i) => (
         <span key={alt} className="kalt">
           {i > 0 ? <span className="kor">or</span> : null}
-          {alt.split(' to ').map((combo, j) => (
-            <span key={combo} className="kalt">
+          {alt.split(' to ').map((range, j) => (
+            <span key={range} className="kalt">
               {j > 0 ? <span className="kor">to</span> : null}
-              <Combo combo={combo} />
+              {range.split(' then ').map((combo, n) => (
+                <span key={combo} className="kalt">
+                  {n > 0 ? <span className="kor">then</span> : null}
+                  <Combo combo={combo} />
+                </span>
+              ))}
             </span>
           ))}
         </span>
@@ -250,6 +255,8 @@ function KeyChips({ keys }: { keys: string }) {
 }
 
 export function ShortcutTable() {
+  const preset = useApp((s) => (s.settings?.shortcutPreset === 'gmail' ? 'gmail' : 'outlook'));
+  const shortcuts = shortcutsFor(preset);
   const groups = ['Global', 'Message list and reading', 'Writing a message'] as const;
   return (
     <table className="keys">
@@ -267,7 +274,7 @@ export function ShortcutTable() {
               {g}
             </th>
           </tr>
-          {SHORTCUTS.filter((s) => s.group === g).map((s) => (
+          {shortcuts.filter((s) => s.group === g).map((s) => (
             <tr key={s.id}>
               <td>
                 <KeyChips keys={s.keys} />

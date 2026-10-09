@@ -16,6 +16,7 @@ import { asAppError, call } from '../../lib/api';
 import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, setLeaveHandler } from '../../lib/actions';
 import { printOpenMessage } from '../../lib/print';
 import { matchShortcut, isTypingTarget } from '../../lib/shortcuts';
+import { activePreset } from '../../store/app';
 import { useUi } from '../../store/ui';
 import appIcon from '../../../../../build/icon-small.svg';
 
@@ -176,7 +177,7 @@ export function ViewerApp({ messageId }: { messageId: number | null }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing || messageId === null) return;
-      const sc = matchShortcut(e);
+      const sc = matchShortcut(e, activePreset());
       if (!sc) return;
       if (document.querySelector('.modal') || useMenu.getState().menu) return;
       if (isTypingTarget(e.target) && sc.id !== 'back' && sc.id !== 'closeWindow') return;

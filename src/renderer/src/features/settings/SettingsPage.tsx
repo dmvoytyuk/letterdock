@@ -78,12 +78,7 @@ export function SettingsPage() {
           ) : section === 'keys' ? (
             <Advanced />
           ) : section === 'shortcuts' ? (
-            <>
-              <h1>Shortcuts</h1>
-              <p className="lead">These keys follow Outlook. They work in the main window and in message windows.</p>
-              <p className="keys-note">These shortcuts can&apos;t be changed yet.</p>
-              <ShortcutTable />
-            </>
+            <Shortcuts />
           ) : (
             <About />
           )}
@@ -603,6 +598,36 @@ function General() {
           </span>
         </div>
       )}
+    </>
+  );
+}
+
+// ---------- Shortcuts ----------
+function Shortcuts() {
+  const settings = useApp((s) => s.settings);
+  const set = useSetting();
+  if (!settings) return null;
+  const gmail = settings.shortcutPreset === 'gmail';
+  return (
+    <>
+      <h1>Shortcuts</h1>
+      <h2 id="h-keystyle">KEYBOARD SHORTCUTS</h2>
+      <div role="radiogroup" aria-labelledby="h-keystyle" aria-describedby="keystyle-help">
+        <Radio
+          name="keystyle"
+          checked={!gmail}
+          onChange={() => void set({ shortcutPreset: 'outlook' })}
+          label="Outlook style (default)"
+        />
+        <Radio name="keystyle" checked={gmail} onChange={() => void set({ shortcutPreset: 'gmail' })} label="Gmail style" />
+      </div>
+      <p className="hint rad-hint" id="keystyle-help">
+        {gmail
+          ? 'The Outlook keys keep working. Gmail style adds single keys such as J and K. They work when the focus is on the message list or the reading pane, never while you type in a field.'
+          : 'Keys like Ctrl+R and Delete, as in Outlook. They work in the main window and in message windows.'}
+      </p>
+      <p className="keys-note">These shortcuts can&apos;t be changed yet.</p>
+      <ShortcutTable />
     </>
   );
 }

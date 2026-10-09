@@ -112,6 +112,7 @@ const settingsPatch = z
     rememberComposeBounds: z.boolean(),
     suggestFromAllAccounts: z.boolean(),
     groupConversations: z.boolean(),
+    shortcutPreset: z.enum(['outlook', 'gmail']),
   })
   .partial();
 

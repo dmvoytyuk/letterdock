@@ -11,6 +11,7 @@ import { useAccountColor } from '../../lib/hooks';
 import { applyToMessages, applyToRealMessages, deleteMessages, editDraft, noteThreadRead, openCompose, openInWindow, saveAsEml } from '../../lib/actions';
 import { printMessage } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
+import { CONV_MOVE_EVENT } from '../../lib/shortcuts';
 import { fullDate, initials, senderName } from '../../lib/format';
 import { toastError } from '../../store/toasts';
 import { CardBody, MessageView, SourceDialog } from './ReadingPane';
@@ -291,17 +292,15 @@ export function ConversationView({
     }
   };
 
-  // Alt+Down / Alt+Up: next or previous card header.
-  const onKeyDown = (e: RKE<HTMLDivElement>) => {
-    if (!e.altKey || e.ctrlKey || e.shiftKey || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+  // Alt+Down / Alt+Up (Gmail style: n / p): next or previous card header. Returns false when there is nothing to move.
+  const moveCard = (dir: 1 | -1): boolean => {
     if (virtual) {
       // Over 50 messages the next card may not exist yet: scroll to it, then put the focus on its header.
-      e.preventDefault();
       const cardEl = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('.ccard[data-mid]');
       const cur = cardEl ? indexOfCard(Number(cardEl.dataset.mid)) : -1;
-      const want = e.key === 'ArrowDown' ? Math.min(shown.length - 1, cur + 1) : Math.max(0, cur < 0 ? 0 : cur - 1);
+      const want = dir === 1 ? Math.min(shown.length - 1, cur + 1) : Math.max(0, cur < 0 ? 0 : cur - 1);
       const target = shown[want];
-      if (!target) return;
+      if (!target) return true;
       virt.scrollToIndex(want, { align: 'auto' });
       let tries = 0;
       const focusIt = () => {
@@ -310,16 +309,28 @@ export function ConversationView({
         else if (++tries < 20) requestAnimationFrame(focusIt);
       };
       requestAnimationFrame(focusIt);
-      return;
+      return true;
     }
     const heads = [...(scroller.current?.querySelectorAll<HTMLElement>('.chead') ?? [])];
-    if (heads.length === 0) return;
-    e.preventDefault();
+    if (heads.length === 0) return false;
     const at = heads.findIndex((h) => h === document.activeElement || h.closest('.ccard')?.contains(document.activeElement));
-    const next = e.key === 'ArrowDown' ? Math.min(heads.length - 1, at + 1) : Math.max(0, at < 0 ? 0 : at - 1);
+    const next = dir === 1 ? Math.min(heads.length - 1, at + 1) : Math.max(0, at < 0 ? 0 : at - 1);
     heads[next]?.focus();
     heads[next]?.scrollIntoView({ block: 'nearest' });
+    return true;
   };
+  const onKeyDown = (e: RKE<HTMLDivElement>) => {
+    if (!e.altKey || e.ctrlKey || e.shiftKey || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return;
+    if (moveCard(e.key === 'ArrowDown' ? 1 : -1)) e.preventDefault();
+  };
+  // Gmail style: n and p come from useGlobalShortcuts.
+  const moveCardRef = useRef(moveCard);
+  moveCardRef.current = moveCard;
+  useEffect(() => {
+    const onMove = (e: Event) => void moveCardRef.current((e as CustomEvent<number>).detail > 0 ? 1 : -1);
+    window.addEventListener(CONV_MOVE_EVENT, onMove);
+    return () => window.removeEventListener(CONV_MOVE_EVENT, onMove);
+  }, []);
 
   const gone = load.status === 'gone';
   const replyTarget = (): number | null => {
