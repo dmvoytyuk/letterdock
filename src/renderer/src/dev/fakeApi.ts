@@ -379,7 +379,40 @@ function emit(e: AppEvent): void {
   emitLocal(e);
   channel?.postMessage(e);
 }
-channel?.addEventListener('message', (m: MessageEvent<AppEvent>) => {
+/**
+ * Changes to messages made in one fake page (a message window deleting, say), so the other page's
+ * copy of the mail follows. Without it the main window would not know the message was moved.
+ */
+interface Mutation {
+  move?: { id: number; folderId: number }[];
+  remove?: number[];
+  set?: { id: number; seen?: boolean; flagged?: boolean }[];
+}
+function mutateOthers(mu: Mutation): void {
+  channel?.postMessage({ type: 'fake:mutate', mu });
+}
+function applyMutation(mu: Mutation): void {
+  for (const x of mu.move ?? []) {
+    const m = messages.find((y) => y.id === x.id);
+    if (m) m.folderId = x.folderId;
+  }
+  for (const id of mu.remove ?? []) {
+    const at = messages.findIndex((y) => y.id === id);
+    if (at >= 0) messages.splice(at, 1);
+  }
+  for (const x of mu.set ?? []) {
+    const m = messages.find((y) => y.id === x.id);
+    if (!m) continue;
+    if (x.seen !== undefined) m.seen = x.seen;
+    if (x.flagged !== undefined) m.flagged = x.flagged;
+  }
+  recount();
+}
+channel?.addEventListener('message', (m: MessageEvent<AppEvent | { type: 'fake:mutate'; mu: Mutation }>) => {
+  if (m.data.type === 'fake:mutate') {
+    applyMutation(m.data.mu);
+    return;
+  }
   emitLocal(m.data);
   if (!isComposeWindow && !isViewerWindow && m.data.type === 'outbox:changed') armOutbox();
 });
@@ -581,8 +614,38 @@ function runSend(id: number): void {
 const delay = <T>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const err = (code: string, message: string, retryable = false) => Promise.reject({ code, message, retryable });
 
-const undoStore = new Map<string, { id: number; folderId: number }[]>();
-let undoSeq = 1;
+// Undo tokens live in localStorage, so the message window and the main window see the same ones
+// (the message window deletes, the main window shows the Undo toast and runs the Undo).
+type UndoMoves = { id: number; folderId: number }[];
+const UNDO_MS = 60_000;
+const undoStore = {
+  all(): Record<string, { moved: UndoMoves; exp: number }> {
+    const t = Date.now();
+    const cur = LS.get<Record<string, { moved: UndoMoves; exp: number }>>('undo', {});
+    return Object.fromEntries(Object.entries(cur).filter(([, v]) => v.exp > t));
+  },
+  add(moved: UndoMoves): string {
+    const token = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+    LS.set('undo', { ...this.all(), [token]: { moved, exp: Date.now() + UNDO_MS } });
+    return token;
+  },
+  take(token: string): UndoMoves | null {
+    const all = this.all();
+    const hit = all[token];
+    if (!hit) return null;
+    delete all[token];
+    LS.set('undo', all);
+    return hit.moved;
+  },
+};
+// Messages whose full text was opened (here or in the other window): Save as .eml works offline for them.
+const openedIds = {
+  has: (id: number): boolean => LS.get<number[]>('opened', []).includes(id),
+  add(id: number): void {
+    const cur = LS.get<number[]>('opened', []);
+    if (!cur.includes(id)) LS.set('opened', [...cur.slice(-199), id]);
+  },
+};
 const allowed = new Set<string>(['jane@example.com']);
 let attSeq = 1;
 
@@ -989,6 +1052,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'messages.get': {
       const m = messages.find((x) => x.id === r!.messageId);
       if (!m) return err('NOT_FOUND', 'That message is gone.');
+      openedIds.add(m.id);
       const db = demo?.bodies.get(m.id);
       const body: MessageBody = {
         id: m.id,
@@ -1027,6 +1091,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
             else m.flagged = !!a.flagged;
           }
         }
+        mutateOthers({ set: ids.map((id) => ({ id, ...(a.type === 'markRead' ? { seen: !!a.read } : { flagged: !!a.flagged }) })) });
         setTimeout(() => changed({ updated: ids, folderIds: [] }), 30);
         return delay({ succeeded: ids, failed: [] });
       }
@@ -1052,19 +1117,19 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         touched.add(dest);
       }
       let undoToken: string | undefined;
-      if (moved.length > 0) {
-        undoToken = `u${undoSeq++}`;
-        undoStore.set(undoToken, moved);
-        setTimeout(() => undoStore.delete(undoToken!), 60_000);
-      }
+      if (moved.length > 0) undoToken = undoStore.add(moved);
+      mutateOthers({
+        move: moved.map((x) => ({ id: x.id, folderId: messages.find((y) => y.id === x.id)!.folderId })),
+        remove: removed,
+      });
       setTimeout(() => changed({ updated: moved.map((x) => x.id), removed, folderIds: [...touched] }), 60);
       return delay({ succeeded: [...moved.map((x) => x.id), ...removed], failed: [], ...(removed.length > 0 ? { permanent: true } : {}), ...(undoToken ? { undoToken } : {}) }, 150);
     }
     case 'messages.undo': {
       const token = (r as { undoToken: string }).undoToken;
-      const moved = undoStore.get(token);
+      const moved = undoStore.take(token);
       if (!moved) return err('NOT_FOUND', 'Too late to undo.');
-      undoStore.delete(token);
+      mutateOthers({ move: moved });
       const touched = new Set<number>();
       for (const x of moved) {
         const m = messages.find((y) => y.id === x.id);
@@ -1465,10 +1530,13 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       return delay(undefined, 20);
     }
     case 'messages.saveEml': {
-      // Like the engine: the raw message comes from the server, so offline it fails before any dialog.
-      if (!navigator.onLine) return err('HOST_UNREACHABLE', 'You are offline. Connect to the internet to save this message.');
+      // Like the engine: a message that was opened keeps its raw source on this PC, so it saves offline.
+      // Any other message is fetched from the server, so offline it fails before any dialog.
       const m = messages.find((x) => x.id === (r as { messageId: number }).messageId);
       if (!m) return err('NOT_FOUND', 'Message not found.');
+      if (!navigator.onLine && !openedIds.has(m.id)) {
+        return err('HOST_UNREACHABLE', 'You are offline. Connect to the internet to save this message.');
+      }
       const path = `C:\\Users\\you\\Downloads\\${emlFileName(m.subject)}`;
       (window as unknown as { __lastEml?: unknown }).__lastEml = { messageId: m.id, path };
       return delay({ saved: true, path }, 300);
