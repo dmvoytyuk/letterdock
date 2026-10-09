@@ -39,7 +39,7 @@ export default tseslint.config(
     rules: { ...reactHooks.configs.recommended.rules },
   },
   {
-    files: ['site/**/*.js', 'scripts/make-site-screenshots.mjs'],
+    files: ['site/**/*.js', 'scripts/make-site-screenshots.mjs', 'scripts/test-site-viewer.mjs'],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
   },
   // Import rules from ARCHITECTURE.md section 3.
