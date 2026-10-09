@@ -24,6 +24,7 @@ import type {
   SendReq,
   UpdateStatus,
 } from '../../../shared/ipc';
+import { emlFileName } from '../../../shared/fileName';
 import { buildDemo } from './demoData';
 
 const now = Date.now();
@@ -337,6 +338,7 @@ const contactBook: FakeContact[] = [
   ...accounts.map((a) => ({ address: a.email, name: 'Alex Rivera', sentCount: 0, lastUsed: now, isOwn: true })),
 ];
 if (demo) contactBook.splice(0, contactBook.length, ...demo.contacts);
+const forgottenAddresses = new Set<string>();
 const fold = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 type FakeSuggestion = FakeContact & { otherAccountId?: string };
 function suggest(query: string, limit: number, accountId?: string): FakeSuggestion[] {
@@ -367,6 +369,10 @@ const listeners = new Set<(e: AppEvent) => void>();
 const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('letterdock-fake') : null;
 function emitLocal(e: AppEvent): void {
   for (const l of listeners) l(e);
+}
+/** Only the other windows get it (the sending window does not). */
+function emitToOtherWindows(e: AppEvent): void {
+  channel?.postMessage(e);
 }
 function emit(e: AppEvent): void {
   emitLocal(e);
@@ -801,6 +807,20 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         unifiedInboxUnread: folders.filter((f) => f.role === 'inbox').reduce((n, f) => n + f.unreadCount, 0),
         perFolder: folders.map((f) => ({ folderId: f.id, unread: f.unreadCount, total: f.totalCount })),
       });
+    case 'folders.count': {
+      const q = r as { folderId: number | 'allInboxes'; accountId?: string | null };
+      const ids =
+        q.folderId === 'allInboxes'
+          ? folders.filter((f) => f.role === 'inbox' && (!q.accountId || f.accountId === q.accountId)).map((f) => f.id)
+          : [q.folderId];
+      if (q.folderId !== 'allInboxes') {
+        const f = folders.find((x) => x.id === q.folderId);
+        if (!f) return err('NOT_FOUND', 'Folder not found.');
+        if (q.accountId && f.accountId !== q.accountId) return err('INVALID_INPUT', 'This folder belongs to another account.');
+      }
+      const list = messages.filter((m) => ids.includes(m.folderId) && !m.draft);
+      return delay({ total: list.length, unread: list.filter((m) => !m.seen).length }, 60);
+    }
     case 'folders.empty': {
       const f = folderOf(r!.folderId as number);
       if (f.role !== 'trash' && f.role !== 'junk') return err('INVALID_INPUT', 'Only Trash and Spam can be emptied.');
@@ -873,15 +893,33 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       });
     }
     case 'conversations.list': {
+      const sort = (r!.sort as 'date' | 'sender' | 'subject' | undefined) ?? 'date';
+      const dir = (r!.direction as 'asc' | 'desc' | undefined) ?? (sort === 'date' ? 'desc' : 'asc');
       const rows = fakeConversationRows(r!.scope as never, !!r!.unreadOnly);
-      const cursor = r!.cursor as { date: number; id: number } | null;
+      const keyOf = (x: ConversationRow): string =>
+        sort === 'sender' ? fold(x.latest.from?.name || x.latest.from?.address || '') : sort === 'subject' ? fold(x.latest.title) : '';
+      // Same order as the engine: by key (A to Z unless 'desc'), equal keys newest first.
+      rows.sort((a, b) => {
+        if (sort === 'date') {
+          const d = a.latest.date - b.latest.date || a.latest.id - b.latest.id;
+          return dir === 'asc' ? d : -d;
+        }
+        const ka = keyOf(a);
+        const kb = keyOf(b);
+        const c = ka < kb ? -1 : ka > kb ? 1 : 0;
+        if (c) return dir === 'asc' ? c : -c;
+        return b.latest.date - a.latest.date || b.latest.id - a.latest.id;
+      });
+      const cursor = r!.cursor as { date: number; id: number; key?: string } | null;
       const limit = (r!.limit as number) ?? 50;
-      const after = cursor ? rows.filter((x) => x.latest.date < cursor.date || (x.latest.date === cursor.date && x.latest.id < cursor.id)) : rows;
+      const at = cursor ? rows.findIndex((x) => x.latest.date === cursor.date && x.latest.id === cursor.id) : -1;
+      const after = cursor ? rows.slice(at + 1) : rows;
       const page = after.slice(0, limit);
       const more = after.length > limit;
+      const last = page[page.length - 1];
       return delay({
         items: page,
-        nextCursor: more ? { date: page[page.length - 1]!.latest.date, id: page[page.length - 1]!.latest.id } : null,
+        nextCursor: more && last ? { date: last.latest.date, id: last.latest.id, ...(sort !== 'date' ? { key: keyOf(last) } : {}) } : null,
         canLoadOlderFromServer: false,
         total: cursor ? null : rows.length,
       });
@@ -909,14 +947,22 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'conversations.act': {
       const inScope = scopeFilter(r!.scope as never);
       const ids: number[] = [];
+      let threadCount = 0;
       for (const t of r!.threadIds as string[]) {
         const list = messages.filter((m) => threadOfFake(m) === t && inScope(m)).sort((a, b) => a.date - b.date || a.id - b.id);
+        if (list.length === 0) continue;
+        threadCount++;
         const a = r!.action as { type: string; read?: boolean; flagged?: boolean };
         if (a.type === 'markRead') ids.push(...(a.read ? list.filter((m) => !m.seen) : list.slice(-1)).map((m) => m.id));
         else if (a.type === 'flag') ids.push(...(a.flagged ? list.slice(-1) : list.filter((m) => m.flagged)).map((m) => m.id));
         else ids.push(...list.map((m) => m.id));
       }
-      return handle('messages.apply', { messageIds: ids, action: r!.action }).then((res) => ({ ...(res as object), threadCount: (r!.threadIds as string[]).length, messageCount: ids.length }));
+      const act = r!.action as { type: string };
+      if (ids.length > 0 && act.type === 'deletePermanent' && r!.confirm !== true) {
+        return delay({ succeeded: [], failed: [], requiresConfirm: true, permanent: true, threadCount, messageCount: ids.length }, 60);
+      }
+      if (ids.length === 0) return delay({ succeeded: [], failed: [], threadCount, messageCount: 0 }, 60);
+      return handle('messages.apply', { messageIds: ids, action: r!.action, confirm: r!.confirm }).then((res) => ({ ...(res as object), threadCount, messageCount: ids.length }));
     }
     case 'messages.getHeaders':
       return delay(messages.filter((m) => (r!.messageIds as number[]).includes(m.id)));
@@ -950,6 +996,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'messages.apply': {
       const a = r!.action as { type: string; read?: boolean; flagged?: boolean; destFolderId?: number };
       const ids = r!.messageIds as number[];
+      if (a.type === 'deletePermanent' && r!.confirm !== true) {
+        return delay({ succeeded: [], failed: [], requiresConfirm: true, permanent: true }, 40);
+      }
       if (a.type === 'markRead' || a.type === 'flag') {
         for (const id of ids) {
           const m = messages.find((x) => x.id === id);
@@ -969,7 +1018,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         if (!m) continue;
         const from = m.folderId;
         const f = folderOf(from);
-        if (a.type === 'delete' && f.role === 'trash') {
+        if ((a.type === 'delete' && f.role === 'trash') || a.type === 'deletePermanent') {
           messages.splice(messages.indexOf(m), 1);
           removed.push(id);
           touched.add(from);
@@ -989,7 +1038,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         setTimeout(() => undoStore.delete(undoToken!), 60_000);
       }
       setTimeout(() => changed({ updated: moved.map((x) => x.id), removed, folderIds: [...touched] }), 60);
-      return delay({ succeeded: [...moved.map((x) => x.id), ...removed], failed: [], ...(undoToken ? { undoToken } : {}) }, 150);
+      return delay({ succeeded: [...moved.map((x) => x.id), ...removed], failed: [], ...(removed.length > 0 ? { permanent: true } : {}), ...(undoToken ? { undoToken } : {}) }, 150);
     }
     case 'messages.undo': {
       const token = (r as { undoToken: string }).undoToken;
@@ -1057,7 +1106,8 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       if (p.draftId) {
         const d = drafts()[p.draftId];
         if (!d) return err('NOT_FOUND', 'This draft is no longer available.');
-        return delay({ ...d, inReplyToMessageId: null, mode: 'new', attachments: LS.get<DraftAttachment[]>('att.' + p.draftId, []) } satisfies ComposeDraft);
+        const paused = LS.get<Record<string, number>>('paused', {})[p.draftId];
+        return delay({ ...d, inReplyToMessageId: null, mode: 'new', attachments: LS.get<DraftAttachment[]>('att.' + p.draftId, []), pausedSendAt: paused ?? null } satisfies ComposeDraft);
       }
       const draftId = `d${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
       const src = p.sourceMessageId !== undefined ? messages.find((m) => m.id === p.sourceMessageId) : undefined;
@@ -1109,6 +1159,12 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         setTimeout(() => put({ draftSync: 'saved', localOnly: false }), 2500);
       }
       return delay(undefined, 30);
+    }
+    case 'compose.clearPaused': {
+      const paused = LS.get<Record<string, number>>('paused', {});
+      delete paused[(r as { draftId: string }).draftId];
+      LS.set('paused', paused);
+      return delay(undefined, 20);
     }
     case 'compose.discard': {
       const d = drafts();
@@ -1272,6 +1328,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       const d = drafts();
       d[it.req.draftId] = it.req;
       saveDrafts(d);
+      LS.set('paused', { ...LS.get<Record<string, number>>('paused', {}), [it.req.draftId]: it.sendAt });
       emit({ type: 'scheduled:changed' });
       return delay({ draftId: it.req.draftId, sendAt: it.sendAt }, 80);
     }
@@ -1319,7 +1376,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       d[q.draftId] = q;
       saveDrafts(d);
       const list = readOutbox();
-      const id = (list.reduce((n, x) => Math.max(n, x.id), 0) || 0) + 1;
+      // Ids are never reused (like AUTOINCREMENT in the real database).
+      const id = Math.max(LS.get<number>('outboxSeq', 0), list.reduce((n, x) => Math.max(n, x.id), 0)) + 1;
+      LS.set('outboxSeq', id);
       const sendAt = Date.now() + settings.undoSendDelayMs;
       list.push({ id, accountId: q.accountId, subject: q.subject, state: 'queued', lastError: null, sendAt, attempts: 0, req: q });
       writeOutbox(list);
@@ -1384,6 +1443,19 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       window.open(`viewer.html?fake=1#msg=${(r as { messageId: number }).messageId}`, '_blank', 'popup,width=860,height=720');
       return delay(undefined, 20);
     }
+    case 'messages.saveEml': {
+      const m = messages.find((x) => x.id === (r as { messageId: number }).messageId);
+      if (!m) return err('NOT_FOUND', 'Message not found.');
+      const path = `C:\\Users\\you\\Downloads\\${emlFileName(m.subject)}`;
+      (window as unknown as { __lastEml?: unknown }).__lastEml = { messageId: m.id, path };
+      return delay({ saved: true, path }, 300);
+    }
+    case 'ui.showUndo': {
+      // Only the other windows (the main window) get the event, like main does.
+      const q = r as unknown as { label: string; undoToken: string; count?: number };
+      emitToOtherWindows({ type: 'ui:undoAvailable', label: q.label, undoToken: q.undoToken, count: q.count ?? 0 });
+      return delay({ delivered: true }, 20);
+    }
     case 'message.print': {
       (window as unknown as { __lastPrint?: unknown }).__lastPrint = r;
       return delay({ printed: true }, 400);
@@ -1396,7 +1468,27 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       const addr = (r as { address: string }).address.toLowerCase();
       const at = contactBook.findIndex((c) => c.address.toLowerCase() === addr);
       if (at >= 0) contactBook.splice(at, 1);
+      forgottenAddresses.add(addr);
       return delay(undefined, 20);
+    }
+    case 'contacts.get': {
+      const addr = (r as { address: string }).address.trim().toLowerCase();
+      const c = contactBook.find((x) => x.address.toLowerCase() === addr);
+      const isOwn = accounts.some((a) => a.email.toLowerCase() === addr);
+      return delay(
+        {
+          address: addr,
+          name: c?.name ?? null,
+          known: !!c,
+          sentCount: c?.sentCount ?? 0,
+          receivedCount: c ? 3 + c.sentCount : 0,
+          lastUsed: c?.lastUsed ?? 0,
+          accountIds: c ? [c.acc ?? accounts[0]!.id] : [],
+          isOwn,
+          forgotten: forgottenAddresses.has(addr),
+        },
+        40,
+      );
     }
     case 'app.mailtoStatus':
       return delay({ registered: true, isDefault: LS.get<boolean | null>('mailtoDefault', false) ?? undefined }, 60);
