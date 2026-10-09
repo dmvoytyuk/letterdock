@@ -11,6 +11,8 @@ import {
 } from '../../../../shared/ipc';
 import { Icon, type IconName } from '../../components/Icon';
 import { Banner, Button, Checkbox, Dialog, IconButton } from '../../components/ui';
+import { AccountSelect } from '../../components/AccountSelect';
+import { useAccountColor } from '../../lib/hooks';
 import { useApp } from '../../store/app';
 import { useRules } from '../../store/rules';
 import { useUi, type RuleEditorRequest } from '../../store/ui';
@@ -79,6 +81,7 @@ function RuleEditorDialog({ request, onClose }: { request: RuleEditorRequest; on
   const [count, setCount] = useState<{ matches: number; total: number } | null>(null);
   const nameId = useId();
   const accountSel = useId();
+  const colorOf = useAccountColor();
   const nameRef = useRef<HTMLInputElement>(null);
 
   const draftNow = (): RuleDraft => {
@@ -233,15 +236,16 @@ function RuleEditorDialog({ request, onClose }: { request: RuleEditorRequest; on
             ) : null}
           </div>
           <div className="field">
-            <label htmlFor={accountSel}>Account</label>
-            <select id={accountSel} className="inp" value={accountId ?? ''} onChange={(e) => changeAccount(e.target.value || null)}>
-              <option value="">All accounts</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName}
-                </option>
-              ))}
-            </select>
+            <label htmlFor={accountSel} id={`${accountSel}-lbl`}>Account</label>
+            <AccountSelect
+              id={accountSel}
+              labelledBy={`${accountSel}-lbl`}
+              accounts={accounts}
+              value={accountId}
+              allLabel="All accounts"
+              colorOf={colorOf}
+              onChange={changeAccount}
+            />
           </div>
 
           <div className="rsec">
