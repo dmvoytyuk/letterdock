@@ -21,3 +21,6 @@ scratch/
 
 # Internal design docs (kept local, not published)
 docs/
+
+# perf baseline: only the committed baselines are kept
+perf/current.json
