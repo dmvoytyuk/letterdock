@@ -512,7 +512,7 @@ async function runRenderer() {
 }
 
 // ---------- compare ----------
-const FLOOR = { ms: 1, MB: 3, B: 2048, '%': 2 };
+var FLOOR = { ms: 1, MB: 3, B: 2048, '%': 2 };
 function fmt(v, unit) {
   if (v === undefined || v === null) return '-';
   if (unit === 'B') return `${(v / 1024).toFixed(1)} KB`;
@@ -521,8 +521,12 @@ function fmt(v, unit) {
   if (unit === '%') return `${v.toFixed(1)} %`;
   return String(v);
 }
-const pct = (a, b) => (a === 0 ? (b === 0 ? 0 : Infinity) : ((b - a) / a) * 100);
-const sgn = (p) => (!isFinite(p) ? 'new' : `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`);
+function pct(a, b) {
+  return a === 0 ? (b === 0 ? 0 : Infinity) : ((b - a) / a) * 100;
+}
+function sgn(p) {
+  return !isFinite(p) ? 'new' : `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`;
+}
 
 function compare(base, cur) {
   const names = [...new Set([...Object.keys(base.metrics), ...Object.keys(cur.metrics)])];

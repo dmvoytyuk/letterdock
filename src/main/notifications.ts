@@ -7,6 +7,12 @@ export interface ToastSpec {
   body: string;
   silent: boolean;
   onClick: () => void;
+  /**
+   * Notification for exactly ONE message (DESIGN-SPEC 3.13.3): what the buttons act on, and the
+   * buttons to show. The shell turns this into toast XML; without it, a plain notification is shown.
+   */
+  context?: { accountId: string; messageId: number };
+  buttons?: { action: 'read' | 'archive'; label: string }[];
 }
 
 export interface NotifierDeps {
@@ -30,6 +36,7 @@ const MAX_REMEMBERED = 5000;
 
 export class Notifier {
   private buffers = new Map<string, MessageHeader[]>();
+  private canArchive = new Map<string, boolean>();
   private shown = new Set<MessageId>();
   private lastAuth = new Map<string, number>();
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
@@ -46,8 +53,9 @@ export class Notifier {
   }
 
   /** Engine event `notify:newMail`. */
-  newMail(accountId: string, messages: MessageHeader[]): void {
+  newMail(accountId: string, messages: MessageHeader[], archiveAvailable = false): void {
     if (!this.allowed(accountId) || this.d.isMainFocused()) return;
+    this.canArchive.set(accountId, archiveAvailable);
     const fresh = messages.filter((m) => !this.shown.has(m.id) && !m.seen);
     if (fresh.length === 0) return;
     for (const m of fresh) {
@@ -79,8 +87,16 @@ export class Notifier {
       });
       return;
     }
+    // Buttons (Mark as read / Archive) only on a notification for one message, if the setting is on.
+    // They show also in the "New mail only" privacy mode: they reveal nothing.
+    const withButtons = this.d.settings().notifyActions !== false;
+    const buttons = (): NonNullable<ToastSpec['buttons']> => [
+      { action: 'read', label: 'Mark as read' },
+      ...(this.canArchive.get(accountId) ? [{ action: 'archive' as const, label: 'Archive' }] : []),
+    ];
     for (const m of batch) {
       const sender = m.from?.name || m.from?.address || 'Unknown sender';
+      const extra = withButtons ? { context: { accountId, messageId: m.id }, buttons: buttons() } : {};
       this.d.show(
         prefs.showPreview
           ? {
@@ -88,10 +104,40 @@ export class Notifier {
               body: [m.subject || '(no subject)', m.snippet].filter(Boolean).join('\n').slice(0, 200),
               silent,
               onClick: () => this.d.focusMain(m.id),
+              ...extra,
             }
-          : { title: 'New mail', body: name, silent, onClick: () => this.d.focusMain(m.id) },
+          : { title: 'New mail', body: name, silent, onClick: () => this.d.focusMain(m.id), ...extra },
       );
     }
+  }
+
+  /**
+   * Engine event `snooze:returned` (DESIGN-SPEC 3.13.2): one notification for the whole batch.
+   * Honors "Show notifications", muted accounts and "Notify when snoozed mail comes back".
+   * Never has buttons.
+   */
+  snoozeReturned(accountId: string, messages: MessageHeader[]): void {
+    const s = this.d.settings();
+    if (messages.length === 0 || !this.allowed(accountId) || s.notifySnoozeReturn === false) return;
+    if (this.d.isMainFocused()) return;
+    const silent = !s.notifications.sound;
+    const m = messages[0]!;
+    if (messages.length === 1 && s.notifications.showPreview) {
+      const sender = m.from?.name || m.from?.address || 'Unknown sender';
+      this.d.show({
+        title: 'Snoozed mail is back',
+        body: `${sender}\n${m.subject || '(no subject)'}`.slice(0, 200),
+        silent,
+        onClick: () => this.d.focusMain(m.id),
+      });
+      return;
+    }
+    this.d.show({
+      title: 'Snoozed mail is back',
+      body: messages.length === 1 ? 'A message is back in your Inbox' : `${messages.length} messages are back in your Inbox`,
+      silent,
+      onClick: () => this.d.focusMain(messages.length === 1 ? m.id : undefined),
+    });
   }
 
   /** Engine event `account:authRequired`: at most one toast per account per 24 hours. */

@@ -43,6 +43,8 @@ import { ImageDiskCache } from './imageCache/store';
 import { ImageService } from './imageCache/service';
 import { createLogger, type Logger } from './logger';
 import { Notifier } from './notifications';
+import { buildToastXml } from './toast';
+import { onToastActivation } from './toastActions';
 import { MicrosoftOAuth } from './oauth/microsoft';
 import { OAuthService } from './oauth/service';
 import { APP_CSP } from '../shared/appCsp';
@@ -197,19 +199,59 @@ async function boot(): Promise<void> {
     focusMain,
     show: (t) => {
       if (!Notification.isSupported()) return;
-      const n = new Notification({
-        title: t.title,
-        body: t.body,
-        silent: t.silent,
-        icon: appIconPath(),
-      });
-      n.on('click', t.onClick);
-      n.show();
+      const plain = () => {
+        const n = new Notification({ title: t.title, body: t.body, silent: t.silent, icon: appIconPath() });
+        n.on('click', t.onClick);
+        n.show();
+      };
+      // One-message notifications get Mark as read / Archive buttons (toast XML, Windows). Pressing
+      // anything on such a toast arrives in Notification.handleActivation below. If Windows cannot
+      // show the custom toast, a plain one is shown instead.
+      if (process.platform === 'win32' && t.buttons && t.buttons.length > 0 && t.context) {
+        try {
+          const n = new Notification({
+            toastXml: buildToastXml({
+              title: t.title,
+              body: t.body,
+              silent: t.silent,
+              context: t.context,
+              buttons: t.buttons,
+            }),
+          });
+          n.on('failed', plain);
+          n.show();
+          return;
+        } catch (e) {
+          log.warn({ err: String(e) }, 'toast with buttons failed; showing a plain notification');
+        }
+      }
+      plain();
     },
   });
+  // Clicks and button presses on toasts with custom XML (also after a cold start).
+  if (process.platform === 'win32') {
+    Notification.handleActivation((details) => {
+      void onToastActivation(
+        {
+          engine: (channel, payload) => engineRef!.request(channel, payload),
+          mainVisible: () =>
+            !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized(),
+          sendToMain: (e) => {
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('event', e);
+          },
+          openMessage: (id) => focusMain(id),
+          showPlain: (title, body) => {
+            if (Notification.isSupported()) new Notification({ title, body, icon: appIconPath() }).show();
+          },
+        },
+        details,
+      );
+    });
+  }
   const onEngineEvent = (e: AppEvent) => {
     send(e);
-    if (e.type === 'notify:newMail') notifier.newMail(e.accountId, e.messages);
+    if (e.type === 'notify:newMail') notifier.newMail(e.accountId, e.messages, e.archiveAvailable === true);
+    else if (e.type === 'snooze:returned') notifier.snoozeReturned(e.accountId, e.messages);
     else if (e.type === 'account:authRequired') void notifier.authRequired(e.accountId);
     else if (e.type === 'accounts:changed') accountNames.clear();
     else if (e.type === 'counts:changed') tray.setUnread(e.unifiedInboxUnread);
