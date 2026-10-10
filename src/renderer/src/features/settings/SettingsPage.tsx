@@ -1157,6 +1157,12 @@ function About() {
           </dd>
         </dl>
       ) : null}
+      <p style={{ marginTop: 16, fontSize: 13 }}>
+        Letterdock is made by voyd.{' '}
+        <a href="https://github.com/voydapps/letterdock" target="_blank" rel="noreferrer">Source code and issues</a>
+        {' · '}
+        <a href="https://voydapps.github.io/letterdock/" target="_blank" rel="noreferrer">Website</a>
+      </p>
       <div style={{ marginTop: 16 }}>
         <Button onClick={() => void call('app.openLogs').catch((e) => reportActionError(e))}>Open log folder</Button>
       </div>

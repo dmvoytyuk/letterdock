@@ -6,6 +6,8 @@ A free, open-source email client for Windows. Add as many accounts as you like. 
 
 Website: <https://voydapps.github.io/letterdock/>
 
+Made by voyd.
+
 ## Features
 
 - Unlimited email accounts (IMAP/SMTP), all in one place

@@ -4,7 +4,7 @@
   "version": "0.5.1",
   "description": "Free, open-source Windows email client with unlimited accounts",
   "license": "MIT",
-  "homepage": "https://github.com/voydapps/letterdock#readme",
+  "homepage": "https://voydapps.github.io/letterdock/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/voydapps/letterdock.git"
