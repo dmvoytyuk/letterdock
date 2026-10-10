@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MAX_SCHEDULED, type Account, type Address, type AppError, type ComposeDraft, type DraftAttachment, type PrepareComposeReq, type SendReq } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import { AccountBadge, Banner, Button, Dialog, IconButton, MenuHost, ToastHost, openMenuAt, useMenu } from '../../components/ui';
@@ -21,6 +21,9 @@ import { toast, toastError } from '../../store/toasts';
 import { RecipientField, type RecipientKind } from './RecipientField';
 import { SendButton, type SendButtonHandle } from './SendButton';
 import { SchedulePickerDialog } from '../scheduled/SchedulePickerDialog';
+
+// The quick replies menu loads the first time it opens (DESIGN-SPEC 3.13.4).
+const QuickReplyMenu = lazy(() => import('../light/QuickReplyMenu'));
 import { whenText } from '../../lib/schedule';
 import { FormatBar, RichEditor, type RichEditorHandle, type ToolbarState } from './RichEditor';
 
@@ -131,6 +134,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
   const [confirm, setConfirm] = useState<Confirm>(null);
   const [linkDlg, setLinkDlg] = useState<{ hasSelection: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [quick, setQuick] = useState<{ x: number; y: number } | null>(null);
   // Send later (DESIGN-SPEC 3.11): the date and time dialog, how many are scheduled already, and the
   // time of a message that was being edited (the engine keeps it on the draft as `pausedSendAt`).
   const [pickOpen, setPickOpen] = useState(false);
@@ -438,6 +442,21 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
     setLinkDlg({ hasSelection: (editor.current?.selectedText().length ?? 0) > 0 });
   };
 
+  // ----- quick replies (DESIGN-SPEC 3.13.4) -----
+  const openQuick = () => {
+    editor.current?.saveSelection();
+    const r = document.querySelector('.ctool [data-quick]')?.getBoundingClientRect();
+    setQuick(r ? { x: r.left, y: r.bottom + 2 } : { x: 120, y: 90 });
+  };
+  const openQuickRef = useRef(openQuick);
+  useEffect(() => {
+    openQuickRef.current = openQuick;
+  });
+  const insertQuick = (text: string) => {
+    setQuick(null);
+    editor.current?.insertText(text);
+  };
+
   // ----- Cc / Bcc rows -----
   const revealRow = useCallback((k: 'cc' | 'bcc') => {
     (k === 'cc' ? setShowCc : setShowBcc)(true);
@@ -476,6 +495,9 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
       } else if (e.ctrlKey && !e.shiftKey && k === 'k') {
         e.preventDefault();
         askLink();
+      } else if (e.ctrlKey && e.shiftKey && k === 'q') {
+        e.preventDefault();
+        openQuickRef.current();
       } else if (e.ctrlKey && e.shiftKey && k === 'h') {
         e.preventDefault();
         void pickFiles();
@@ -485,7 +507,7 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
       } else if (e.ctrlKey && e.shiftKey && k === 'b') {
         e.preventDefault();
         revealRow('bcc');
-      } else if (e.key === 'Escape' && !document.querySelector('.modal') && !useMenu.getState().menu) {
+      } else if (e.key === 'Escape' && !document.querySelector('.modal, .qr-pop') && !useMenu.getState().menu) {
         e.preventDefault();
         void closeWindow();
       }
@@ -576,6 +598,21 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
         />
         <Button variant="subtle" icon="clip" onClick={() => void pickFiles()} title="Attach files (Ctrl+Shift+H)">
           Attach
+        </Button>
+        <Button
+          variant="subtle"
+          icon="msg-text"
+          aria-haspopup="menu"
+          aria-expanded={quick !== null}
+          data-quick=""
+          title="Quick replies (Ctrl+Shift+Q)"
+          onMouseDown={() => editor.current?.saveSelection()}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setQuick({ x: r.left, y: r.bottom + 2 });
+          }}
+        >
+          Quick replies
         </Button>
         <Button variant="subtle" icon="link" onClick={askLink} title="Insert link (Ctrl+K)">
           Insert link
@@ -810,6 +847,20 @@ function ComposeForm({ draft, request }: { draft: ComposeDraft; request: Prepare
         <div className="cdrop on-sent" role="status">
           <div>{doneText}</div>
         </div>
+      ) : null}
+      {quick ? (
+        <Suspense fallback={null}>
+          <QuickReplyMenu
+            accountId={accountId}
+            x={quick.x}
+            y={quick.y}
+            onPick={insertQuick}
+            onClose={() => {
+              setQuick(null);
+              editor.current?.focus();
+            }}
+          />
+        </Suspense>
       ) : null}
       <MenuHost />
       <ToastHost />

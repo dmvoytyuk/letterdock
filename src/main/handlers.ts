@@ -58,6 +58,8 @@ export interface HandlerDeps {
    * no main window the user can see.
    */
   showUndoInMain: (e: { label: string; undoToken: string; count: number }) => boolean;
+  /** Brings the main window to the front and shows Settings on this page. */
+  openSettingsInMain: (section: 'mail') => boolean;
 }
 
 export function createMainHandlers(d: HandlerDeps): MainHandlers {
@@ -194,6 +196,7 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
     'ui.showUndo': (r) => ({
       delivered: d.showUndoInMain({ label: r.label, undoToken: r.undoToken, count: r.count ?? 0 }),
     }),
+    'ui.openSettings': (r) => ({ delivered: d.openSettingsInMain(r.section) }),
     'compose.pickFiles': async () => {
       // The dialog belongs to whichever window asked (main or a compose window).
       const parent = BrowserWindow.getFocusedWindow() ?? d.getWindow();

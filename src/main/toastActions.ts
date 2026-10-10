@@ -45,10 +45,13 @@ export async function onToastActivation(
       messageId: a.messageId,
       ...(res.undoToken ? { undoToken: res.undoToken } : {}),
     });
-  } catch {
+  } catch (e) {
+    // The account needs a new sign-in: say exactly that (DESIGN-SPEC 3.13.3). Anything else: try again.
+    const code = (e as { code?: unknown } | null)?.code;
+    const signIn = code === 'AUTH_FAILED' || code === 'OAUTH_REAUTH_REQUIRED';
     d.showPlain(
       a.action === 'archive' ? "Couldn't archive" : "Couldn't mark as read",
-      'Open Letterdock to try again.',
+      signIn ? 'Open Letterdock to sign in.' : 'Open Letterdock to try again.',
     );
   }
 }

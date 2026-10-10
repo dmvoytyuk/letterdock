@@ -39,6 +39,11 @@ export interface RichEditorHandle {
   saveSelection: () => void;
   selectedText: () => string;
   insertLink: (url: string, text?: string) => void;
+  /**
+   * Insert plain text (line breaks kept) at the caret saved by `saveSelection`, else at the start of the
+   * message. Never replaces text and never lands inside the signature (DESIGN-SPEC 3.13.4).
+   */
+  insertText: (text: string) => void;
 }
 
 interface Props {
@@ -187,6 +192,36 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         saved.current = s && s.rangeCount > 0 && inEditor(s.anchorNode) ? s.getRangeAt(0).cloneRange() : null;
       },
       selectedText: () => saved.current?.toString() ?? '',
+      insertText: (text) => {
+        const e = el.current;
+        if (!e) return;
+        e.focus();
+        const s = document.getSelection();
+        const range = saved.current ? saved.current.cloneRange() : null;
+        let beforeSignature = false;
+        if (range) {
+          // A caret inside the signature moves to just before it. Selected text is not replaced.
+          const sig = e.querySelector<HTMLElement>(ownClassSelector('signature'));
+          range.collapse(false);
+          if (sig && sig.contains(range.endContainer)) {
+            range.setStartBefore(sig);
+            range.collapse(true);
+            beforeSignature = true;
+          }
+          s?.removeAllRanges();
+          s?.addRange(range);
+        } else {
+          const r = document.createRange();
+          r.setStart(e, 0);
+          r.collapse(true);
+          s?.removeAllRanges();
+          s?.addRange(r);
+        }
+        document.execCommand('insertText', false, beforeSignature ? `${text}
+` : text);
+        saved.current = null;
+        onChange();
+      },
       insertLink: (url, text) => {
         const e = el.current;
         if (!e) return;

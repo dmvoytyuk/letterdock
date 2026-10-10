@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { Account, AppSettings, OAuthSettings } from '../../../../shared/ipc';
 import { Icon } from '../../components/Icon';
 import {
@@ -26,6 +26,9 @@ import { useUpdates } from '../../store/updates';
 import { updateLine } from '../../lib/updateText';
 import { ShortcutTable } from '../dialogs/Dialogs';
 import { RulesPage } from '../rules/RulesPage';
+
+// Quick replies (DESIGN-SPEC 3.13.4) load when the Mail page is opened.
+const QuickRepliesSettings = lazy(() => import('../light/QuickRepliesSettings'));
 
 const NAV: [SettingsSection, string][] = [
   ['accounts', 'Accounts'],
@@ -818,6 +821,15 @@ function MailSettings() {
       <p className="hint rad-hint">
         Addresses from the account you write from come first. Addresses you know from your other accounts follow, marked with that account&apos;s letter.
       </p>
+      <h2>SNOOZE</h2>
+      <p className="hint" style={{ marginTop: 0 }}>
+        The times behind the Snooze menu. Snooze works on this PC only. The message stays in your Inbox on the server, so other apps still show it there.
+      </p>
+      <div className="snz-times">
+        <TimeSetting label="Morning" value={settings.snoozeTimes.morning} onChange={(v) => void set({ snoozeTimes: { ...settings.snoozeTimes, morning: v } })} />
+        <TimeSetting label="Evening" value={settings.snoozeTimes.evening} onChange={(v) => void set({ snoozeTimes: { ...settings.snoozeTimes, evening: v } })} />
+        <TimeSetting label="Weekend morning" value={settings.snoozeTimes.weekendMorning} onChange={(v) => void set({ snoozeTimes: { ...settings.snoozeTimes, weekendMorning: v } })} />
+      </div>
       <h2 id="h-img">REMOTE IMAGES</h2>
       <div role="radiogroup" aria-labelledby="h-img">
         <Radio name="img" checked={settings.remoteImages === 'block'} onChange={() => void set({ remoteImages: 'block' })} label="Ask me for each message (recommended)" />
@@ -825,8 +837,67 @@ function MailSettings() {
         <Radio name="img" checked={settings.remoteImages === 'allowKnownSenders'} onChange={() => void set({ remoteImages: 'allowKnownSenders' })} label="Load images from senders I allowed" />
       </div>
       <AllowedSenders active={settings.remoteImages === 'allowKnownSenders'} />
+      <PrivacySettings />
       <MailStorage />
       <ImageCache />
+      <Suspense fallback={null}>
+        <QuickRepliesSettings />
+      </Suspense>
+    </>
+  );
+}
+
+function TimeSetting({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <TextField
+      label={label}
+      type="time"
+      value={value}
+      onChange={(e) => {
+        if (/^\d{2}:\d{2}$/.test(e.target.value)) onChange(e.target.value);
+      }}
+      style={{ maxWidth: 140 }}
+    />
+  );
+}
+
+/** Settings > Mail > PRIVACY (DESIGN-SPEC 3.13.7, 3.13.1). */
+function PrivacySettings() {
+  const settings = useApp((s) => s.settings);
+  const set = useSetting();
+  const [confirm, setConfirm] = useState(false);
+  if (!settings) return null;
+  return (
+    <>
+      <h2>PRIVACY</h2>
+      <Checkbox
+        checked={settings.showTrackerNotice}
+        label="Show a note when trackers are blocked"
+        onChange={(v) => void set({ showTrackerNotice: v })}
+      />
+      <p className="hint rad-hint">
+        Tracking images are always blocked, even after you load images. This only decides whether a short note tells you.
+      </p>
+      <Button onClick={() => setConfirm(true)}>Forget my unsubscribe history</Button>
+      {confirm ? (
+        <Dialog title="Forget your unsubscribe history?" size="sm" onClose={() => setConfirm(false)} initialFocus=".foot .btn:not(.danger)">
+          <p>Letterdock will no longer remember which senders you unsubscribed from. This cannot be undone.</p>
+          <div className="foot">
+            <Button onClick={() => setConfirm(false)}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setConfirm(false);
+                call('unsubscribe.forgetHistory')
+                  .then(() => toast('Unsubscribe history cleared.'))
+                  .catch((e) => toastError(asAppError(e).message));
+              }}
+            >
+              Forget
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
     </>
   );
 }
@@ -993,6 +1064,19 @@ function Notifications() {
       <div className="indent">
         <Checkbox checked={n.showPreview} disabled={!n.enabled} label="Show the sender and subject" onChange={(v) => void set({ notifications: { ...n, showPreview: v } })} />
         <Checkbox checked={n.sound} disabled={!n.enabled} label="Play a sound" onChange={(v) => void set({ notifications: { ...n, sound: v } })} />
+        <Checkbox
+          checked={settings.notifyActions}
+          disabled={!n.enabled}
+          label="Show Mark as read and Archive buttons on notifications"
+          onChange={(v) => void set({ notifyActions: v })}
+        />
+        <p className="hint rad-hint">Only on notifications for one message.</p>
+        <Checkbox
+          checked={settings.notifySnoozeReturn}
+          disabled={!n.enabled}
+          label="Notify when snoozed mail comes back"
+          onChange={(v) => void set({ notifySnoozeReturn: v })}
+        />
       </div>
       {accounts.length > 0 ? (
         <>

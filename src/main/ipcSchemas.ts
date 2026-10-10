@@ -277,6 +277,7 @@ export const schemas: Schemas = {
   }),
   'contacts.forget': z.object({ address: str(320).min(3) }),
   'contacts.get': z.object({ address: str(320).min(3) }),
+  'ui.openSettings': z.object({ section: z.literal('mail') }),
   'ui.showUndo': z.object({
     label: str(300).min(1),
     undoToken: str(200).min(1),

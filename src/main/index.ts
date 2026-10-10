@@ -374,6 +374,11 @@ async function boot(): Promise<void> {
     onSettingsChanged: (patch) => applySettingsChange(patch),
     print: { imagesHandle: images.handle, tempDir: printTemp },
     showUndoInMain: (e) => relayUndoToMain(mainWindow, e),
+    openSettingsInMain: (section) => {
+      focusMain();
+      send({ type: 'ui:openSettings', section });
+      return true;
+    },
   });
 
   registerIpc({

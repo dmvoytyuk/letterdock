@@ -121,7 +121,26 @@ describe('toast activation', () => {
     expect(a.raw.engine).not.toHaveBeenCalled();
     const f = deps({ engine: vi.fn(async () => { throw new Error('down'); }) as never });
     await onToastActivation(f.d, { arguments: encodeActivationArgs('archive', { accountId: 'a1', messageId: 7 }) });
-    expect(f.raw.showPlain).toHaveBeenCalledWith("Couldn't archive", expect.any(String));
+    expect(f.raw.showPlain).toHaveBeenCalledWith("Couldn't archive", 'Open Letterdock to try again.');
+  });
+
+  it('an account that needs a new sign-in gets the specific "sign in" note', async () => {
+    for (const code of ['AUTH_FAILED', 'OAUTH_REAUTH_REQUIRED']) {
+      const s = deps({
+        engine: vi.fn(async () => {
+          throw Object.assign(new Error('x'), { code });
+        }) as never,
+      });
+      await onToastActivation(s.d, { arguments: encodeActivationArgs('archive', { accountId: 'a1', messageId: 7 }) });
+      expect(s.raw.showPlain).toHaveBeenCalledWith("Couldn't archive", 'Open Letterdock to sign in.');
+    }
+    const r = deps({
+      engine: vi.fn(async () => {
+        throw { code: 'AUTH_FAILED', message: 'x' };
+      }) as never,
+    });
+    await onToastActivation(r.d, { arguments: encodeActivationArgs('read', { accountId: 'a1', messageId: 7 }) });
+    expect(r.raw.showPlain).toHaveBeenCalledWith("Couldn't mark as read", 'Open Letterdock to sign in.');
   });
 });
 
