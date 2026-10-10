@@ -207,9 +207,23 @@ export class FolderRepo {
 
   /** Recompute the counts of every folder from the message table (repairs numbers that went wrong). */
   recomputeAll(): void {
+    // One pass over the messages (grouped by folder) instead of one query per folder.
     const ids = this.db.prepare('SELECT id FROM folder').all() as { id: number }[];
+    const per = new Map<number, { total: number; unread: number }>();
+    for (const r of this.db
+      .prepare(
+        `SELECT folder_id, COUNT(*) AS total, COALESCE(SUM(CASE WHEN flag_seen=0 THEN 1 ELSE 0 END),0) AS unread
+         FROM message WHERE flag_deleted=0 AND snoozed_until IS NULL GROUP BY folder_id`,
+      )
+      .all() as { folder_id: number; total: number; unread: number }[]) {
+      per.set(r.folder_id, r);
+    }
+    const upd = this.db.prepare('UPDATE folder SET total_count=?, unread_count=? WHERE id=?');
     this.db.transaction(() => {
-      for (const r of ids) this.recomputeCounts(r.id);
+      for (const { id } of ids) {
+        const c = per.get(id);
+        upd.run(c?.total ?? 0, c?.unread ?? 0, id);
+      }
     })();
   }
 

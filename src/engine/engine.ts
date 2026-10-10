@@ -28,6 +28,14 @@ import { SnoozeService } from './messages/snoozeService';
 import { PinMuteService } from './messages/pinMuteService';
 import { UnsubscribeService } from './messages/unsubscribeService';
 
+/**
+ * The stored folder counts are recomputed from the messages at start only when this marker (database
+ * version + counting rule) differs from the one stored: after an update or a migration, not on every
+ * start. Between those, every sync and every action recomputes the folders it touches.
+ */
+const COUNTS_RULE = 2; // 2: snoozed mail is not counted
+const COUNTS_KEY = 'folder_counts_marker';
+
 export interface EngineOptions {
   dataDir: string;
   send: (e: AppEvent) => void;
@@ -327,32 +335,58 @@ export function createEngine(opts: EngineOptions): Engine {
       throw new Error(`Unknown channel: ${channel}`);
     },
     start() {
-      // Stored counts may be off (older versions): recompute them from the rows once at start.
-      try {
-        folders.recomputeAll();
-        ctx.hub.touchCounts();
-      } catch (e) {
-        ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'recomputing folder counts failed');
-      }
-      sessions.startAll();
+      const phases: Record<string, number> = {};
+      const t0 = performance.now();
+      const phase = <T>(name: string, fn: () => T): T => {
+        const t = performance.now();
+        try {
+          return fn();
+        } finally {
+          phases[name] = Math.round((performance.now() - t) * 100) / 100;
+        }
+      };
+      phase('folderCounts', () => {
+        try {
+          const version = db.pragma('user_version', { simple: true });
+          const marker = `${version}:${COUNTS_RULE}`;
+          const stored = db.prepare('SELECT v FROM kv WHERE k = ?').get(COUNTS_KEY) as { v: string } | undefined;
+          if (stored?.v !== marker) {
+            folders.recomputeAll();
+            db.prepare(
+              'INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v',
+            ).run(COUNTS_KEY, marker);
+          }
+          ctx.hub.touchCounts(); // the renderer gets the stored numbers either way
+        } catch (e) {
+          ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'recomputing folder counts failed');
+        }
+      });
+      phase('sessions', () => sessions.startAll());
       // Keep downloaded mail under the size cap: once a bit after start, then every hour.
-      if (firstCleanTimer) clearTimeout(firstCleanTimer);
-      if (cacheTimer) clearInterval(cacheTimer);
-      firstCleanTimer = setTimeout(() => void cleanBodyCache(), 30_000);
-      firstCleanTimer.unref();
-      cacheTimer = setInterval(() => void cleanBodyCache(), 60 * 60_000);
-      cacheTimer.unref();
+      phase('cacheTimers', () => {
+        if (firstCleanTimer) clearTimeout(firstCleanTimer);
+        if (cacheTimer) clearInterval(cacheTimer);
+        firstCleanTimer = setTimeout(() => void cleanBodyCache(), 30_000);
+        firstCleanTimer.unref();
+        cacheTimer = setInterval(() => void cleanBodyCache(), 60 * 60_000);
+        cacheTimer.unref();
+      });
       // Messages that were on their way when the app stopped must not be re-sent by the Outbox.
-      scheduled.recoverOnStart();
-      compose.start();
-      scheduled.start();
-      pinMute.start();
-      snooze.start();
-      threadBackfill.start();
+      phase('scheduledRecover', () => scheduled.recoverOnStart());
+      phase('compose', () => compose.start());
+      phase('scheduled', () => scheduled.start());
+      phase('pinMute', () => pinMute.start());
+      phase('snooze', () => snooze.start());
+      phase('threadBackfill', () => threadBackfill.start());
       // One-time learning from the headers that are already stored (runs in small chunks).
-      void ctx.contacts.backfill().catch((e) =>
-        ctx.log.warn({ err: String(e?.message ?? e) }, 'contacts backfill failed'),
-      );
+      phase('contactsBackfill', () => {
+        ctx.contacts.warmSoon();
+        void ctx.contacts.backfill().catch((e) =>
+          ctx.log.warn({ err: String(e?.message ?? e) }, 'contacts backfill failed'),
+        );
+      });
+      phases['total'] = Math.round((performance.now() - t0) * 100) / 100;
+      ctx.log.debug({ phasesMs: phases }, 'engine start phases');
     },
     async shutdown() {
       if (firstCleanTimer) clearTimeout(firstCleanTimer);

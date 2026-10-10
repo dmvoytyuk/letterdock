@@ -76,14 +76,46 @@ function recencyScore(ageMs: number, weight: number, halfLifeDays: number): numb
 }
 
 export class ContactService {
-  private entries = new Map<string, Entry>();
-  private forgotten = new Set<string>();
+  private mem = new Map<string, Entry>();
+  private forgottenSet = new Set<string>();
+  /** The index is read from the database on first use (not at engine start: about 60 ms for 5 000 people). */
+  private loaded = false;
+  private warmTimer: ReturnType<typeof setTimeout> | null = null;
   private backfilling = false;
   private stopped = false;
   private ownCache: { key: string; set: Set<string> } | null = null;
 
-  constructor(private readonly ctx: EngineContext) {
+  constructor(private readonly ctx: EngineContext) {}
+
+  private get entries(): Map<string, Entry> {
+    this.ensureLoaded();
+    return this.mem;
+  }
+
+  private get forgotten(): Set<string> {
+    this.ensureLoaded();
+    return this.forgottenSet;
+  }
+
+  private ensureLoaded(): void {
+    if (this.loaded) return;
+    this.loaded = true;
     this.load();
+  }
+
+  /** Read the index a moment after start, so the first suggestion or sync does not pay for it. */
+  warmSoon(delayMs = 1500): void {
+    if (this.loaded || this.warmTimer) return;
+    this.warmTimer = setTimeout(() => {
+      this.warmTimer = null;
+      if (this.stopped) return;
+      try {
+        this.ensureLoaded();
+      } catch (e) {
+        this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'contacts index load failed');
+      }
+    }, delayMs);
+    this.warmTimer.unref?.();
   }
 
   // ---------- loading ----------
@@ -91,7 +123,7 @@ export class ContactService {
   private load(): void {
     const db = this.ctx.db;
     for (const r of db.prepare('SELECT address FROM contact_forgotten').all() as { address: string }[]) {
-      this.forgotten.add(r.address);
+      this.forgottenSet.add(r.address);
     }
     const rows = db
       .prepare(
@@ -525,7 +557,8 @@ export class ContactService {
     try {
       // Start clean so a re-run (after a version bump) does not count twice.
       this.ctx.db.exec('DELETE FROM contact; DELETE FROM contact_sent_mid;');
-      this.entries.clear();
+      this.ensureLoaded(); // the "forgotten" list must be there; the counters are cleared below
+      this.mem.clear();
       let cursor = 0;
       for (;;) {
         if (this.stopped) return;
@@ -545,6 +578,8 @@ export class ContactService {
 
   stop(): void {
     this.stopped = true;
+    if (this.warmTimer) clearTimeout(this.warmTimer);
+    this.warmTimer = null;
   }
 }
 

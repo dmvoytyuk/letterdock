@@ -88,8 +88,12 @@ export class MessageService {
     return row;
   }
 
-  private buildBody(row: MessageRow, truncated = false): MessageBody {
-    const body = this.ctx.messages.getBody(row.id);
+  private buildBody(
+    row: MessageRow,
+    truncated = false,
+    known?: { text: string | null; html: string | null } | null,
+  ): MessageBody {
+    const body = known ?? this.ctx.messages.getBody(row.id);
     const extra = this.ctx.messages.extraHeaders(row.id)!;
     return {
       id: row.id,
@@ -109,9 +113,10 @@ export class MessageService {
 
   get(id: MessageId): Promise<MessageBody> {
     const row = this.requireRow(id);
-    if (row.body_state === 'cached' && this.ctx.messages.getBody(id)) {
+    const cached = row.body_state === 'cached' ? this.ctx.messages.getBody(id) : null;
+    if (cached) {
       this.ctx.messages.touchBody(id, this.ctx.now()); // "last opened" for the cache cleanup
-      return Promise.resolve(this.buildBody(row));
+      return Promise.resolve(this.buildBody(row, false, cached));
     }
     const running = this.inflight.get(id);
     if (running) return running;
