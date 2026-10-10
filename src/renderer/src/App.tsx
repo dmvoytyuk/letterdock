@@ -1,8 +1,9 @@
-import { Component, useEffect, type ErrorInfo, type ReactNode } from 'react';
+import { Component, Suspense, lazy, useEffect, type ErrorInfo, type ReactNode } from 'react';
 import { TitleBar } from './features/shell/TitleBar';
 import { MailPanes } from './features/shell/AppShell';
 import { WelcomeScreen } from './features/shell/Welcome';
-import { SettingsPage } from './features/settings/SettingsPage';
+// Settings is a big page that most sessions never open: it loads the first time it is shown.
+const SettingsPage = lazy(() => import('./features/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })));
 import { AddAccountDialog } from './features/account/AddAccountDialog';
 import { CheatsheetDialog, FolderDialogHost, RemoveAccountDialogHost } from './features/dialogs/Dialogs';
 import { MailDialogsHost } from './features/dialogs/MailDialogs';
@@ -78,7 +79,12 @@ export function App() {
         </Banner>
       </div>
     );
-  else if (page === 'settings') body = <SettingsPage />;
+  else if (page === 'settings')
+    body = (
+      <Suspense fallback={<div className="wel" aria-busy="true"><i className="spin big" /></div>}>
+        <SettingsPage />
+      </Suspense>
+    );
   else if (accountCount === 0) body = <WelcomeScreen />;
   else body = <MailPanes />;
 
