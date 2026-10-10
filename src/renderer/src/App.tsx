@@ -9,6 +9,7 @@ import { MailDialogsHost } from './features/dialogs/MailDialogs';
 import { ScheduledDialogsHost } from './features/scheduled/ScheduledPane';
 import { RuleEditorHost } from './features/rules/RuleEditorDialog';
 import { RunRuleHost } from './features/rules/RunRuleDialog';
+import { LightHosts } from './features/light/LightHosts';
 import { useGlobalShortcuts } from './features/shell/useGlobalShortcuts';
 import { Banner, Button, MenuHost, ToastHost } from './components/ui';
 import { ContactPopoverHost } from './components/ContactPopover';
@@ -96,6 +97,7 @@ export function App() {
         <ScheduledDialogsHost />
         <RuleEditorHost />
         <RunRuleHost />
+        <LightHosts />
         <MenuHost />
         <ContactPopoverHost />
         <ToastHost />

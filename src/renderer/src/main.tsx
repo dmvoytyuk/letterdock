@@ -6,6 +6,7 @@ import './styles/mail-actions.css';
 import './styles/conversations.css';
 import './styles/scheduled.css';
 import './styles/rules.css';
+import './styles/light.css';
 
 async function start(): Promise<void> {
   // Dev only: ?fake=1 in a plain browser uses a fake backend (tree-shaken from production builds).

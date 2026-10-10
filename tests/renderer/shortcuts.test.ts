@@ -161,7 +161,7 @@ describe('the table shows the active set', () => {
     ]) {
       expect(ids.has(id as never), id).toBe(true);
     }
-    expect(SHORTCUTS.every((s) => s.keys.length > 0 && s.match.length > 0)).toBe(true);
+    expect(SHORTCUTS.every((s) => s.keys.length > 0 && (s.match.length > 0 || s.external === true))).toBe(true);
   });
 });
 

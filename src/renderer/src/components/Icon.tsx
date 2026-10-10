@@ -72,6 +72,16 @@ const P = {
   rules: '<path d="M3 6h8M3 12h5M3 18h8"/><path d="M17.500 3.500l1.100 3 3 1.100-3 1.100-1.100 3-1.100-3-3-1.100 3-1.100z"/><path d="M17.500 14.500l.8 2.200 2.200.8-2.200.8-.8 2.200-.8-2.200-2.200-.8 2.200-.8z"/>',
   /** Stack of conversation cards. */
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  /** Alarm clock: snoozed mail. */
+  alarm: '<circle cx="12" cy="13" r="7.500"/><path d="M12 9.500V13l2.500 1.500M5 3.500 2.500 6M19 3.500 21.500 6"/>',
+  /** Pushpin: pinned to the top of a folder. */
+  pin: '<path d="M9 4h6l-1 5 3 3v1.500H7V12l3-3z"/><path d="M12 13.500V20"/>',
+  /** Shield: tracking was blocked. */
+  shield: '<path d="M12 3 4.500 6v5.500c0 4.500 3.100 7.800 7.500 9.500 4.400-1.700 7.500-5 7.500-9.500V6z"/>',
+  /** Speech bubble with lines: quick replies. */
+  'msg-text': '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12.500h5"/>',
+  /** Magnifier with a keyboard key look: the command box. */
+  command: '<path d="M9 9V6.500A2.500 2.500 0 1 0 6.500 9H9zm0 0h6m-6 0v6m6-6V6.500A2.500 2.500 0 1 1 17.500 9H15zm0 0v6m0 0h-6m6 0h2.500a2.500 2.500 0 1 1-2.500 2.500V15zm-6 0v2.500A2.500 2.500 0 1 1 6.500 15H9z"/>',
 } as const;
 
 export type IconName = keyof typeof P;

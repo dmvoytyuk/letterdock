@@ -482,6 +482,10 @@ export type MenuEntry =
       disabled?: boolean;
       /** A choice out of a group (sort order, filter): shows a check mark and says so to screen readers. */
       checked?: boolean;
+      /** Tooltip, for example why an item is off. */
+      title?: string;
+      /** A submenu (opens on hover, Enter or Right arrow). `onSelect` is not used then. */
+      children?: MenuEntry[];
       onSelect: () => void;
     }
   /** A label for the group below it. Not selectable. */
@@ -522,6 +526,16 @@ export function MenuHost() {
   const ref = useRef<HTMLDivElement>(null);
   const [placed, setPlaced] = useState<{ for: unknown; left: number; top: number } | null>(null);
   const pos = placed && placed.for === menu ? placed : null;
+  // Which item has its submenu open, and whether that submenu opens to the left (no room on the right).
+  const [subRaw, setSub] = useState<(SubPos & { for: unknown }) | null>(null);
+  const sub = subRaw && subRaw.for === menu ? subRaw : null;
+  const openSub = (index: number, el: HTMLElement, focusFirst: boolean, count: number) => {
+    const r = el.getBoundingClientRect();
+    const left = r.right + 260 > window.innerWidth;
+    const y = Math.max(8, Math.min(r.top - 6, window.innerHeight - count * 32 - 20));
+    setSub({ for: menu, index, x: left ? r.left - 252 : r.right - 4, y });
+    if (focusFirst) setTimeout(() => el.parentElement?.querySelector<HTMLElement>('.menu.sub .mi:not([disabled])')?.focus(), 0);
+  };
 
   useLayoutEffect(() => {
     if (!menu || !ref.current) return;
@@ -564,9 +578,24 @@ export function MenuHost() {
   };
 
   const onKey = (e: ReactKeyboardEvent) => {
-    const items = [...(ref.current?.querySelectorAll<HTMLElement>('.mi:not([disabled])') ?? [])];
-    const i = items.indexOf(document.activeElement as HTMLElement);
-    if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+    const active = document.activeElement as HTMLElement | null;
+    const inSub = !!active?.closest('.menu.sub');
+    const scope = inSub ? active!.closest('.menu.sub')! : ref.current;
+    const items = [
+      ...(scope?.querySelectorAll<HTMLElement>(inSub ? ':scope > .mi:not([disabled])' : ':scope > .mi:not([disabled]), :scope > .msubwrap > .mi:not([disabled])') ?? []),
+    ];
+    const i = items.indexOf(active as HTMLElement);
+    if (e.key === 'ArrowRight' && active?.dataset.sub) {
+      e.preventDefault();
+      e.stopPropagation();
+      openSub(Number(active.dataset.sub), active, true, Number(active.dataset.count));
+    } else if ((e.key === 'Escape' || e.key === 'ArrowLeft') && inSub) {
+      e.preventDefault();
+      e.stopPropagation();
+      const parent = active!.closest('.msubwrap')?.querySelector<HTMLElement>(':scope > .mi');
+      setSub(null);
+      parent?.focus();
+    } else if (e.key === 'Escape' || e.key === 'ArrowLeft') {
       e.preventDefault();
       e.stopPropagation();
       closeAndReturn();
@@ -612,31 +641,113 @@ export function MenuHost() {
             {it.heading}
           </div>
         ) : (
-          <button
+          <MenuItem
             key={i}
-            type="button"
-            role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
-            aria-checked={it.checked}
-            className={`mi ${it.danger ? 'danger' : ''}`}
-            disabled={it.disabled}
-            onClick={() => {
+            item={it}
+            index={i}
+            subOpen={sub?.index === i ? sub : null}
+            onOpenSub={openSub}
+            onCloseSub={() => setSub(null)}
+            onChoose={(entry) => {
               closeAndReturn();
-              it.onSelect();
+              entry.onSelect();
             }}
-          >
-            {it.checked !== undefined ? (
-              it.checked ? <Icon name="check" /> : <span className="mi-gap" aria-hidden="true" />
-            ) : it.icon ? (
-              <Icon name={it.icon} />
-            ) : (
-              <span className="mi-gap" aria-hidden="true" />
-            )}
-            <span className="ml">{it.label}</span>
-            {it.hint ? <span className="a">{it.hint}</span> : null}
-          </button>
+          />
         ),
       )}
     </div>
+  );
+}
+
+
+type ActionEntry = Extract<MenuEntry, { label: string }>;
+interface SubPos {
+  index: number;
+  x: number;
+  y: number;
+}
+
+function MenuItem({
+  item: it,
+  index,
+  subOpen,
+  onOpenSub,
+  onCloseSub,
+  onChoose,
+}: {
+  item: ActionEntry;
+  index: number;
+  subOpen: SubPos | null;
+  onOpenSub: (index: number, el: HTMLElement, focusFirst: boolean, count: number) => void;
+  onCloseSub: () => void;
+  onChoose: (e: ActionEntry) => void;
+}) {
+  const icon =
+    it.checked !== undefined ? (
+      it.checked ? <Icon name="check" /> : <span className="mi-gap" aria-hidden="true" />
+    ) : it.icon ? (
+      <Icon name={it.icon} />
+    ) : (
+      <span className="mi-gap" aria-hidden="true" />
+    );
+  if (it.children) {
+    return (
+      <div className="msubwrap" onMouseLeave={onCloseSub}>
+        <button
+          type="button"
+          role="menuitem"
+          aria-haspopup="menu"
+          aria-expanded={!!subOpen}
+          data-sub={index}
+          data-count={it.children.length}
+          className="mi"
+          disabled={it.disabled}
+          title={it.title}
+          onMouseEnter={(e) => onOpenSub(index, e.currentTarget, false, it.children!.length)}
+          onClick={(e) => onOpenSub(index, e.currentTarget, true, it.children!.length)}
+        >
+          {icon}
+          <span className="ml">{it.label}</span>
+          <span className="a" aria-hidden="true">
+            <Icon name="chev-r" />
+          </span>
+        </button>
+        {subOpen ? (
+          <div className="menu sub" role="menu" aria-label={it.label} style={{ left: subOpen.x, top: subOpen.y }}>
+            {it.children.map((c, j) =>
+              c === 'sep' ? (
+                <div key={j} className="msep" role="separator" />
+              ) : 'heading' in c ? (
+                <div key={j} className="mhead" role="presentation">
+                  {c.heading}
+                </div>
+              ) : (
+                <button key={j} type="button" role="menuitem" className={`mi ${c.danger ? 'danger' : ''}`} disabled={c.disabled} title={c.title} onClick={() => onChoose(c)}>
+                  {c.icon ? <Icon name={c.icon} /> : <span className="mi-gap" aria-hidden="true" />}
+                  <span className="ml">{c.label}</span>
+                  {c.hint ? <span className="a">{c.hint}</span> : null}
+                </button>
+              ),
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
+      aria-checked={it.checked}
+      className={`mi ${it.danger ? 'danger' : ''}`}
+      disabled={it.disabled}
+      title={it.title}
+      onClick={() => onChoose(it)}
+    >
+      {icon}
+      <span className="ml">{it.label}</span>
+      {it.hint ? <span className="a">{it.hint}</span> : null}
+    </button>
   );
 }
 

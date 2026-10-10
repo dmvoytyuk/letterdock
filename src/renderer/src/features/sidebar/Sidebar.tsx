@@ -13,6 +13,7 @@ import { markAllRead, moveMessages, newMessage } from '../../lib/actions';
 import { getDrag } from '../../lib/dnd';
 import { useOutbox } from '../../store/outbox';
 import { useScheduled } from '../../store/scheduled';
+import { useSnooze } from '../../store/snooze';
 import { openRunRules } from '../rules/ruleActions';
 
 const ROLE_ORDER: FolderRole[] = ['inbox', 'drafts', 'sent', 'archive', 'all', 'junk', 'trash'];
@@ -249,6 +250,7 @@ function Rail({
   const [active, setActive] = useState('new');
   const outboxItems = useOutbox((s) => s.items);
   const scheduledCount = useScheduled((s) => s.count);
+  const snoozeCount = useSnooze((s) => s.count);
 
   const onKey = (e: RKE<HTMLElement>) => {
     const t = e.target as HTMLElement;
@@ -330,6 +332,7 @@ function Rail({
             counts={counts}
             outbox={outboxItems.filter((i) => i.accountId === a.id).length}
             scheduled={scheduledCount?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0}
+            snoozed={snoozeCount?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0}
             roving={roving(`acct-${a.id}`)}
           />
         ))}
@@ -355,6 +358,7 @@ function RailAccount({
   counts,
   outbox,
   scheduled,
+  snoozed,
   roving,
 }: {
   account: Account;
@@ -363,6 +367,7 @@ function RailAccount({
   counts: ReturnType<typeof useApp.getState>['counts'];
   outbox: number;
   scheduled: number;
+  snoozed: number;
   roving: RovingProps;
 }) {
   const view = useUi((s) => s.view);
@@ -374,7 +379,7 @@ function RailAccount({
     (view.kind === 'account' && view.accountId === a.id) ||
     (view.kind === 'folder' && folders.find((f) => f.id === view.folderId)?.accountId === a.id);
   const state = kind === 'idle' ? '' : syncText(kind, status);
-  const label = [a.displayName, unread ? `${unread} unread` : '', state, outbox ? `${outbox} in Outbox` : '', scheduled ? `${scheduled} scheduled` : '']
+  const label = [a.displayName, unread ? `${unread} unread` : '', state, outbox ? `${outbox} in Outbox` : '', scheduled ? `${scheduled} scheduled` : '', snoozed ? `${snoozed} snoozed` : '']
     .filter(Boolean)
     .join(', ');
   const open = () =>
@@ -393,6 +398,7 @@ function RailAccount({
     });
     if (outbox > 0) items.push({ label: `Outbox (${outbox})`, icon: 'send', onSelect: () => useUi.getState().setView({ kind: 'outbox' }) });
     if (scheduled > 0) items.push({ label: `Scheduled (${scheduled})`, icon: 'clock', onSelect: () => useUi.getState().setView({ kind: 'scheduled', accountId: a.id }) });
+    if (snoozed > 0) items.push({ label: `Snoozed (${snoozed})`, icon: 'alarm', onSelect: () => useUi.getState().setView({ kind: 'snoozed', accountId: a.id }) });
     if (items.length) openMenuAt(el, items);
   };
   return (
@@ -461,6 +467,7 @@ function AccountBlock({
   const outboxFailed = useOutbox((s) => s.items.some((i) => i.accountId === a.id && i.state === 'failed'));
   const scheduledTotal = useScheduled((s) => s.count?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0);
   const scheduledHeld = useScheduled((s) => s.count?.perAccount.find((p) => p.accountId === a.id)?.held ?? 0);
+  const snoozedTotal = useSnooze((s) => s.count?.perAccount.find((p) => p.accountId === a.id)?.total ?? 0);
 
   const mine = useMemo(() => folders.filter((f) => f.accountId === a.id), [folders, a.id]);
   const { main, more } = useMemo(() => orderFolders(mine), [mine]);
@@ -763,6 +770,29 @@ function AccountBlock({
               <Icon name="clock" />
               <span className="nm">Scheduled</span>
               <span className="cnt tot" aria-hidden="true">{scheduledTotal}</span>
+            </div>
+          ) : null}
+          {snoozedTotal > 0 ? (
+            <div
+              role="treeitem"
+              aria-level={2}
+              aria-selected={view.kind === 'snoozed' && view.accountId === a.id}
+              aria-label={`Snoozed, ${snoozedTotal} ${snoozedTotal === 1 ? 'message' : 'messages'}`}
+              tabIndex={0}
+              data-nav
+              className={`srow f inset-focus ${view.kind === 'snoozed' && view.accountId === a.id ? 'sel' : ''}`}
+              style={{ paddingLeft: 36 }}
+              onClick={() => useUi.getState().setView({ kind: 'snoozed', accountId: a.id })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  useUi.getState().setView({ kind: 'snoozed', accountId: a.id });
+                }
+              }}
+            >
+              <Icon name="alarm" />
+              <span className="nm">Snoozed</span>
+              <span className="cnt tot" aria-hidden="true">{snoozedTotal}</span>
             </div>
           ) : null}
           {more.length > 0 ? (

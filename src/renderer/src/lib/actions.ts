@@ -104,7 +104,7 @@ function describe(action: MessageAction, msgs: MessageHeader[], n: number, perma
 }
 
 /** The message to select after the given ones leave the list: the next one, else the one before. */
-function nextToSelect(ids: MessageId[]): MessageId | null {
+export function nextToSelect(ids: MessageId[]): MessageId | null {
   const { items, selectedIds } = useList.getState();
   if (selectedIds.length !== 1 || !ids.includes(selectedIds[0]!)) return null;
   const gone = new Set(ids);

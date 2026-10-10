@@ -30,6 +30,10 @@ import {
 import { call } from '../../lib/api';
 import { LIST_MOVE_EVENT } from '../../lib/shortcuts';
 import { endDrag, startDrag } from '../../lib/dnd';
+import { snoozeGroup } from '../../lib/snooze';
+import { inText, rowWhenText, whenText } from '../../lib/schedule';
+import { allMuted, allPinned, canMute, canSnoozeRole, openSnoozeMenu, setMuted, setPinned, snoozeMenuEntries, unsnoozeMessages } from '../../lib/light';
+import { canPinHere } from '../../lib/pinRules';
 import { groupLabel, isValidEmail, listDate, fullDate, senderName } from '../../lib/format';
 import { Highlight, searchTerms } from '../../lib/search';
 import { reportActionError, toastError } from '../../store/toasts';
@@ -40,7 +44,7 @@ import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 import { ConversationParticipants, participantText } from './ConversationBits';
 
 type Flat =
-  | { type: 'header'; key: string; label: string; count: number; collapsed: boolean }
+  | { type: 'header'; key: string; label: string; count: number; collapsed: boolean; pinned?: boolean }
   | { type: 'row'; key: string; msg: ListItem; index: number; label: string };
 
 export function viewTitle(view: View, accounts: Account[], folders: Folder[]): string {
@@ -67,6 +71,11 @@ export function viewTitle(view: View, accounts: Account[], folders: Folder[]): s
       const a = accounts.find((x) => x.id === view.accountId);
       return `${a?.displayName ?? 'Account'} / Scheduled`;
     }
+    case 'snoozed': {
+      if (view.accountId === null) return 'Snoozed · all accounts';
+      const a = accounts.find((x) => x.id === view.accountId);
+      return `${a?.displayName ?? 'Account'} / Snoozed`;
+    }
     case 'search':
       return `Results for "${view.query}"`;
   }
@@ -82,6 +91,7 @@ export function MessageList({ className }: { className?: string }) {
   const epoch = useApp((s) => s.epoch);
   const loaded = useApp((s) => s.loaded);
   const items = useList((s) => s.items);
+  const pinnedCount = useList((s) => s.pinnedCount);
   const loading = useList((s) => s.loading);
   const refreshing = useList((s) => s.refreshing);
   const loadingMore = useList((s) => s.loadingMore);
@@ -127,22 +137,30 @@ export function MessageList({ className }: { className?: string }) {
   const flat = useMemo<Flat[]>(() => {
     const out: Flat[] = [];
     const now = Date.now();
-    if ((search && searchSort === 'rank') || (!search && listSort.sort !== 'date')) {
+    const snoozedView = view.kind === 'snoozed';
+    // The "Pinned" group comes first and cannot be collapsed (DESIGN-SPEC 3.13.6).
+    const pc = snoozedView || search ? 0 : pinnedCount;
+    if (pc > 0) {
+      out.push({ type: 'header', key: 'h:pinned', label: 'Pinned', count: pc, collapsed: false, pinned: true });
+      items.slice(0, pc).forEach((m, index) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index, label: '' }));
+    }
+    const rest = pc > 0 ? items.slice(pc) : items;
+    if (!snoozedView && ((search && searchSort === 'rank') || (!search && listSort.sort !== 'date'))) {
       // Best-match order, or sorted by sender or subject: no date groups (DESIGN-SPEC 3.5).
-      items.forEach((m, index) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index, label: '' }));
+      rest.forEach((m, i) => out.push({ type: 'row', key: `m:${m.id}`, msg: m, index: pc + i, label: '' }));
       return out;
     }
     const groups = new Map<string, ListItem[]>();
     const order: string[] = [];
-    items.forEach((m) => {
-      const label = groupLabel(m.date, now);
+    rest.forEach((m) => {
+      const label = snoozedView ? snoozeGroup(m.snoozedUntil ?? now, now) : groupLabel(m.date, now);
       if (!groups.has(label)) {
         groups.set(label, []);
         order.push(label);
       }
       groups.get(label)!.push(m);
     });
-    let index = 0;
+    let index = pc;
     for (const label of order) {
       const list = groups.get(label)!;
       const isCollapsed = !!collapsed[label];
@@ -153,7 +171,7 @@ export function MessageList({ className }: { className?: string }) {
       }
     }
     return out;
-  }, [items, collapsed, search, searchSort, listSort.sort]);
+  }, [items, pinnedCount, view.kind, collapsed, search, searchSort, listSort.sort]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -451,7 +469,16 @@ export function MessageList({ className }: { className?: string }) {
                   className="vrow"
                   style={{ height: v.size, transform: `translateY(${v.start}px)` }}
                 >
-                  {f.type === 'header' ? (
+                  {f.type === 'header' && f.pinned ? (
+                    <div role="group" aria-label={`Pinned, ${f.count} ${f.count === 1 ? 'message' : 'messages'}`}>
+                      <div className="ghead pinned-head">
+                        <span className="pin-ic" aria-hidden="true">
+                          <Icon name="pin" />
+                        </span>
+                        Pinned
+                      </div>
+                    </div>
+                  ) : f.type === 'header' ? (
                     <div role="group" aria-label={`${f.label}, ${f.count} messages`}>
                       <button
                         type="button"
@@ -478,6 +505,7 @@ export function MessageList({ className }: { className?: string }) {
                       showBadge={showBadge}
                       density={density}
                       terms={terms}
+                      snoozedView={view.kind === 'snoozed'}
                       onClick={onRowClick}
                       onMenu={onRowMenu}
                       onOpen={onRowOpen}
@@ -713,6 +741,14 @@ function ListEmpty({
       );
     case 'flagged':
       return <EmptyState icon="flag" title="No flagged messages" text="Flag a message to find it quickly." />;
+    case 'snoozed':
+      return (
+        <EmptyState
+          icon="alarm"
+          title="No snoozed messages"
+          text="Snooze a message to hide it until you need it. It stays in your Inbox on the server."
+        />
+      );
     case 'account':
       return <EmptyState icon="mail" title="You're all caught up" text="No messages in Inbox." />;
     case 'folder': {
@@ -809,6 +845,7 @@ interface RowProps {
   showBadge: boolean;
   density: Density;
   terms: string[];
+  snoozedView: boolean;
   onClick: (e: RME, m: ListItem) => void;
   onMenu: (x: number, y: number, m: ListItem) => void;
   onOpen: (m: ListItem) => void;
@@ -826,6 +863,7 @@ const MessageRow = memo(function MessageRow({
   showBadge,
   density,
   terms,
+  snoozedView,
   onClick,
   onMenu,
   onOpen,
@@ -844,6 +882,9 @@ const MessageRow = memo(function MessageRow({
       : senderName(m.from);
   const date = listDate(m.date);
   const label = [
+    m.snoozeReturnedAt ? 'Snoozed, back from snooze' : '',
+    m.pinned ? 'Pinned' : '',
+    m.muted ? 'Muted conversation' : '',
     m.seen ? 'Read' : 'Unread',
     m.flagged ? 'Flagged' : '',
     m.hasAttachments ? 'Has attachment' : '',
@@ -851,7 +892,7 @@ const MessageRow = memo(function MessageRow({
     .filter(Boolean)
     .join(', ');
   const aria = conv
-    ? `${m.seen ? 'Read' : 'Unread'}, ${m.flagged ? 'Flagged, ' : ''}${m.hasAttachments ? 'Has attachment, ' : ''}conversation with ${who}, ${conv.count} messages${conv.unreadCount > 0 ? `, ${conv.unreadCount} unread` : ''}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${conv.latest.fromMe ? 'You: ' : ''}${m.snippet}`
+    ? `${m.snoozeReturnedAt ? 'Snoozed, back from snooze, ' : ''}${m.pinned ? 'Pinned, ' : ''}${m.muted ? 'Muted conversation, ' : ''}${m.seen ? 'Read' : 'Unread'}, ${m.flagged ? 'Flagged, ' : ''}${m.hasAttachments ? 'Has attachment, ' : ''}conversation with ${who}, ${conv.count} messages${conv.unreadCount > 0 ? `, ${conv.unreadCount} unread` : ''}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${conv.latest.fromMe ? 'You: ' : ''}${m.snippet}`
     : `${label}, from ${who}, ${m.subject || '(no subject)'}, ${date}${account ? `, account ${account.displayName}` : ''}. ${m.snippet}`;
   const youPrefix = conv?.latest.fromMe ? 'You: ' : '';
   const scopeWord = conv ? `conversation (${conv.count} messages)` : '';
@@ -902,6 +943,16 @@ const MessageRow = memo(function MessageRow({
         </span>
         <span className="ico">
           {m.hasAttachments ? <Icon name="clip" /> : null}
+          {m.pinned ? (
+            <span className="pinned-ic" title="Pinned" role="img" aria-label="Pinned">
+              <Icon name="pin" filled />
+            </span>
+          ) : null}
+          {m.muted ? (
+            <span className="muted-ic" title="Muted conversation" role="img" aria-label="Muted conversation">
+              <Icon name="bell-off" />
+            </span>
+          ) : null}
           {m.flagged ? (
             <span className="flg">
               <Icon name="flag" filled />
@@ -909,20 +960,29 @@ const MessageRow = memo(function MessageRow({
           ) : null}
         </span>
         <DraftSyncHint key={m.draftSync ?? 'none'} sync={m.draftSync} />
-        <span className="tm" title={fullDate(m.date)}>
-          {date}
-        </span>
+        {snoozedView && m.snoozedUntil ? (
+          <span className="tm snz-when" title={`${fullDate(m.snoozedUntil)}, ${inText(m.snoozedUntil)}`}>
+            <Icon name="alarm" />
+            {rowWhenText(m.snoozedUntil)}
+          </span>
+        ) : (
+          <span className="tm" title={fullDate(m.date)}>
+            {date}
+          </span>
+        )}
       </div>
       <div className="sub2">
         <span className="t">
           <Highlight text={m.subject || '(no subject)'} terms={terms} />
         </span>
+        {density === 'compact' ? <SnoozedChip at={m.snoozeReturnedAt} /> : null}
         {density === 'compact' && showBadge && account ? (
           <AccountBadge color={color} name={account.displayName} letter={account.badge} />
         ) : null}
       </div>
       {density !== 'compact' ? (
         <div className="snp">
+          <SnoozedChip at={m.snoozeReturnedAt} />
           <span className="t">
             {youPrefix ? <span className="you">{youPrefix}</span> : null}
             <Highlight text={m.snippet} terms={terms} />
@@ -936,6 +996,32 @@ const MessageRow = memo(function MessageRow({
         </div>
       ) : null}
       <div className="hov" role="group" aria-label={conv ? `Quick actions for the conversation with ${who}` : `Quick actions for ${who}`}>
+        {snoozedView ? (
+          <>
+            <IconButton
+              icon="alarm"
+              label={`Unsnooze message from ${who}`}
+              size="sm"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.stopPropagation();
+                void unsnoozeMessages([m.id]);
+              }}
+            />
+            <IconButton
+              icon="clock"
+              label="Change time..."
+              size="sm"
+              tabIndex={-1}
+              aria-haspopup="menu"
+              onClick={(e) => {
+                e.stopPropagation();
+                const r = e.currentTarget.getBoundingClientRect();
+                openSnoozeMenu([m.id], r.left, r.bottom + 2, true);
+              }}
+            />
+          </>
+        ) : null}
         <IconButton
           icon="trash"
           label={conv ? 'Delete conversation' : `Delete message from ${who}`}
@@ -981,6 +1067,17 @@ const MessageRow = memo(function MessageRow({
     </div>
   );
 });
+
+/** "Snoozed" pill at the start of line 3 of a message that came back from snooze (DESIGN-SPEC 3.13.2). */
+function SnoozedChip({ at }: { at: number | undefined }) {
+  if (!at) return null;
+  return (
+    <span className="snz-chip" title={`Came back from snooze on ${whenText(at)}`}>
+      <Icon name="alarm" />
+      Snoozed
+    </span>
+  );
+}
 
 /** Server-save state of a draft row (DESIGN-SPEC 3.7). "Saving" shows only after 1 s so quick saves do not flicker. */
 function DraftSyncHint({ sync }: { sync: DraftSyncState | undefined }) {
@@ -1029,13 +1126,58 @@ function ruleSender(m: ListItem): Address | null {
   return m.from;
 }
 
+/** Pin, Snooze and Mute items of the row menu and the command box rules (DESIGN-SPEC 3.13.8). */
+function lightEntries(m: ListItem, ids: number[], sel: ListItem[]): MenuEntry[] {
+  const ui = useUi.getState();
+  const out: MenuEntry[] = [];
+  if (canPinHere(ui.view, ui.unreadOnly)) {
+    const pinned = allPinned(ids);
+    out.push({ label: pinned ? 'Unpin' : 'Pin to top', icon: 'pin', hint: 'Alt+P', onSelect: () => void setPinned(ids, !pinned) });
+  }
+  if (sel.every((x) => canSnoozeRole(roleOf(x)))) {
+    out.push({ label: 'Snooze', icon: 'alarm', hint: 'H', onSelect: () => undefined, children: snoozeMenuEntries(ids) });
+  }
+  if (sel.every((x) => roleOf(x) !== 'sent' && roleOf(x) !== 'drafts')) {
+    const muted = allMuted(ids);
+    const ok = sel.every((x) => canMute(x));
+    out.push({
+      label: muted ? 'Unmute conversation' : 'Mute conversation',
+      icon: 'bell-off',
+      hint: 'Alt+M',
+      disabled: !ok && !muted,
+      ...(!ok && !muted ? { title: "This message isn't part of a conversation." } : {}),
+      onSelect: () => void setMuted(ids, !muted),
+    });
+  }
+  void m;
+  return out;
+}
+
+function snoozedMenu(m: ListItem, ids: number[]): MenuEntry[] {
+  return [
+    { label: 'Unsnooze now', icon: 'alarm', onSelect: () => void unsnoozeMessages(ids) },
+    {
+      label: 'Change time...',
+      icon: 'clock',
+      onSelect: () => {
+        const row = document.getElementById(`msg-${m.id}`)?.getBoundingClientRect();
+        openSnoozeMenu(ids, (row?.left ?? 120) + 24, (row?.bottom ?? 160) - 8, true);
+      },
+    },
+    'sep',
+    { label: 'Delete', icon: 'trash', hint: 'Delete', onSelect: () => deleteMessages(ids) },
+  ];
+}
+
 function messageMenu(m: ListItem, ids: number[]): MenuEntry[] {
   const multi = ids.length > 1;
   const st = useList.getState();
+  if (useUi.getState().view.kind === 'snoozed') return snoozedMenu(m, ids);
   const sel = st.items.filter((x) => ids.includes(x.id));
   const sameAccount = new Set(sel.map((x) => x.accountId)).size <= 1;
   const inJunk = sel.length > 0 && sel.every((x) => roleOf(x) === 'junk');
   const isDraft = m.draft || roleOf(m) === 'drafts';
+  const light = isDraft ? [] : lightEntries(m, ids, sel);
   const folders = useApp.getState().folders;
   const recent = (useUi.getState().recentFolders[m.accountId] ?? [])
     .map((id) => folders.find((f) => f.id === id))
@@ -1091,6 +1233,8 @@ function messageMenu(m: ListItem, ids: number[]): MenuEntry[] {
       onSelect: () => void applyToMessages(ids, { type: 'flag', flagged: !m.flagged }),
     },
     'sep',
+    ...light,
+    ...(light.length > 0 ? (['sep'] as MenuEntry[]) : []),
     ...moveEntries,
     { label: 'Archive', icon: 'archive', hint: 'E', onSelect: () => void applyToMessages(ids, { type: 'archive' }) },
     {

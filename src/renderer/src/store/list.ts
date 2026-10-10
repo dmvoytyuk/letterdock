@@ -44,6 +44,9 @@ export function conversationItem(row: ConversationRow, folderId: number): ListIt
     size: null,
     bodyCached: true,
     threadId: row.threadId,
+    ...(row.pinned ? { pinned: true } : {}),
+    ...(row.muted ? { muted: true } : {}),
+    ...(row.snoozeReturnedAt ? { snoozeReturnedAt: row.snoozeReturnedAt } : {}),
     conv: row,
   };
 }
@@ -79,7 +82,11 @@ interface ListState {
   unreadOnly: boolean;
   /** Rows are conversations (see ListItem). */
   grouped: boolean;
+  /** Set instead of `scope` while the Snoozed view is on screen (DESIGN-SPEC 3.13.2). */
+  snoozed: { accountId: string | null } | null;
   items: ListItem[];
+  /** The first `pinnedCount` items are the pinned ones (the "Pinned" group, DESIGN-SPEC 3.13.6). */
+  pinnedCount: number;
   nextCursor: PageCursor | null;
   canLoadOlder: boolean;
   endReached: boolean;
@@ -134,6 +141,8 @@ interface Page {
   nextCursor: PageCursor | null;
   canLoadOlderFromServer: boolean;
   total: number | null;
+  /** First page only: pinned items (not repeated in `items`). */
+  pinned?: ListItem[];
 }
 
 /** One page of messages or of conversations. */
@@ -149,7 +158,12 @@ async function fetchPage(
   if (grouped) {
     const res = await call('conversations.list', { scope, cursor, limit, unreadOnly, sort, direction });
     const folderId = scopeFolderId(scope);
-    return { ...res, items: res.items.map((r) => conversationItem(r, folderId)) };
+    const { pinned, ...rest } = res;
+    return {
+      ...rest,
+      items: res.items.map((r) => conversationItem(r, folderId)),
+      ...(pinned && pinned.length > 0 ? { pinned: pinned.map((r) => conversationItem(r, folderId)) } : {}),
+    };
   }
   return call('messages.list', { scope, cursor, limit, unreadOnly, sort, direction });
 }
@@ -202,7 +216,9 @@ export const useList = create<ListState>((set, get) => ({
   },
   unreadOnly: false,
   grouped: false,
+  snoozed: null,
   items: [],
+  pinnedCount: 0,
   nextCursor: null,
   canLoadOlder: false,
   endReached: false,
@@ -218,6 +234,7 @@ export const useList = create<ListState>((set, get) => ({
 
   async load(view, unreadOnly, groupedArg) {
     if (view.kind === 'search') return loadSearch(view.query, view.accountId, set, get);
+    if (view.kind === 'snoozed') return loadSnoozed(view.accountId, set, get);
     const scope = scopeOf(view);
     const grouped = groupedArg ?? wantsGrouped(view);
     const key = scopeKey(scope, unreadOnly, currentSortKey(), grouped);
@@ -237,6 +254,7 @@ export const useList = create<ListState>((set, get) => ({
       key,
       scope,
       search: null,
+      snoozed: null,
       unreadOnly,
       grouped,
       loading: true,
@@ -245,6 +263,7 @@ export const useList = create<ListState>((set, get) => ({
         ? {}
         : {
             items: [],
+            pinnedCount: 0,
             nextCursor: null,
             canLoadOlder: false,
             endReached: false,
@@ -258,11 +277,14 @@ export const useList = create<ListState>((set, get) => ({
     try {
       const res = await fetchPage(scope, null, PAGE, unreadOnly, grouped);
       if (mine !== seq) return;
+      const pinned = res.pinned ?? [];
+      const all = pinned.length > 0 ? [...pinned, ...res.items] : res.items;
       const carried = carryIds.length
-        ? res.items.find((m) => (m.conv ? m.conv.messageIds.some((i) => carryIds.includes(i)) : carryIds.includes(m.id)))
+        ? all.find((m) => (m.conv ? m.conv.messageIds.some((i) => carryIds.includes(i)) : carryIds.includes(m.id)))
         : undefined;
       set({
-        items: res.items,
+        items: all,
+        pinnedCount: pinned.length,
         nextCursor: res.nextCursor,
         canLoadOlder: res.canLoadOlderFromServer,
         total: res.total,
@@ -360,6 +382,24 @@ export const useList = create<ListState>((set, get) => ({
       }
       return;
     }
+    if (s.snoozed) {
+      if (s.loading) return;
+      const mine = seq;
+      try {
+        const items = await readSnoozed(s.snoozed.accountId);
+        if (mine !== seq) return;
+        const ids = new Set(items.map((m) => m.id));
+        set((cur) => ({
+          items,
+          total: items.length,
+          selectedIds: cur.selectedIds.filter((id) => ids.has(id)),
+          focusId: cur.focusId !== null && ids.has(cur.focusId) ? cur.focusId : null,
+        }));
+      } catch {
+        /* the next event retries */
+      }
+      return;
+    }
     if (!s.scope || s.loading) return;
     const scope = s.scope;
     const mine = seq;
@@ -368,10 +408,12 @@ export const useList = create<ListState>((set, get) => ({
     set({ refreshing: true });
     try {
       let items: ListItem[] = [];
+      let pinned: ListItem[] = [];
       let cursor: PageCursor | null = null;
       let last: Page | null = null;
       for (let i = 0; i < 10; i++) {
         const res: Page = await fetchPage(scope, cursor, Math.min(200, want - items.length || PAGE), s.unreadOnly, grouped);
+        if (i === 0 && res.pinned) pinned = res.pinned;
         items = items.concat(res.items);
         last = res;
         if (!res.nextCursor || items.length >= want) break;
@@ -379,6 +421,7 @@ export const useList = create<ListState>((set, get) => ({
       }
       if (mine !== seq || !last) return;
       const fin: Page = last;
+      if (pinned.length > 0) items = [...pinned, ...items];
       set((cur) => {
         // A conversation gets a new newest message (a new id): keep it selected by its thread.
         const keep = (id: number | null): number | null => {
@@ -391,6 +434,7 @@ export const useList = create<ListState>((set, get) => ({
         const selectedIds = [...new Set(cur.selectedIds.map(keep).filter((x): x is number => x !== null))];
         return {
           items,
+          pinnedCount: pinned.length,
           nextCursor: fin.nextCursor,
           canLoadOlder: fin.canLoadOlderFromServer,
           total: fin.total ?? cur.total,
@@ -415,6 +459,7 @@ export const useList = create<ListState>((set, get) => ({
     const gone = new Set(ids);
     set((cur) => ({
       items: cur.items.filter((m) => !gone.has(m.id)),
+      pinnedCount: cur.items.slice(0, cur.pinnedCount).filter((m) => !gone.has(m.id)).length,
       selectedIds: cur.selectedIds.filter((id) => !gone.has(id)),
       focusId: cur.focusId !== null && gone.has(cur.focusId) ? null : cur.focusId,
       anchorId: cur.anchorId !== null && gone.has(cur.anchorId) ? null : cur.anchorId,
@@ -468,6 +513,48 @@ export const useList = create<ListState>((set, get) => ({
   setFocus: (id) => set({ focusId: id }),
 }));
 
+/** The Snoozed view: every snoozed message, soonest wake time first (DESIGN-SPEC 3.13.2). */
+async function readSnoozed(accountId: string | null): Promise<ListItem[]> {
+  const res = await call('snooze.list', accountId ? { accountId } : {});
+  return res
+    .slice()
+    .sort((a, b) => a.snoozedUntil - b.snoozedUntil || a.header.id - b.header.id)
+    .map((x) => ({ ...x.header, snoozedUntil: x.snoozedUntil }));
+}
+
+async function loadSnoozed(
+  accountId: string | null,
+  set: (p: Partial<ListState> | ((s: ListState) => Partial<ListState>)) => void,
+  get: () => ListState,
+): Promise<void> {
+  const key = JSON.stringify(['snoozed', accountId]);
+  const mine = ++seq;
+  const same = get().key === key;
+  set({
+    key,
+    scope: null,
+    search: null,
+    snoozed: { accountId },
+    loading: true,
+    error: null,
+    unreadOnly: false,
+    grouped: false,
+    pinnedCount: 0,
+    nextCursor: null,
+    canLoadOlder: false,
+    endReached: true,
+    ...(same ? {} : { items: [], total: null, selectedIds: [], anchorId: null, focusId: null, selectMode: false }),
+  });
+  try {
+    const items = await readSnoozed(accountId);
+    if (mine !== seq) return;
+    set({ items, total: items.length, loading: false });
+  } catch (e) {
+    if (mine !== seq) return;
+    set({ loading: false, error: asAppError(e) });
+  }
+}
+
 async function loadSearch(
   query: string,
   accountId: string | null,
@@ -484,6 +571,8 @@ async function loadSearch(
     error: null,
     unreadOnly: false,
     grouped: false,
+    snoozed: null,
+    pinnedCount: 0,
     ...(same
       ? {}
       : {

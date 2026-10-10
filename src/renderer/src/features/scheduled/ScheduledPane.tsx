@@ -371,6 +371,7 @@ function ScheduledMessage({ item }: { item: ScheduledItem }) {
           <BodyPanel
             body={body}
             senderAddress={null}
+            trackerNote={false}
             attachments={
               detail && detail.attachments.length > 0 ? (
                 <div className="atts">

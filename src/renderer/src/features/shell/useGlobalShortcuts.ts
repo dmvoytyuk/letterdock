@@ -3,7 +3,9 @@ import { CONV_MOVE_EVENT, LIST_MOVE_EVENT, isPlainKey, isTypingTarget, matchShor
 import { useApp, accountInbox, activePreset } from '../../store/app';
 import { useList } from '../../store/list';
 import { useUi } from '../../store/ui';
-import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, newMessage, openCompose, openInWindow } from '../../lib/actions';
+import { applyToMessages, composeFrom, deleteMessages, deleteMessagesPermanently, newMessage, openCompose, openInWindow, roleOf } from '../../lib/actions';
+import { allMuted, allPinned, canMute, canSnoozeRole, openSnoozeMenu, setMuted, setPinned, snoozeAnchor } from '../../lib/light';
+import { canPinHere } from '../../lib/pinRules';
 import { undoLast } from '../../store/undo';
 import { printOpenMessage } from '../../lib/print';
 import { toast } from '../../store/toasts';
@@ -12,7 +14,7 @@ import { syncAll } from './TitleBar';
 import { toggleSidebar } from '../sidebar/SidebarToggle';
 
 /** Keys that act on messages only when focus is in the list or reading pane (or nowhere). */
-const PLAIN_KEYS: ShortcutId[] = ['delete', 'deletePermanent', 'archive', 'flag', 'open'];
+const PLAIN_KEYS: ShortcutId[] = ['delete', 'deletePermanent', 'archive', 'flag', 'open', 'snooze', 'pin', 'mute'];
 /** Gmail-style single keys that work wherever focus is, except in a text field. */
 const ANYWHERE_KEYS: ShortcutId[] = ['compose', 'search', 'goInbox'];
 /** "g" then "i": how long the second key may take. */
@@ -63,14 +65,14 @@ export function useGlobalShortcuts(): void {
       prev = null;
       const sc = matchShortcut(e, preset, previousKey);
       const typing = isTypingTarget(e.target);
-      const blocked = !!document.querySelector('.modal') || !!useMenu.getState().menu;
+      const blocked = !!document.querySelector('.modal, .light-pop') || !!useMenu.getState().menu;
       if (!sc) {
         if (!typing && !blocked && startsSequence(e, preset)) prev = { key: 'g', at: Date.now() };
         return;
       }
       const ui = useUi.getState();
       if (typing && !worksWhileTyping(sc, e)) return;
-      if (document.querySelector('.modal') && sc.id !== 'back') {
+      if (document.querySelector('.modal, .light-pop') && sc.id !== 'back') {
         // A dialog is open: only Esc (handled by the dialog itself) matters.
         return;
       }
@@ -105,6 +107,8 @@ export function useGlobalShortcuts(): void {
           return run(() => ui.set({ addAccount: {} }));
         case 'search':
           return run(() => ui.set({ searchFocusTick: ui.searchFocusTick + 1 }));
+        case 'commandBox':
+          return run(() => ui.set({ commandBoxOpen: true }));
         case 'settings':
           return run(() => ui.openSettings());
         case 'toggleSidebar':
@@ -185,6 +189,25 @@ export function useGlobalShortcuts(): void {
           return run(() => void applyToMessages(ids, { type: 'markRead', read: false }));
         case 'flag':
           return run(() => void applyToMessages(ids, { type: 'flag', flagged: !(first?.flagged ?? false) }));
+        // Snooze, Pin and Mute (DESIGN-SPEC 3.13): same rules as the menus. Nothing happens where the command is not offered.
+        case 'snooze':
+          return run(() => {
+            const rows = list.items.filter((m) => ids.includes(m.id));
+            if (rows.length === 0) return;
+            if (ui.view.kind !== 'snoozed' && !rows.every((m) => canSnoozeRole(roleOf(m)))) return;
+            const a = snoozeAnchor();
+            openSnoozeMenu(ids, a.x, a.y, ui.view.kind === 'snoozed');
+          });
+        case 'pin':
+          return run(() => {
+            if (ids.length > 0 && canPinHere(ui.view, ui.unreadOnly)) void setPinned(ids, !allPinned(ids));
+          });
+        case 'mute':
+          return run(() => {
+            const rows = list.items.filter((m) => ids.includes(m.id));
+            if (rows.length === 0 || !rows.every((m) => canMute(m))) return;
+            void setMuted(ids, !allMuted(ids));
+          });
         case 'selectAll':
           return run(() => list.selectAll());
         case 'undo':

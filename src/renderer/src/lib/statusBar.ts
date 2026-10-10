@@ -141,6 +141,8 @@ export interface MiddleInput {
   outboxCount: number;
   /** Scheduled messages in the Scheduled view that is open (all accounts, or one). */
   scheduledCount?: number;
+  /** Snoozed messages in the Snoozed view that is open (DESIGN-SPEC 3.13.2). */
+  snoozedCount?: number;
   list: {
     scopeKind: string | null;
     isSearch: boolean;
@@ -172,6 +174,7 @@ export function middleText(i: MiddleInput): string {
   if (i.page === 'settings') return '';
   const { view, list } = i;
   if (view.kind === 'outbox') return i.outboxCount > 0 ? `Outbox · ${messages(i.outboxCount)}` : 'Outbox';
+  if (view.kind === 'snoozed') return (i.snoozedCount ?? 0) > 0 ? `Snoozed · ${messages(i.snoozedCount!)}` : 'Snoozed';
   if (view.kind === 'scheduled') return (i.scheduledCount ?? 0) > 0 ? `Scheduled · ${messages(i.scheduledCount!)}` : 'Scheduled';
 
   const shown = list.total ?? list.itemCount;

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { ViewerApp } from './features/viewer/ViewerApp';
 import './styles/app.css';
 import './styles/mail-actions.css';
+import './styles/light.css';
 
 /** Reads the message id main put in the URL hash. Returns null when it is missing or invalid. */
 export function readViewerMessageId(hash: string = location.hash): number | null {

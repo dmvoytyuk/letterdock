@@ -1,0 +1,189 @@
+/* Light features (DESIGN-SPEC 3.13): row glyphs, Snoozed chip, notice lines, Unsubscribe button. Dialogs, menus and
+   the command box have their own small files that load with them. */
+
+/* ----- Pinned group, pin and mute glyphs ----- */
+.ghead.pinned-head {
+  cursor: default;
+}
+.ghead .pin-ic {
+  display: inline-flex;
+  width: 12px;
+  color: var(--t2);
+}
+.ghead .pin-ic svg {
+  width: 12px;
+  height: 12px;
+}
+.row .pinned-ic,
+.row .muted-ic {
+  display: inline-flex;
+  color: var(--t2);
+}
+.row .pinned-ic svg {
+  width: 14px;
+  height: 14px;
+}
+.row .muted-ic {
+  color: var(--t3);
+}
+.row .muted-ic svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ----- "Snoozed" chip (mail that came back) and the wake time in the Snoozed view ----- */
+.snz-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 8px 0 6px;
+  border-radius: 9px;
+  background: var(--accent-sub);
+  color: var(--t2);
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 600;
+}
+.snz-chip svg {
+  width: 12px;
+  height: 12px;
+  color: var(--accent);
+}
+.row .snz-when {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.row .snz-when svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ----- notice lines under the message header (images, tracker, unsubscribe memory, muted) ----- */
+.rnotice {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+}
+.rnotice > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--t2);
+}
+.rnotice .rtxt {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+.rnotice .link {
+  font-size: 12px;
+}
+.rbanner .trk {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--t2);
+}
+.rbanner .trk svg {
+  flex: none;
+  margin-top: 1px;
+}
+.rbanner.snz {
+  align-items: center;
+}
+.rbanner.snz .rtxt {
+  flex: 1;
+}
+
+/* ----- Unsubscribe button (reading pane header, line 3) ----- */
+.acct-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.acct-row .acct-chip {
+  min-width: 0;
+}
+.unsub-btn {
+  margin-top: 6px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.unsub-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.unsub-btn:disabled {
+  color: var(--t3);
+}
+.unsub-btn svg {
+  width: 14px;
+  height: 14px;
+}
+.unsub-note {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--t2);
+}
+@container (max-width: 559px) {
+  .unsub-btn .ulbl {
+    display: none;
+  }
+}
+
+/* ----- narrow reading pane: the Snooze toolbar button hides below 700px (it stays in the More menu) ----- */
+@container (max-width: 699px) {
+  .rtool .snooze-btn {
+    display: none;
+  }
+}
+
+/* muted line above a stacked conversation */
+.conv-muted-wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.conv-muted-wrap > :last-child {
+  flex: 1;
+  min-height: 0;
+}
+.conv-muted {
+  padding: 0 16px 8px;
+}
+
+/* Settings > Mail > SNOOZE */
+.snz-times {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* small helpers for the light dialogs */
+.dlg-p {
+  margin: 0 0 12px;
+}
+.dlg-lead-ic {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 8px;
+  color: var(--warn, var(--t2));
+}

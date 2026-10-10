@@ -12,6 +12,7 @@ export type ShortcutId =
   | 'compose'
   | 'addAccount'
   | 'search'
+  | 'commandBox'
   | 'settings'
   | 'toggleSidebar'
   | 'nextPane'
@@ -31,6 +32,9 @@ export type ShortcutId =
   | 'markRead'
   | 'markUnread'
   | 'flag'
+  | 'snooze'
+  | 'pin'
+  | 'mute'
   | 'selectAll'
   | 'open'
   | 'undo'
@@ -44,6 +48,8 @@ export type ShortcutId =
   | 'toList'
   | 'send'
   | 'sendLater'
+  | 'quickReplies'
+  | 'insertLink'
   | 'back';
 
 export interface Shortcut {
@@ -56,6 +62,8 @@ export interface Shortcut {
   match: KeyMatcher[];
   /** Extra keys that only count in the Gmail style (added to `keys` and `match`). */
   gmail?: { keys: string; match: KeyMatcher[] };
+  /** Listed in the table but handled by the window itself (compose), so `match` stays empty. */
+  external?: boolean;
   /** A shortcut that exists only in this style (then `keys` and `match` are its keys). */
   only?: ShortcutPreset;
 }
@@ -96,9 +104,16 @@ export const SHORTCUTS: Shortcut[] = [
     id: 'search',
     group: 'Global',
     label: 'Focus search',
-    keys: 'Ctrl+E / Ctrl+K / F3',
-    match: [k('e', { ctrl: true }), k('k', { ctrl: true }), k('F3')],
+    keys: 'Ctrl+E / F3',
+    match: [k('e', { ctrl: true }), k('F3')],
     gmail: { keys: '/', match: [k('/', { loose: true })] },
+  },
+  {
+    id: 'commandBox',
+    group: 'Global',
+    label: 'Command box (type a command or a folder)',
+    keys: 'Ctrl+K',
+    match: [k('k', { ctrl: true })],
   },
   { id: 'settings', group: 'Global', label: 'Settings', keys: 'Ctrl+,', match: [k(',', { ctrl: true })] },
   {
@@ -241,6 +256,29 @@ export const SHORTCUTS: Shortcut[] = [
     gmail: { keys: 'S', match: [k('s')] },
   },
   {
+    id: 'snooze',
+    group: 'Message list and reading',
+    label: 'Snooze (hide until later)',
+    keys: 'H',
+    match: [k('h')],
+    gmail: { keys: 'B', match: [k('b')] },
+  },
+  {
+    id: 'pin',
+    group: 'Message list and reading',
+    label: 'Pin to the top or unpin',
+    keys: 'Alt+P',
+    match: [k('p', { alt: true })],
+  },
+  {
+    id: 'mute',
+    group: 'Message list and reading',
+    label: 'Mute or unmute the conversation',
+    keys: 'Alt+M',
+    match: [k('m', { alt: true })],
+    gmail: { keys: 'M', match: [k('m')] },
+  },
+  {
     id: 'selectAll',
     group: 'Message list and reading',
     label: 'Select all',
@@ -317,6 +355,22 @@ export const SHORTCUTS: Shortcut[] = [
     keys: 'Ctrl+Shift+Enter',
     match: [k('Enter', { ctrl: true, shift: true })],
   },
+  {
+    id: 'quickReplies',
+    group: 'Writing a message',
+    label: 'Insert a quick reply',
+    keys: 'Ctrl+Shift+Q',
+    match: [k('q', { ctrl: true, shift: true })],
+  },
+  {
+    id: 'insertLink',
+    group: 'Writing a message',
+    label: 'Insert a link',
+    keys: 'Ctrl+K',
+    // Only shown in the table: the compose window handles this key itself, and in the main window Ctrl+K is the command box.
+    match: [],
+    external: true,
+  },
 ];
 
 /** The shortcuts of one style, with the extra Gmail keys merged into `keys` and `match`. */
@@ -391,6 +445,7 @@ const WORKS_WHILE_TYPING: ShortcutId[] = [
   'compose',
   'addAccount',
   'search',
+  'commandBox',
   'settings',
   'toggleSidebar',
   'nextPane',

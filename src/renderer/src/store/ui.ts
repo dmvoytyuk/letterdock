@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import type { AccountId, ConversationSort, FolderId, ListScope, MessageId, Rule, RuleCondition } from '../../../shared/ipc';
+import type { AccountId, ConversationSort, FolderId, ListScope, MessageHeader, MessageId, Rule, RuleActions, RuleCondition, UnsubscribeInfo, UnsubscribeMethodKind } from '../../../shared/ipc';
 
 export type View =
   | { kind: 'all' }
@@ -11,6 +11,8 @@ export type View =
   | { kind: 'outbox' }
   /** Mail waiting to be sent later (DESIGN-SPEC 3.11). `accountId` null = every account. */
   | { kind: 'scheduled'; accountId: AccountId | null }
+  /** Snoozed mail, soonest wake time first (DESIGN-SPEC 3.13.2). `accountId` null = every account (command box only). */
+  | { kind: 'snoozed'; accountId: AccountId | null }
   | { kind: 'search'; query: string; accountId: AccountId | null };
 
 /** How the list of conversations is ordered (DESIGN-SPEC 3.5, 3.10.2). One choice for every folder. */
@@ -50,7 +52,33 @@ export interface RuleEditorRequest {
   /** Edit this rule. */
   rule?: Rule;
   /** A new rule, started from a message ("Create rule from this sender..."). */
-  prefill?: { name: string; accountId: AccountId | null; conditions: RuleCondition[] };
+  prefill?: { name: string; accountId: AccountId | null; conditions: RuleCondition[]; actions?: Partial<RuleActions> };
+}
+
+/** The Snooze menu or the date and time dialog, when open (DESIGN-SPEC 3.13.2). */
+export interface SnoozeRequest {
+  /** List rows (or message ids) to snooze. */
+  ids: MessageId[];
+  /** Where the menu opens (px). */
+  x: number;
+  y: number;
+  /** 'menu' = the quick times; 'pick' = the date and time dialog. */
+  step: 'menu' | 'pick';
+  /** Snoozed view: change the time of mail that is snoozed already. */
+  change?: boolean;
+}
+
+/** The unsubscribe flow for one opened message (DESIGN-SPEC 3.13.1). The dialogs load when it starts. */
+export interface UnsubscribeRequest {
+  header: MessageHeader;
+  info: UnsubscribeInfo;
+  /** The method being used (the first one the sender check allows). */
+  method: UnsubscribeMethodKind;
+  /** Which dialog is on screen: the extra confirm, the mailto or page confirm, or "move all from this sender to Trash". */
+  step: 'unknown' | 'mailto' | 'page' | 'trash';
+  /** Called with the result so the button can show its state. */
+  onDone: (r: { ok: boolean; method: UnsubscribeMethodKind }) => void;
+  onBusy: (busy: boolean) => void;
 }
 /** The "Run rule now" dialog (DESIGN-SPEC 3.12.4). */
 export interface RunRulesRequest {
@@ -116,6 +144,14 @@ interface UiState {
   runRules: RunRulesRequest | null;
   /** Which tab of Settings > Rules is shown. */
   rulesTab: 'rules' | 'activity';
+  /** The command box (Ctrl+K), when open (DESIGN-SPEC 3.13.5). */
+  commandBoxOpen: boolean;
+  /** The Snooze menu / date dialog, when open. */
+  snooze: SnoozeRequest | null;
+  /** The unsubscribe flow, when it needs a dialog. */
+  unsubscribe: UnsubscribeRequest | null;
+  /** How many times the user snoozed (the popover footer note shows until 3). */
+  snoozeCount: number;
 
   set: (p: Partial<UiState>) => void;
   setView: (v: View) => void;
@@ -169,6 +205,10 @@ export const useUi = create<UiState>()(
       ruleEditor: null,
       runRules: null,
       rulesTab: 'rules',
+      commandBoxOpen: false,
+      snooze: null,
+      unsubscribe: null,
+      snoozeCount: 0,
 
       set: (p) => set(p),
       setView: (view) => set({ view, page: 'mail', drawerOpen: false, readerOpen: false }),
@@ -200,8 +240,8 @@ export const useUi = create<UiState>()(
       exitSearchOrOutbox: () =>
         set((s) =>
           s.view.kind === 'search'
-            ? { view: s.prevView.kind === 'outbox' || s.prevView.kind === 'scheduled' ? { kind: 'all' } : s.prevView }
-            : s.view.kind === 'outbox' || s.view.kind === 'scheduled'
+            ? { view: s.prevView.kind === 'outbox' || s.prevView.kind === 'scheduled' || s.prevView.kind === 'snoozed' ? { kind: 'all' } : s.prevView }
+            : s.view.kind === 'outbox' || s.view.kind === 'scheduled' || s.view.kind === 'snoozed'
               ? { view: { kind: 'all' } }
               : s,
         ),
@@ -234,6 +274,7 @@ export const useUi = create<UiState>()(
         recentFolders: s.recentFolders,
         recentSearches: s.recentSearches,
         listSort: s.listSort,
+        snoozeCount: s.snoozeCount,
       }),
     },
   ),
@@ -252,7 +293,7 @@ export function scopeOf(view: View): ListScope {
     case 'folder':
       return { kind: 'folder', folderId: view.folderId };
     default:
-      // Outbox and search have their own data; the list store handles them separately.
+      // Outbox, Scheduled, Snoozed and search have their own data; the list store handles them separately.
       return { kind: 'unifiedInbox' };
   }
 }

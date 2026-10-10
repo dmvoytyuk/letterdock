@@ -36,7 +36,7 @@ export function SchedulePickerDialog({
   onConfirm,
   onClose,
 }: {
-  mode: 'schedule' | 'change';
+  mode: 'schedule' | 'change' | 'snooze';
   initial?: number | null;
   /** Scheduled messages now (to stop at 100). Not needed when changing a time. */
   total?: number;
@@ -66,9 +66,10 @@ export function SchedulePickerDialog({
   }, []);
   const check = checkPick(dateText, timeValue, now);
   const full = mode === 'schedule' && (total ?? 0) >= MAX_SCHEDULED;
+  const snooze = mode === 'snooze';
   const showDateErr = check.error?.field === 'date' && touched.date;
   const showTimeErr = check.error?.field === 'time' && (touched.time || touched.date);
-  const summary = useDebounced(check.at ? summaryText(check.at, now) : '', 500);
+  const summary = useDebounced(check.at ? summaryText(check.at, now, snooze ? 'Comes back' : 'Sends') : '', 500);
 
   const submit = async () => {
     setTouched({ date: true, time: true });
@@ -86,7 +87,7 @@ export function SchedulePickerDialog({
   };
 
   return (
-    <Dialog title="Send later" size="sm" onClose={onClose} busy={busy} initialFocus={`#${CSS.escape(dateId)}`}>
+    <Dialog title={snooze ? 'Snooze until' : 'Send later'} size="sm" onClose={onClose} busy={busy} initialFocus={`#${CSS.escape(dateId)}`}>
       <form
         className="schform"
         onSubmit={(e) => {
@@ -204,7 +205,9 @@ export function SchedulePickerDialog({
         {full ? (
           <Banner tone="warning">You have {MAX_SCHEDULED} scheduled messages. Send or cancel some first.</Banner>
         ) : null}
-        {!closeToTray ? (
+        {snooze ? (
+          <p className="hint schcap">Snooze works on this PC only. The message stays in your Inbox on the server.</p>
+        ) : !closeToTray ? (
           <Banner
             tone="warning"
             actions={
@@ -230,7 +233,7 @@ export function SchedulePickerDialog({
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={busy} disabled={!check.at || full}>
-            {mode === 'change' ? 'Save time' : 'Schedule send'}
+            {mode === 'change' ? 'Save time' : snooze ? 'Snooze' : 'Schedule send'}
           </Button>
         </div>
       </form>

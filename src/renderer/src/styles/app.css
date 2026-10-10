@@ -2882,3 +2882,12 @@ kbd {
   border-left: 3px solid var(--border);
   padding-left: 12px;
 }
+
+/* submenu (Snooze > ...): fixed so the scrolling parent menu cannot cut it off */
+.menu.sub {
+  min-width: 240px;
+  z-index: 501;
+}
+.menu .mi[aria-haspopup='menu'][aria-expanded='true'] {
+  background: var(--hover);
+}

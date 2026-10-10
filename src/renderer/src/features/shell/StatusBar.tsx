@@ -114,6 +114,7 @@ export function StatusBar() {
           ? (scheduled?.total ?? 0)
           : (scheduled?.perAccount.find((p) => p.accountId === view.accountId)?.total ?? 0)
         : 0,
+    snoozedCount: view.kind === 'snoozed' ? itemCount : 0,
     list: { scopeKind: listScopeKind, isSearch, loading, total, itemCount, selectedCount, grouped },
   });
   const rightAll = rightItems(update, outbox, now, scheduled);

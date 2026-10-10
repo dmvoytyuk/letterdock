@@ -12,6 +12,7 @@ import { useUpdates } from '../store/updates';
 import { useConvSignal } from '../store/conversations';
 import { undoWithToken, useUndo } from '../store/undo';
 import { handleScheduledEvent, useScheduled } from '../store/scheduled';
+import { useSnooze } from '../store/snooze';
 import { handleRulesEvent, useRules } from '../store/rules';
 import { backOnlineText, reportDroppedChanges, reportFolderConflict, reportQueueFailure } from './queueFailures';
 
@@ -78,6 +79,7 @@ export function useAppEvents(): void {
     void useApp.getState().loadAll();
     void useOutbox.getState().refetch();
     void useScheduled.getState().refetch();
+    void useSnooze.getState().refetch();
     void useRules.getState().refetchRules();
     call('updates.status')
       .then((s) => useUpdates.getState().setStatus(s))
@@ -102,6 +104,8 @@ export function useAppEvents(): void {
         // A message window archived, deleted or moved a message and closed: its Undo lives here now.
         useUndo.getState().push(e.undoToken, e.count);
         toast(e.label, { actionLabel: 'Undo', onAction: () => void undoWithToken(e.undoToken), duration: 6000 });
+      } else if (e.type === 'ui:openSettings') {
+        useUi.getState().openSettings(e.section, null);
       } else if (e.type === 'ui:compose') {
         call('compose.openWindow', { mode: 'new', mailto: e.mailto }).catch((err) =>
           toastError((err as { message?: string }).message ?? 'Could not open the message.'),
@@ -130,13 +134,30 @@ export function useAppEvents(): void {
           else relevant = touched.some((f) => f.role === 'inbox');
         }
         if (relevant) scheduleRefresh();
+      } else if (e.type === 'snooze:changed' || e.type === 'snooze:returned') {
+        // Snoozed mail was set, cleared or woke up: counts, the Snoozed view and the list change.
+        void useSnooze.getState().refetch();
+        useConvSignal.getState().bump();
+        scheduleRefresh();
+      } else if (e.type === 'notify:actionDone') {
+        // A button on a notification did its work in the background (DESIGN-SPEC 3.13.3).
+        if (e.action === 'archive') {
+          const token = e.undoToken;
+          if (token) useUndo.getState().push(token, 1);
+          toast('Moved to Archive', {
+            duration: 6000,
+            ...(token ? { actionLabel: 'Undo', onAction: () => void undoWithToken(token) } : {}),
+          });
+        } else toast('Marked as read');
+        scheduleRefresh();
       } else if (e.type === 'engine:restarted') {
+        void useSnooze.getState().refetch();
         void useScheduled.getState().refetch();
         void useRules.getState().refetchRules();
         scheduleRefresh();
       } else if (e.type === 'ui:openMessage') {
         const ui = useUi.getState();
-        if (ui.view.kind === 'search' || ui.view.kind === 'outbox' || ui.view.kind === 'scheduled') ui.exitSearchOrOutbox();
+        if (ui.view.kind === 'search' || ui.view.kind === 'outbox' || ui.view.kind === 'scheduled' || ui.view.kind === 'snoozed') ui.exitSearchOrOutbox();
         useUi.setState({ pendingOpenMessageId: e.messageId, page: 'mail' });
       }
     });
