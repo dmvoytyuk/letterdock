@@ -26,7 +26,7 @@
 //     - engine.messages.get.cached   open an already downloaded body
 //     - engine.memory.*, engine.sqlite.*  RSS, JS heap, external, SQLite cache/mmap/file sizes after a
 //       forced GC and the warm calls. Measured in MEMRUNS separate fresh processes (one engine each),
-//       NOT in the timing process: inside one process RSS grows ~15 MB per engine, and it is +380 MB
+//       NOT in the timing process: inside one process RSS keeps native SQLite memory of closed engines (the JS-heap part, a leftover timer, is fixed and tested in tests/leaks), and it is +380 MB
 //       when the seed was built in the same process (that fooled the 0.5.4 -> HEAD comparison once).
 //   bundles   (electron-vite build into a temp folder; one sample each, so median = the value)
 //     - bundle.main.*, bundle.preload.*, bundle.renderer.<index|compose|viewer>.*  raw and gzip bytes

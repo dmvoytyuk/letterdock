@@ -99,8 +99,17 @@ export class EventHub {
     }
   }
 
+  private closed = false;
+
+  /** Send what is waiting and stop: later changes are dropped and no timer is started again. */
+  close(): void {
+    this.flush();
+    this.closed = true;
+    this.observers = [];
+  }
+
   private schedule(): void {
-    if (this.timer) return;
+    if (this.timer || this.closed) return;
     this.timer = setTimeout(() => this.flush(), this.intervalMs);
   }
 

@@ -297,6 +297,7 @@ export function createEngine(opts: EngineOptions): Engine {
   };
 
   let cacheTimer: ReturnType<typeof setInterval> | null = null;
+  let firstCleanTimer: ReturnType<typeof setTimeout> | null = null;
   let cacheCleaning: Promise<void> | null = null;
   const cleanBodyCache = (): Promise<void> => {
     cacheCleaning ??= pruneBodyCache(ctx)
@@ -335,7 +336,10 @@ export function createEngine(opts: EngineOptions): Engine {
       }
       sessions.startAll();
       // Keep downloaded mail under the size cap: once a bit after start, then every hour.
-      setTimeout(() => void cleanBodyCache(), 30_000).unref();
+      if (firstCleanTimer) clearTimeout(firstCleanTimer);
+      if (cacheTimer) clearInterval(cacheTimer);
+      firstCleanTimer = setTimeout(() => void cleanBodyCache(), 30_000);
+      firstCleanTimer.unref();
       cacheTimer = setInterval(() => void cleanBodyCache(), 60 * 60_000);
       cacheTimer.unref();
       // Messages that were on their way when the app stopped must not be re-sent by the Outbox.
@@ -351,7 +355,10 @@ export function createEngine(opts: EngineOptions): Engine {
       );
     },
     async shutdown() {
+      if (firstCleanTimer) clearTimeout(firstCleanTimer);
+      firstCleanTimer = null;
       if (cacheTimer) clearInterval(cacheTimer);
+      cacheTimer = null;
       threadBackfill.stop();
       scheduled.stop();
       snooze.stop();
@@ -360,7 +367,9 @@ export function createEngine(opts: EngineOptions): Engine {
       actions.stop();
       await actions.drain().catch(() => undefined);
       await sessions.shutdown();
-      ctx.hub.flush();
+      // A body-cache cleanup may still be deleting files and reading the database.[
+      await cacheCleaning?.catch(() => undefined);
+      ctx.hub.close();
       db.close();
     },
   };

@@ -21,7 +21,7 @@
 //
 // Notes for reading the numbers
 //   - All runs happen in ONE vitest worker process, so the OS file cache is warm after run 1. Memory
-//     read inside such a process is NOT trustworthy (it grows about 15 MB per engine, and it is
+//     read inside such a process is NOT trustworthy (RSS keeps native SQLite memory of engines that were shut down, and it is
 //     +380 MB if the seed was built in the same process). The driver therefore takes the memory
 //     numbers from separate fresh processes (PERF_RUNS=1), and builds the seed in its own process
 //     (PERF_SEED_ONLY=1) before any measuring. PERF_SEED_DIR points at an existing seed folder.
