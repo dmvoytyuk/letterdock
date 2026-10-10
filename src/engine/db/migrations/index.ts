@@ -9,6 +9,7 @@ import scheduledSend from './008_scheduled_send.sql?raw';
 import rules from './009_rules.sql?raw';
 import uniqueIdsResume from './010_unique_ids_resume.sql?raw';
 import rawSource from './011_raw_source.sql?raw';
+import draftTombstone from './012_draft_tombstone.sql?raw';
 
 export interface Migration {
   version: number;
@@ -28,4 +29,5 @@ export const MIGRATIONS: Migration[] = [
   { version: 9, sql: rules },
   { version: 10, sql: uniqueIdsResume },
   { version: 11, sql: rawSource },
+  { version: 12, sql: draftTombstone },
 ];

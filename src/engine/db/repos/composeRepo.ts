@@ -115,6 +115,8 @@ export class ComposeRepo {
     // `paused_send_at` is not part of a save: only setPausedSendAt() changes it.
     const { paused_send_at: _paused, ...d } = row;
     void _paused;
+    // A live draft owns its Message-ID again: no server copy of it may be deleted any more.
+    this.clearTombstone(d.account_id, d.message_id);
     this.db
       .prepare(
         `INSERT INTO draft_state (draft_id, account_id, mode, source_message_pk, in_reply_to, references_h,
@@ -177,6 +179,33 @@ export class ComposeRepo {
 
   deleteDraft(draftId: string): void {
     this.db.prepare('DELETE FROM draft_state WHERE draft_id = ?').run(draftId);
+  }
+
+  // ---------- server copies still to delete ----------
+  addTombstone(accountId: string, messageId: string, at: number): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO draft_tombstone (account_id, message_id, created_at) VALUES (?,?,?)')
+      .run(accountId, messageId, at);
+  }
+
+  hasTombstone(accountId: string, messageId: string): boolean {
+    return (
+      this.db
+        .prepare('SELECT 1 FROM draft_tombstone WHERE account_id = ? AND message_id = ?')
+        .get(accountId, messageId) !== undefined
+    );
+  }
+
+  clearTombstone(accountId: string, messageId: string): void {
+    this.db
+      .prepare('DELETE FROM draft_tombstone WHERE account_id = ? AND message_id = ?')
+      .run(accountId, messageId);
+  }
+
+  tombstones(accountId: string): { message_id: string }[] {
+    return this.db
+      .prepare('SELECT message_id FROM draft_tombstone WHERE account_id = ? ORDER BY created_at')
+      .all(accountId) as { message_id: string }[];
   }
 
   // ---------- compose files ----------

@@ -232,6 +232,16 @@ export interface FakeImapServer {
     commands: string[],
     o?: { times?: number; text?: string; code?: string; before?: () => void },
   ): void;
+  /**
+   * Hold these commands: the server does the work (it keeps the message) only when the returned
+   * function is called, and only then answers. For tests that need a command "in flight".
+   * `held()` is the number of commands that wait now. `when` limits it to some uses (e.g. one mailbox);
+   * the first attribute of APPEND is the mailbox name.
+   */
+  holdCommands(
+    commands: string[],
+    when?: (parsed: { attributes?: { value?: unknown }[] }) => boolean,
+  ): { release(): void; held(): number };
   allowCommands(): void;
   connectionCount(): number;
   close(): Promise<void>;
@@ -368,6 +378,29 @@ export async function startFakeImap(opts: FakeImapOptions = {}): Promise<FakeIma
           callback();
         });
       }
+    },
+    holdCommands(commands, when) {
+      const waiting: (() => void)[] = [];
+      for (const name of commands) {
+        const key = name.toUpperCase();
+        if (!originals.has(key)) originals.set(key, server.getCommandHandler(key));
+        const original = originals.get(key);
+        server.setCommandHandler(key, (conn, parsed, data, callback) => {
+          if (!original) return callback();
+          if (when && !when(parsed as { attributes?: { value?: unknown }[] })) return original(conn, parsed, data, callback);
+          waiting.push(() => original(conn, parsed, data, callback));
+        });
+      }
+      return {
+        held: () => waiting.length,
+        release() {
+          for (const [key, handler] of originals) {
+            if (handler && commands.some((c) => c.toUpperCase() === key)) server.setCommandHandler(key, handler);
+          }
+          for (const k of commands) originals.delete(k.toUpperCase());
+          for (const run of waiting.splice(0)) run();
+        },
+      };
     },
     dropOnCommands(commands) {
       for (const name of commands) {

@@ -80,6 +80,8 @@ export interface OutboxMeta {
   references: string | null;
 }
 
+const copyKey = (accountId: string, messageId: string) => `${accountId}\n${messageId}`;
+
 export class ComposeService implements DraftsApi {
   private repo: ComposeRepo;
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -92,6 +94,10 @@ export class ComposeService implements DraftsApi {
   /** Draft uploads: timers, running ones, and the upload state of drafts whose server copy is old. */
   private pushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pushing = new Set<string>();
+  /** Uploads that are running, by account and Message-ID (a delete of the server copy waits for them). */
+  private pushRuns = new Map<string, Promise<void>>();
+  private purging = new Map<string, Promise<void>>();
+  private purgeAgain = new Set<string>();
   private syncState = new Map<string, { accountId: string; state: DraftSyncState }>();
 
   constructor(
@@ -651,7 +657,22 @@ export class ComposeService implements DraftsApi {
    * row to the new server copy. Offline: the draft is marked "queued" and goes out when the account
    * is online again. Other failures: marked "failed" and tried again later.
    */
-  private async pushDraft(draftId: string): Promise<void> {
+  private pushDraft(draftId: string): Promise<void> {
+    const d = this.repo.draft(draftId);
+    const p = this.pushDraftNow(draftId);
+    if (d) {
+      const key = copyKey(d.account_id, d.message_id);
+      if (!this.pushRuns.has(key)) {
+        this.pushRuns.set(key, p);
+        void p.finally(() => {
+          if (this.pushRuns.get(key) === p) this.pushRuns.delete(key);
+        });
+      }
+    }
+    return p;
+  }
+
+  private async pushDraftNow(draftId: string): Promise<void> {
     const d = this.repo.draft(draftId);
     if (!d || d.server_dirty !== 1 || !d.content_json || this.pushing.has(draftId) || this.stopped) return;
     const account = this.ctx.accounts.get(d.account_id);
@@ -714,8 +735,9 @@ export class ComposeService implements DraftsApi {
   private finishPush(d: DraftStateRow, rev: number, folderId: number, uid: number | undefined): void {
     const cur = this.repo.draft(d.draft_id);
     if (!cur) {
-      // Discarded while the upload ran: take the copy we just made off the server again.
-      void this.removeServerDraft({ ...d, server_folder_id: folderId }).catch(() => undefined);
+      // Discarded or sent while the upload ran: take the copy we just made off the server again.
+      this.repo.addTombstone(d.account_id, d.message_id, this.ctx.now());
+      void this.purgeServerDrafts(d.account_id);
       return;
     }
     const removed: number[] = [];
@@ -767,6 +789,7 @@ export class ComposeService implements DraftsApi {
 
   /** The account is online: upload its waiting drafts. */
   async flush(accountId: string): Promise<void> {
+    await this.purgeServerDrafts(accountId);
     for (const d of this.repo.dirtyDrafts()) {
       if (d.account_id !== accountId) continue;
       const t = this.pushTimers.get(d.draft_id);
@@ -787,6 +810,13 @@ export class ComposeService implements DraftsApi {
     for (const id of addedIds) {
       const row = this.ctx.messages.row(id);
       if (!row?.message_id) continue;
+      if (this.repo.hasTombstone(row.account_id, row.message_id)) {
+        // A copy of a draft that was sent or thrown away: not shown, and deleted on the server.
+        this.ctx.messages.deleteById(id);
+        removed.push(id);
+        void this.purgeServerDrafts(row.account_id);
+        continue;
+      }
       for (const d of this.repo.draftsByMessageId(row.account_id, row.message_id)) {
         if (d.local_message_pk === id) continue;
         if (d.server_dirty === 1) {
@@ -828,9 +858,6 @@ export class ComposeService implements DraftsApi {
     const content = d.content_json ? parseContent(d.content_json) : null;
     this.forgetLocal(d);
     if (content) await this.dropFiles(content.attachmentTokens);
-    if (d.server_folder_id !== null) {
-      void this.removeServerDraft(d).catch(() => undefined);
-    }
   }
 
   /** Delete the draft state and its row in the local Drafts folder. */
@@ -838,7 +865,14 @@ export class ComposeService implements DraftsApi {
     const t = this.pushTimers.get(d.draft_id);
     if (t) clearTimeout(t);
     this.pushTimers.delete(d.draft_id);
-    this.repo.deleteDraft(d.draft_id);
+    // The server may hold a copy (also one that is still being uploaded or not linked yet): write
+    // down that it must go, together with forgetting the draft, so a crash cannot separate them.
+    const mayHaveCopy = d.server_folder_id !== null || d.rev > 0;
+    this.ctx.db.transaction(() => {
+      this.repo.deleteDraft(d.draft_id);
+      if (mayHaveCopy) this.repo.addTombstone(d.account_id, d.message_id, this.ctx.now());
+    })();
+    if (mayHaveCopy) void this.purgeServerDrafts(d.account_id);
     this.trackSync(d.draft_id, d.account_id, null);
     if (d.local_message_pk !== null) {
       const row = this.ctx.messages.row(d.local_message_pk);
@@ -850,15 +884,54 @@ export class ComposeService implements DraftsApi {
     }
   }
 
-  private async removeServerDraft(d: DraftStateRow): Promise<void> {
-    const folder = d.server_folder_id !== null ? this.ctx.folders.row(d.server_folder_id) : null;
-    if (!folder) return;
-    await this.sessions.get(d.account_id).run('user', async (c) => {
-      await c.mailboxOpen(folder.path);
-      const uids = (await c.search({ header: { 'message-id': d.message_id } }, { uid: true })) || [];
-      if (uids.length > 0) await c.messageDelete(toSequenceSet(uids), { uid: true });
-    });
-    void this.sessions.get(d.account_id).syncFolderById(folder.id, 'background').catch(() => undefined);
+  /**
+   * Delete the server copies of drafts that were sent, scheduled or thrown away (see the table
+   * draft_tombstone). It waits for an upload of the same draft that is still running, so a copy that
+   * appears late is caught too. What cannot be done now (offline) is done when the account is back.
+   */
+  purgeServerDrafts(accountId: string): Promise<void> {
+    const running = this.purging.get(accountId);
+    if (running) {
+      this.purgeAgain.add(accountId);
+      return running;
+    }
+    const p: Promise<void> = this.purgeNow(accountId)
+      .catch((e) =>
+        this.ctx.log.debug({ err: String((e as Error)?.message ?? e) }, 'could not delete draft copies yet'),
+      )
+      .finally(() => {
+        this.purging.delete(accountId);
+        this.inflight.delete(p);
+        if (this.purgeAgain.delete(accountId) && !this.stopped) void this.purgeServerDrafts(accountId);
+      });
+    this.purging.set(accountId, p);
+    this.inflight.add(p);
+    return p;
+  }
+
+  private async purgeNow(accountId: string): Promise<void> {
+    for (const t of this.repo.tombstones(accountId)) {
+      if (this.stopped) return;
+      const run = this.pushRuns.get(copyKey(accountId, t.message_id));
+      if (run) await run.catch(() => undefined);
+      if (!this.repo.hasTombstone(accountId, t.message_id)) continue; // saved again meanwhile
+      const folder = this.ctx.folders.rowByRole(accountId, 'drafts');
+      const session = this.sessions.has(accountId) ? this.sessions.get(accountId) : null;
+      if (!folder || !session || !session.isReady()) return; // offline: the next flush does it
+      const gone = await session.run('user', async (c) => {
+        await c.mailboxOpen(folder.path);
+        const uids = (await c.search({ header: { 'message-id': t.message_id } }, { uid: true })) || [];
+        if (uids.length > 0 && this.repo.hasTombstone(accountId, t.message_id)) {
+          await c.messageDelete(toSequenceSet(uids), { uid: true });
+        }
+        return uids.length;
+      });
+      // An upload of a draft with this Message-ID may have started meanwhile (cleared the row).
+      if (!this.pushRuns.has(copyKey(accountId, t.message_id))) {
+        this.repo.clearTombstone(accountId, t.message_id);
+      }
+      if (gone > 0) void session.syncFolderById(folder.id, 'background').catch(() => undefined);
+    }
   }
 
   private async dropFiles(tokens: string[]): Promise<void> {
@@ -907,7 +980,9 @@ export class ComposeService implements DraftsApi {
       throw new AppException('INTERNAL', 'Could not queue the message.', { details: String(e) });
     }
     this.repo.setOutboxPath(id, rawPath);
-    // Keep the editor content so "Undo send" can bring the draft back.
+    // Keep the editor content so "Undo send" can bring the draft back. The draft is read again: an
+    // upload may have linked it to its server copy while the message was being built.
+    const d2 = this.repo.draft(req.draftId) ?? d;
     this.repo.upsertDraft({
       draft_id: req.draftId,
       account_id: account.id,
@@ -917,11 +992,11 @@ export class ComposeService implements DraftsApi {
       references_h: references,
       message_id: messageId,
       content_json: JSON.stringify(req),
-      server_folder_id: d?.server_folder_id ?? null,
+      server_folder_id: d2?.server_folder_id ?? null,
       updated_at: now,
-      local_message_pk: d?.local_message_pk ?? null,
-      server_dirty: d?.server_dirty ?? 0,
-      rev: d?.rev ?? 0,
+      local_message_pk: d2?.local_message_pk ?? null,
+      server_dirty: d2?.server_dirty ?? 0,
+      rev: d2?.rev ?? 0,
     });
     this.ctx.hub.emit({ type: 'outbox:changed' });
     this.schedule(id, sendAt);
@@ -963,7 +1038,6 @@ export class ComposeService implements DraftsApi {
     const d = this.repo.draft(draftId);
     if (!d) return;
     this.forgetLocal(d);
-    if (d.server_folder_id !== null) void this.removeServerDraft(d).catch(() => undefined);
   }
 
   /** A cancelled schedule is a normal draft again: shown in Drafts and uploaded in the background. */
@@ -1183,10 +1257,7 @@ export class ComposeService implements DraftsApi {
     this.repo.deleteOutbox(row.id);
     await rm(row.raw_path, { force: true }).catch(() => undefined);
     await this.dropFiles(meta.req.attachmentTokens);
-    if (d) {
-      this.forgetLocal(d);
-      if (d.server_folder_id !== null) void this.removeServerDraft(d).catch(() => undefined);
-    }
+    if (d) this.forgetLocal(d);
     this.ctx.hub.emit({ type: 'outbox:changed' });
     this.ctx.scheduler?.onOutboxFinished(row.id, meta.scheduledId, true);
     this.ctx.hub.emit({

@@ -57,6 +57,8 @@ export class ScheduledService implements SchedulerApi {
   private running: Promise<void> | null = null;
   private again = false;
   private stopped = true;
+  /** When the last message was handed to the Outbox (the gap between sends). */
+  private lastDispatchAt = 0;
 
   constructor(
     private readonly ctx: EngineContext,
@@ -424,6 +426,7 @@ export class ScheduledService implements SchedulerApi {
       outbox_id: null,
     });
     this.active.add(r.id);
+    this.lastDispatchAt = now;
     this.ctx.hub.emit({ type: 'scheduled:changed' });
     try {
       const outboxId = await this.compose.enqueueScheduled({
@@ -525,16 +528,28 @@ export class ScheduledService implements SchedulerApi {
     if (this.stopped) return;
     const now = this.ctx.now();
     let next: number | null = null;
+    const consider = (at: number) => {
+      if (next === null || at < next) next = at;
+    };
+    const spacing = this.ctx.scheduledSpacingMs ?? 2000;
+    // Already due when we look (it became due while a check ran, or it is a few ms away): do not
+    // wait for the watchdog. Only when the account can send (else this would spin) and after the
+    // usual gap since the last hand-over. A message that is too late is "held" by the check.
+    const earliest = Math.max(now, this.lastDispatchAt + spacing);
     for (const r of this.repo.byStatus('scheduled')) {
-      if (r.send_at > now && (next === null || r.send_at < next)) next = r.send_at;
+      if (r.send_at > now) consider(r.send_at);
+      else if (now - r.send_at > HOLD_AFTER_MS || this.ready(r.account_id)) consider(earliest);
     }
     for (const r of this.repo.byStatus('sending')) {
       if (this.active.has(r.id)) continue;
       const at = (r.sending_since ?? 0) + RECOVER_AFTER_MS;
-      if (at > now && (next === null || at < next)) next = at;
+      // Overdue and online: look again in a second (not at once: if the Sent folder cannot be
+      // read yet, this must not spin). Overdue and offline: the connection coming back rechecks.
+      if (at > now) consider(at);
+      else if (this.ready(r.account_id)) consider(now + 1000);
     }
     if (next === null) return;
-    const delay = Math.min(Math.max(next - now, 0) + 50, TIMER_MAX_MS);
+    const delay = Math.min(next <= now ? 0 : next - now + 50, TIMER_MAX_MS);
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.recheck();

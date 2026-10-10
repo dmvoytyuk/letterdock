@@ -692,3 +692,49 @@ describe('a send that was retrying keeps its history over a restart', () => {
     expect(after).toMatchObject({ attempts: 1, lastError: before.lastError });
   });
 });
+
+describe('a message that is already due when the timer is set', () => {
+  // The watchdog looks every 30 s; these must go out long before that.
+  const QUICK = 8_000;
+
+  it('due 50 ms ago at the moment the timer is set: goes out at once, no late notice', async () => {
+    const c = await boot();
+    const a = await schedule(c, 5 * MIN, { subject: 'just due' });
+    // The clock passes the send time while no check runs; the next change re-arms the timer.
+    c.clock.offset += 5 * MIN + 50;
+    c.h.events.length = 0;
+    await schedule(c, 2 * HOUR, { subject: 'much later' });
+    await waitFor('due message sent', () => smtp!.mails.length === 1, QUICK);
+    expect(smtp!.mails[0]!.parsed.subject).toBe('just due');
+    await waitFor('plan removed', async () => !(await listAll(c)).some((i) => i.id === a.id), QUICK);
+    expect(c.h.eventsOfType('scheduled:due')).toHaveLength(0);
+    expect(await listAll(c)).toHaveLength(1); // only the later one is left
+  });
+
+  it('send time 5 ms ahead when scheduled: the time passes while it is built, still goes out at once', async () => {
+    const c = await boot();
+    await schedule(c, 5, { subject: 'in five ms' });
+    await waitFor('sent', () => smtp!.mails.length === 1, QUICK);
+    expect(smtp!.mails[0]!.parsed.subject).toBe('in five ms');
+    await waitFor('plan removed', async () => (await listAll(c)).length === 0, QUICK);
+  });
+
+  it('two due messages still keep the gap between sends', async () => {
+    const c = await boot({ spacing: 300 });
+    await schedule(c, 5 * MIN, { subject: 'first due' });
+    await schedule(c, 5 * MIN, { subject: 'second due' });
+    c.clock.offset += 5 * MIN + 50;
+    await schedule(c, 2 * HOUR, { subject: 'much later' });
+    await waitFor('both sent', () => smtp!.mails.length === 2, QUICK);
+    await waitFor('plans removed', async () => (await listAll(c)).length === 1, QUICK);
+  });
+
+  it('a message that is more than a day late is held, not sent, and does not spin', async () => {
+    const c = await boot();
+    await schedule(c, 5 * MIN, { subject: 'way too late' });
+    c.clock.offset += 5 * MIN + 2 * DAY;
+    await schedule(c, 2 * HOUR, { subject: 'much later' });
+    await waitFor('held', async () => (await listAll(c)).some((i) => i.status === 'held'), QUICK);
+    expect(smtp!.mails).toHaveLength(0);
+  });
+});
