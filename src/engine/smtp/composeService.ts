@@ -945,7 +945,8 @@ export class ComposeService implements DraftsApi {
 
   // ---------- send & outbox ----------
 
-  async send(req: SendReq): Promise<SendRes> {
+  /** `noDelay`: leave at once (system mail such as an unsubscribe request; no undo window). */
+  async send(req: SendReq, opts: { noDelay?: boolean } = {}): Promise<SendRes> {
     const { account } = this.validate(req);
     const d = this.repo.draft(req.draftId);
     const messageId = d?.message_id ?? generateMessageId(account.email);
@@ -954,7 +955,7 @@ export class ComposeService implements DraftsApi {
     const raw = await this.build(req, account, messageId, inReplyTo, references);
 
     const now = this.ctx.now();
-    const delay = Math.max(0, this.ctx.settings().undoSendDelayMs ?? 0);
+    const delay = opts.noDelay ? 0 : Math.max(0, this.ctx.settings().undoSendDelayMs ?? 0);
     const sendAt = now + delay;
     const meta: OutboxMeta = {
       req,

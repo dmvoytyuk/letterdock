@@ -23,6 +23,8 @@ import type {
   ScheduledItem,
   SendReq,
   UpdateStatus,
+  UnsubscribeInfo,
+  UnsubscribeMethod,
 } from '../../../shared/ipc';
 import { emlFileName } from '../../../shared/fileName';
 import { buildDemo } from './demoData';
@@ -283,6 +285,12 @@ const settings: AppSettings = {
   suggestFromAllAccounts: true,
   groupConversations: false,
   shortcutPreset: 'outlook',
+  quickReplies: [],
+  recentCommands: [],
+  snoozeTimes: { morning: '08:00', evening: '18:00', weekendMorning: '09:00' },
+  showTrackerNotice: true,
+  notifyActions: true,
+  notifySnoozeReturn: true,
   ...(demo?.settings ?? {}),
 };
 
@@ -652,6 +660,7 @@ let attSeq = 1;
 function scopeFilter(scope: { kind: string; folderId?: number; accountId?: string }) {
   return (m: MessageHeader) => {
     const role = folderOf(m.folderId).role;
+    if (m.snoozedUntil) return false; // snoozed mail is hidden (DESIGN-SPEC 3.13.2)
     if (scope.kind === 'folder') return m.folderId === scope.folderId;
     if (scope.kind === 'accountInbox') return m.accountId === scope.accountId && role === 'inbox';
     if (scope.kind === 'unifiedFlagged') return m.flagged && role !== 'trash' && role !== 'junk';
@@ -808,6 +817,22 @@ function oauthNow() {
 const oauthWaits = new Map<string, { cancel: () => void }>();
 let sessionSeq = 1;
 
+const unsubscribedFake = new Map<string, { at: number; method: UnsubscribeMethod['kind'] }>();
+function fakeFromSender(accountId: string, address: string): MessageHeader[] {
+  return messages.filter((m) => {
+    const role = folderOf(m.folderId).role;
+    return m.accountId === accountId && m.from?.address.toLowerCase() === address.toLowerCase() && role !== 'trash' && role !== 'junk' && role !== 'drafts' && role !== 'sent';
+  });
+}
+/** Message ids a snooze / pin command means (messageIds, or the messages of the given conversations). */
+function fakeTargets(req: { messageIds?: number[]; threadIds?: string[] }, includeSnoozed = false): number[] {
+  const out = new Set<number>(req.messageIds ?? []);
+  for (const m of messages) {
+    if (req.threadIds?.includes(threadOfFake(m)) && (includeSnoozed || !m.snoozedUntil)) out.add(m.id);
+  }
+  return [...out].filter((id) => includeSnoozed || messages.find((m) => m.id === id));
+}
+
 function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
   const r = req as Record<string, unknown> | undefined;
   switch (channel) {
@@ -963,6 +988,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
           if (c) return dir === 'asc' ? c : -c;
           return b.date - a.date || b.id - a.id;
         });
+      const pinsApply = !r!.unreadOnly && ['folder', 'accountInbox', 'unifiedInbox'].includes(scope.kind);
+      const pinnedList = pinsApply ? list.filter((m) => m.pinned) : [];
+      if (pinnedList.length > 0) list.splice(0, list.length, ...list.filter((m) => !m.pinned));
       const at = cursor ? list.findIndex((m) => m.date === cursor.date && m.id === cursor.id) : -1;
       const after = cursor ? list.slice(at + 1) : list;
       const page = after.slice(0, limit);
@@ -972,7 +1000,8 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         items: page,
         nextCursor: more && last ? { date: last.date, id: last.id, ...(sort !== 'date' ? { key: keyOf(last) } : {}) } : null,
         canLoadOlderFromServer: false,
-        total: cursor ? null : list.length,
+        total: cursor ? null : list.length + pinnedList.length,
+        ...(pinnedList.length > 0 && !cursor ? { pinned: pinnedList } : {}),
       });
     }
     case 'conversations.list': {
@@ -1157,6 +1186,124 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       }
       setTimeout(() => changed({ updated: list.map((m) => m.id), folderIds: [] }), 60);
       return delay({ count: n }, 200);
+    }
+    // ----- light features (DESIGN-SPEC 3.13): simple in-memory stand-ins -----
+    case 'messages.countFromSender': {
+      const { accountId, address } = r as { accountId: string; address: string };
+      return delay({ count: fakeFromSender(accountId, address).length }, 80);
+    }
+    case 'messages.trashFromSender': {
+      const { accountId, address } = r as { accountId: string; address: string };
+      const ids = fakeFromSender(accountId, address).map((m) => m.id);
+      return handle('messages.apply', { messageIds: ids, action: { type: 'delete' } });
+    }
+    case 'unsubscribe.info': {
+      const id = (r as { messageId: number }).messageId;
+      const m = messages.find((x) => x.id === id);
+      if (!m) return err('NOT_FOUND', 'Message not found.');
+      const k = id % 6;
+      const host = (m.from?.address ?? 'news@example.com').split('@')[1]!;
+      const methods: UnsubscribeMethod[] =
+        k === 0 ? [{ kind: 'one-click', host }, { kind: 'page', host }] : k === 1 ? [{ kind: 'mailto', address: `unsubscribe@${host}`, subject: 'unsubscribe' }] : k === 2 ? [{ kind: 'page', host }] : [];
+      const auth: UnsubscribeInfo['auth'] = k === 3 ? 'failed' : k === 1 ? 'unknown' : 'verified';
+      const prev = unsubscribedFake.get(`${m.accountId}|${m.from?.address}`);
+      return delay<UnsubscribeInfo>({
+        available: methods.length > 0 && auth !== 'failed',
+        methods: k === 3 ? [{ kind: 'page', host }] : methods,
+        auth,
+        listKey: m.from?.address ?? null,
+        listName: m.from?.name ?? null,
+        sender: m.from?.address ?? null,
+        ...(prev ? { previous: prev, previouslyUnsubscribedAt: prev.at } : {}),
+      }, 80);
+    }
+    case 'unsubscribe.run': {
+      const { messageId, method } = r as { messageId: number; method: UnsubscribeMethod['kind'] };
+      const m = messages.find((x) => x.id === messageId);
+      if (m) unsubscribedFake.set(`${m.accountId}|${m.from?.address}`, { at: Date.now(), method });
+      return delay({ ok: true, method }, 500);
+    }
+    case 'unsubscribe.forgetHistory': {
+      const removed = unsubscribedFake.size;
+      unsubscribedFake.clear();
+      return delay({ removed }, 50);
+    }
+    case 'snooze.set': {
+      const { until } = r as { until: number };
+      const ids = fakeTargets(r as never);
+      for (const m of messages) if (ids.includes(m.id)) m.snoozedUntil = until;
+      const accountIds = new Set(messages.filter((m) => ids.includes(m.id)).map((m) => m.accountId));
+      setTimeout(() => {
+        changed({ removed: ids, folderIds: [] });
+        for (const a of accountIds) emit({ type: 'snooze:changed', accountId: a });
+      }, 40);
+      return delay({ snoozed: ids, failed: [] }, 100);
+    }
+    case 'snooze.clear': {
+      const ids = fakeTargets(r as never, true);
+      for (const m of messages) {
+        if (ids.includes(m.id)) {
+          delete m.snoozedUntil;
+          m.snoozeReturnedAt = Date.now();
+          m.seen = false;
+        }
+      }
+      const accountIds = new Set(messages.filter((m) => ids.includes(m.id)).map((m) => m.accountId));
+      setTimeout(() => {
+        changed({ added: ids, folderIds: [] });
+        for (const a of accountIds) emit({ type: 'snooze:changed', accountId: a });
+      }, 40);
+      return delay({ cleared: ids }, 100);
+    }
+    case 'snooze.list': {
+      const accountId = (r as { accountId?: string } | undefined)?.accountId;
+      return delay(
+        messages
+          .filter((m) => m.snoozedUntil && (!accountId || m.accountId === accountId))
+          .sort((a, b) => a.snoozedUntil! - b.snoozedUntil!)
+          .map((m) => ({ header: m, snoozedUntil: m.snoozedUntil! })),
+        80,
+      );
+    }
+    case 'snooze.count': {
+      const sn = messages.filter((m) => m.snoozedUntil);
+      const per = new Map<string, number>();
+      for (const m of sn) per.set(m.accountId, (per.get(m.accountId) ?? 0) + 1);
+      return delay({ total: sn.length, nextWakeAt: sn.length ? Math.min(...sn.map((m) => m.snoozedUntil!)) : null, perAccount: [...per].map(([accountId, total]) => ({ accountId, total })) }, 40);
+    }
+    case 'pin.set': {
+      const { pinned } = r as { pinned: boolean };
+      const ids = fakeTargets(r as never);
+      if (pinned) {
+        const folderIds = new Set(messages.filter((m) => ids.includes(m.id)).map((m) => m.folderId));
+        for (const f of folderIds) {
+          const already = messages.filter((m) => m.folderId === f && m.pinned && !ids.includes(m.id)).length;
+          if (already + ids.filter((i) => messages.find((m) => m.id === i)?.folderId === f).length > 10) {
+            return delay({ ok: false, limit: 10, changed: [] }, 50);
+          }
+        }
+      }
+      for (const m of messages) if (ids.includes(m.id)) m.pinned = pinned ? true : undefined;
+      setTimeout(() => changed({ updated: ids, folderIds: [] }), 30);
+      return delay({ ok: true, changed: ids }, 80);
+    }
+    case 'mute.set': {
+      const { muted, messageIds } = r as { muted: boolean; messageIds?: number[] };
+      const ids = messageIds ?? [];
+      let archivedCount = 0;
+      for (const m of messages) {
+        if (!ids.includes(m.id)) continue;
+        m.muted = muted ? true : undefined;
+        if (muted) {
+          const arch = folders.find((f) => f.accountId === m.accountId && f.role === 'archive');
+          if (arch && folderOf(m.folderId).role === 'inbox') {
+            m.folderId = arch.id;
+            archivedCount++;
+          }
+        }
+      }
+      setTimeout(() => changed({ updated: ids, folderIds: [] }), 30);
+      return delay({ ok: true, archivedCount, changed: ids }, 80);
     }
     case 'senders.allowImages': {
       const { address, allow } = r as { address: string; allow: boolean };

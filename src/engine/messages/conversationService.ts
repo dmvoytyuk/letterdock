@@ -44,6 +44,13 @@ interface Resolved {
 
 type JoinedRow = MessageRow & { frole: FolderRole | null; fname: string };
 
+/** `snoozeReturnedAt` of a conversation: the latest return time among its unread messages that came back. */
+function returnedFlag(msgs: MessageRow[]): { snoozeReturnedAt?: number } {
+  let t = 0;
+  for (const m of msgs) if (m.snooze_returned_at && m.snooze_returned_at > t) t = m.snooze_returned_at;
+  return t > 0 ? { snoozeReturnedAt: t } : {};
+}
+
 export class ConversationService {
   constructor(
     private readonly ctx: EngineContext,
@@ -67,7 +74,7 @@ export class ConversationService {
       return {
         scope: eff,
         memberWhere: member.where,
-        inclusion: 'm.flag_deleted = 0 AND m.folder_id = :folderId',
+        inclusion: 'm.flag_deleted = 0 AND m.snoozed_until IS NULL AND m.folder_id = :folderId',
         params: member.params,
         folderOnly: true,
       };
@@ -76,7 +83,7 @@ export class ConversationService {
     return {
       scope: eff,
       memberWhere: member.where,
-      inclusion: `m.flag_deleted = 0 AND ((f.role IN (${roles}) AND m.flag_draft = 0) OR (${base.where}))`,
+      inclusion: `m.flag_deleted = 0 AND m.snoozed_until IS NULL AND ((f.role IN (${roles}) AND m.flag_draft = 0) OR (${base.where}))`,
       params: member.params,
       folderOnly: false,
     };
@@ -84,7 +91,7 @@ export class ConversationService {
 
   /** The same test as `memberWhere`, for a row we already have. */
   private inView(r: Resolved, unreadOnly: boolean, row: JoinedRow): boolean {
-    if (row.flag_deleted === 1) return false;
+    if (row.flag_deleted === 1 || row.snoozed_until !== null) return false;
     if (unreadOnly && row.flag_seen === 1) return false;
     const s = r.scope;
     switch (s.kind) {
@@ -120,11 +127,22 @@ export class ConversationService {
 
     const params: Record<string, unknown> = { ...r.params, limit: limit + 1 };
     const asc = direction === 'asc';
+    // Pinned conversations (DESIGN-SPEC 3.13.6): one tiny indexed query; the paged query leaves them
+    // out only while there are any, so it is unchanged for everyone who never pins.
+    const pinnedKeys = this.pinnedThreads(r, unreadOnly);
+    let pinExclude = '';
+    pinnedKeys.forEach((k, i) => {
+      params[`pa${i}`] = k.a;
+      params[`pt${i}`] = k.t;
+    });
+    if (pinnedKeys.length > 0) {
+      pinExclude = ` AND (m.account_id, m.thread_id) NOT IN (VALUES ${pinnedKeys.map((_, i) => `(:pa${i}, :pt${i})`).join(',')})`;
+    }
     let groups: { a: string; t: string; ld: number; mx: number; k?: string }[];
     if (sort === 'date') {
       groups =
-        (!asc ? this.walkNewest(r, limit, req.cursor) : null) ??
-        this.dateGroups(r, params, asc, req.cursor);
+        (!asc ? this.walkNewest(r, limit, req.cursor, pinnedKeys) : null) ??
+        this.dateGroups(r, params, asc, req.cursor, pinExclude);
     } else {
       // The key comes from the LATEST message of the conversation (rn = 1): the sender as shown
       // (name, else address) or the subject without Re:/Fwd: prefixes. The same SQL text gives the
@@ -145,16 +163,16 @@ export class ConversationService {
         .prepare(
           `WITH g AS (
              SELECT m.account_id AS a, m.thread_id AS t,
-                    MAX(m.date_ms) OVER (PARTITION BY m.account_id, m.thread_id) AS ld,
+                    MAX(MAX(m.date_ms, COALESCE(m.snooze_returned_at, 0))) OVER (PARTITION BY m.account_id, m.thread_id) AS ld,
                     MAX(m.id) OVER (PARTITION BY m.account_id, m.thread_id) AS mx,
                     ROW_NUMBER() OVER (PARTITION BY m.account_id, m.thread_id
                                        ORDER BY m.date_ms DESC, m.id DESC) AS rn,
                     SUBSTR(${keyExpr}, 1, 200) AS k
                FROM message m JOIN folder f ON f.id = m.folder_id
-              WHERE ${r.inclusion}),
-              ok AS (SELECT m.account_id AS a, m.thread_id AS t
-                       FROM message m JOIN folder f ON f.id = m.folder_id
-                      WHERE ${r.memberWhere} GROUP BY m.account_id, m.thread_id)
+              WHERE ${r.inclusion}${pinExclude}),
+           ok AS (SELECT m.account_id AS a, m.thread_id AS t
+                    FROM message m JOIN folder f ON f.id = m.folder_id
+                   WHERE ${r.memberWhere} GROUP BY m.account_id, m.thread_id)
            SELECT a, t, ld, mx, k FROM g
             ${after ? `${after} AND rn = 1` : 'WHERE rn = 1'}
               AND EXISTS (SELECT 1 FROM ok WHERE ok.a = g.a AND ok.t = g.t)
@@ -175,12 +193,48 @@ export class ConversationService {
       more && last
         ? { date: last.ld, id: last.mx, ...(sort !== 'date' ? { key: last.k ?? '' } : {}) }
         : null;
+    let pinned: ConversationRow[] = [];
+    if (!req.cursor && pinnedKeys.length > 0) {
+      pinned = pinnedKeys
+        .map((k) => this.buildRow(r, unreadOnly, k.a, k.t, own))
+        .filter((x): x is ConversationRow => x !== null);
+      const key = (x: ConversationRow): string =>
+        sort === 'sender'
+          ? (x.latest.from?.name || x.latest.from?.address || '').toLowerCase()
+          : sort === 'subject'
+            ? x.latest.title.toLowerCase()
+            : '';
+      pinned.sort((x, y) => {
+        if (sort === 'date') {
+          const d = x.latest.date - y.latest.date || x.latest.id - y.latest.id;
+          return asc ? d : -d;
+        }
+        const kx = key(x);
+        const ky = key(y);
+        const c = kx < ky ? -1 : kx > ky ? 1 : 0;
+        return c ? (asc ? c : -c) : y.latest.date - x.latest.date || y.latest.id - x.latest.id;
+      });
+    }
     return {
       items: items.filter((x): x is ConversationRow => x !== null),
       nextCursor,
       canLoadOlderFromServer: nextCursor === null && this.messages.canLoadOlder(req.scope),
       total,
+      ...(pinned.length > 0 ? { pinned } : {}),
     };
+  }
+
+  /** Pinned conversations of this view (folder and Inbox views without the unread filter). */
+  private pinnedThreads(r: Resolved, unreadOnly: boolean): { a: string; t: string }[] {
+    const k = r.scope.kind;
+    if (unreadOnly || (k !== 'folder' && k !== 'accountInbox' && k !== 'unifiedInbox')) return [];
+    return this.ctx.db
+      .prepare(
+        `SELECT DISTINCT m.account_id AS a, m.thread_id AS t
+           FROM message m INDEXED BY idx_msg_pinned JOIN folder f ON f.id = m.folder_id
+          WHERE m.pinned_at IS NOT NULL AND m.thread_id IS NOT NULL AND ${r.memberWhere} LIMIT 100`,
+      )
+      .all(r.params) as { a: string; t: string }[];
   }
 
   /** Counting every conversation of a big view takes tens of ms: remember it until anything is written. */
@@ -210,6 +264,7 @@ export class ConversationService {
     params: Record<string, unknown>,
     asc: boolean,
     cursor: ListConversationsReq['cursor'],
+    pinExclude: string,
   ): { a: string; t: string; ld: number; mx: number }[] {
     let having = `HAVING MAX(CASE WHEN ${r.memberWhere} THEN 1 ELSE 0 END) = 1`;
     if (cursor) {
@@ -221,9 +276,10 @@ export class ConversationService {
     }
     return this.ctx.db
       .prepare(
-        `SELECT m.account_id AS a, m.thread_id AS t, MAX(m.date_ms) AS ld, MAX(m.id) AS mx
+        `SELECT m.account_id AS a, m.thread_id AS t,
+                MAX(MAX(m.date_ms, COALESCE(m.snooze_returned_at, 0))) AS ld, MAX(m.id) AS mx
            FROM message m JOIN folder f ON f.id = m.folder_id
-          WHERE ${r.inclusion}
+          WHERE ${r.inclusion}${pinExclude}
           GROUP BY m.account_id, m.thread_id
           ${having}
           ORDER BY ld ${asc ? 'ASC' : 'DESC'}, mx ${asc ? 'ASC' : 'DESC'}
@@ -236,12 +292,16 @@ export class ConversationService {
    * Newest conversations first without looking at the whole mailbox. The view's messages are read from
    * the newest down; the first message of a conversation that we meet carries its latest date. The walk
    * stops as soon as `limit + 1` conversations are known and no unseen one can be newer than the last of
-   * them. Returns null when the view is too sparse for this (the caller then groups everything).
+   * them. Conversations with a message that came back from snooze sort by that time instead, so they
+   * are looked at first (a small partial index) and the walk skips them. Pinned conversations are
+   * listed apart and skipped too. Returns null when the view is too sparse for this (the caller then
+   * groups everything).
    */
   private walkNewest(
     r: Resolved,
     limit: number,
     cursor: ListConversationsReq['cursor'],
+    pinned: { a: string; t: string }[],
   ): { a: string; t: string; ld: number; mx: number }[] | null {
     const MAX_THREADS_LOOKED_AT = 1500;
     const db = this.ctx.db;
@@ -252,16 +312,40 @@ export class ConversationService {
         ORDER BY m.date_ms DESC, m.id DESC`,
     );
     const agg = db.prepare(
-      `SELECT MAX(m.date_ms) AS ld, MAX(m.id) AS mx,
+      `SELECT MAX(MAX(m.date_ms, COALESCE(m.snooze_returned_at, 0))) AS ld, MAX(m.id) AS mx,
               MAX(CASE WHEN ${r.memberWhere} THEN 1 ELSE 0 END) AS mem
          FROM message m JOIN folder f ON f.id = m.folder_id
         WHERE m.account_id = :tAcc AND m.thread_id = :tThr AND ${r.inclusion}`,
     );
     const seen = new Set<string>();
+    const keyOf = (a: string, t: string) => `${a}\u0000${t}`;
+    for (const k of pinned) seen.add(keyOf(k.a, k.t));
     const found: { a: string; t: string; ld: number; mx: number }[] = [];
     const newestFirst = (x: { ld: number; mx: number }, y: { ld: number; mx: number }) =>
       y.ld - x.ld || y.mx - x.mx;
     let sorted = true;
+    const consider = (a: string, t: string): void => {
+      const g = agg.get({ ...r.params, tAcc: a, tThr: t }) as { ld: number; mx: number; mem: number };
+      if (!g.mem) return;
+      if (cursor && !(g.ld < cursor.date || (g.ld === cursor.date && g.mx < cursor.id))) return;
+      found.push({ a, t, ld: g.ld, mx: g.mx });
+      sorted = false;
+    };
+
+    const boosted = db
+      .prepare(
+        `SELECT DISTINCT m.account_id AS a, m.thread_id AS t
+           FROM message m INDEXED BY idx_msg_returned JOIN folder f ON f.id = m.folder_id
+          WHERE m.snooze_returned_at IS NOT NULL AND ${r.inclusion}`,
+      )
+      .all(r.params) as { a: string; t: string }[];
+    for (const b of boosted) {
+      const key = keyOf(b.a, b.t);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      consider(b.a, b.t);
+    }
+
     const params: Record<string, unknown> = { ...r.params };
     if (cursor) params.cDate = cursor.date;
     for (const row of walk.iterate(params) as Iterable<{ a: string; t: string; d: number }>) {
@@ -272,19 +356,11 @@ export class ConversationService {
         }
         if (row.d < found[limit]!.ld) break;
       }
-      const key = `${row.a} ${row.t}`;
+      const key = keyOf(row.a, row.t);
       if (seen.has(key)) continue;
       seen.add(key);
       if (seen.size > MAX_THREADS_LOOKED_AT && found.length <= limit) return null;
-      const g = agg.get({ ...r.params, tAcc: row.a, tThr: row.t }) as {
-        ld: number;
-        mx: number;
-        mem: number;
-      };
-      if (!g.mem) continue;
-      if (cursor && !(g.ld < cursor.date || (g.ld === cursor.date && g.mx < cursor.id))) continue;
-      found.push({ a: row.a, t: row.t, ld: g.ld, mx: g.mx });
-      sorted = false;
+      consider(row.a, row.t);
     }
     found.sort(newestFirst);
     return found.slice(0, limit + 1);
@@ -385,6 +461,9 @@ export class ConversationService {
       },
       folderMessageIds,
       messageIds: msgs.map((m) => m.id),
+      ...(all.some((x) => x.pinned_at !== null && view(x)) ? { pinned: true } : {}),
+      ...(msgs.some((m) => m.muted === 1) ? { muted: true } : {}),
+      ...returnedFlag(msgs),
     };
   }
 

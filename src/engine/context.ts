@@ -227,6 +227,12 @@ export interface RulesApi {
   afterAccountRemoved(): void;
 }
 
+/** The light features (snooze, mute), as the sync code sees them (DESIGN-SPEC 3.13). */
+export interface LightApi {
+  /** A sync stored new mail in this folder. Runs after the rules and BEFORE the notification is decided. */
+  onNewMail(folder: FolderRow, res: { kind: string; added: number[] }): Promise<void>;
+}
+
 export interface EngineContext {
   dataDir: string;
   db: Db;
@@ -250,6 +256,8 @@ export interface EngineContext {
   drafts?: DraftsApi;
   /** Set by the rules service. */
   rules?: RulesApi;
+  /** Set by the engine (snooze wake on reply, mute). */
+  light?: LightApi;
   /** Messages per batch when rules run on a folder. Default 500. */
   rulesBatchSize?: number;
   /** Set by the scheduled-send service. */

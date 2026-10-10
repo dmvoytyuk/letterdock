@@ -20,6 +20,8 @@ import type { EngineContext } from '../context';
 import type { SessionManager } from '../imap/sessionManager';
 import { rowToHeader, type MessageRow } from '../db/repos/messageRepo';
 import { ftsText, hasRemoteImages, makeSnippet, safeFileName } from './bodyUtils';
+import { readListHeaders } from '../../shared/listUnsubscribe';
+import { headerPart } from './unsubscribeService';
 
 export const MAX_DISPLAY_BYTES = 25 * 1024 * 1024;
 const deflate = promisify(deflateCb);
@@ -40,11 +42,12 @@ export class MessageService {
   // ---------- lists ----------
 
   list(req: ListMessagesReq): ListMessagesRes {
-    const { items, nextCursor, total } = this.ctx.messages.list(req);
+    const { items, nextCursor, total, pinned } = this.ctx.messages.list(req);
     return {
       items,
       nextCursor,
       total,
+      ...(pinned ? { pinned } : {}),
       canLoadOlderFromServer: nextCursor === null && this.canLoadOlder(req.scope),
     };
   }
@@ -238,6 +241,12 @@ export class MessageService {
       },
       this.ctx.now(),
     );
+    // Unsubscribe headers (DESIGN-SPEC 3.13.1): read once, here, while the source is in memory.
+    try {
+      this.ctx.messages.setListHeaders(row.id, JSON.stringify(readListHeaders(headerPart(source))));
+    } catch {
+      /* never hold back the message */
+    }
     this.ctx.hub.changed({ folderIds: [row.folder_id], updated: [row.id] });
     return this.buildBody(this.requireRow(row.id));
   }

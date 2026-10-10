@@ -23,6 +23,10 @@ import { RulesService } from './messages/rulesService';
 import { ThreadBackfill } from './messages/threadBackfill';
 import { ContactService } from './contacts/contactService';
 import { pruneBodyCache } from './messages/bodyCache';
+import { LightUndo } from './messages/lightShared';
+import { SnoozeService } from './messages/snoozeService';
+import { PinMuteService } from './messages/pinMuteService';
+import { UnsubscribeService } from './messages/unsubscribeService';
 
 export interface EngineOptions {
   dataDir: string;
@@ -56,6 +60,8 @@ export interface Engine {
   compose: ComposeService;
   scheduled: ScheduledService;
   rules: RulesService;
+  /** Snooze, pin / mute and unsubscribe (DESIGN-SPEC 3.13). */
+  light: { snooze: SnoozeService; pinMute: PinMuteService; unsubscribe: UnsubscribeService };
   handle(channel: string, payload: unknown): Promise<unknown>;
   /** The settings changed (the settings() callback now returns the new values). */
   applySettings(): Promise<void>;
@@ -100,6 +106,28 @@ export function createEngine(opts: EngineOptions): Engine {
   const scheduled = new ScheduledService(ctx, sessions, compose);
   const rules = new RulesService(ctx, actions);
   const conversations = new ConversationService(ctx, messages, actions);
+  const lightUndo = new LightUndo(() => ctx.now());
+  const snooze = new SnoozeService(ctx, actions, lightUndo);
+  const pinMute = new PinMuteService(ctx, actions, lightUndo);
+  const unsubscribe = new UnsubscribeService(ctx, messages, compose, actions);
+  ctx.light = {
+    async onNewMail(folder, res) {
+      if (res.kind !== 'incremental' || res.added.length === 0) return;
+      // A reply in a conversation with snoozed messages brings them back at once.
+      if (snooze.hasSnoozed()) {
+        const byAccount = new Map<string, string[]>();
+        for (const id of res.added) {
+          const r = ctx.messages.row(id);
+          if (!r?.thread_id) continue;
+          const l = byAccount.get(r.account_id) ?? [];
+          l.push(r.thread_id);
+          byAccount.set(r.account_id, l);
+        }
+        for (const [a, t] of byAccount) await snooze.wakeThreads(a, t);
+      }
+      await pinMute.onNewMail(folder, res);
+    },
+  };
   const threadBackfill = new ThreadBackfill(ctx);
   ctx.hub.threadSource = {
     keysOf: (ids) => ctx.messages.threadKeysOf(ids),
@@ -136,7 +164,17 @@ export function createEngine(opts: EngineOptions): Engine {
     'attachments.cidData': (r) => messages.cidData(r.messageId, r.contentId),
 
     'folders.empty': (r) => actions.emptyFolder(r.folderId),
-    'messages.undo': (r) => actions.undo(r.undoToken),
+    'messages.undo': (r) => (lightUndo.has(r.undoToken) ? lightUndo.undo(r.undoToken) : actions.undo(r.undoToken)),
+    'messages.countFromSender': (r) => unsubscribe.countFromSender(r.accountId, r.address),
+    'messages.trashFromSender': (r) => unsubscribe.trashFromSender(r.accountId, r.address),
+    'unsubscribe.info': (r) => unsubscribe.info(r.messageId),
+    'unsubscribe.forgetHistory': () => unsubscribe.forgetHistory(),
+    'snooze.set': (r) => snooze.set(r),
+    'snooze.clear': (r) => snooze.clear(r),
+    'snooze.list': (r) => snooze.list(r?.accountId),
+    'snooze.count': () => snooze.countAll(),
+    'pin.set': (r) => pinMute.set(r),
+    'mute.set': (r) => pinMute.setMuted(r),
     'messages.markAllRead': (r) => actions.markAllRead(r),
     'senders.allowImages': (r) => messages.allowSenderImages(r.address, r.allow),
     'senders.listAllowed': () => ctx.messages.listAllowedSenders(),
@@ -214,6 +252,10 @@ export function createEngine(opts: EngineOptions): Engine {
       | 'messages.sourceBytes'
       | 'attachments.register'
       | 'accounts.reconnect'
+      | 'unsubscribe.record'
+      | 'unsubscribe.targets'
+      | 'unsubscribe.sendMailto'
+      | 'notifications.action'
       | 'scheduled.recheck']: (
       req: MainToEngineMethods[K]['req'],
     ) => Promise<MainToEngineMethods[K]['res']> | MainToEngineMethods[K]['res'];
@@ -231,8 +273,27 @@ export function createEngine(opts: EngineOptions): Engine {
       await sessions.restart(r.accountId);
       void scheduled.recheck();
     },
-    // The PC woke up or was unlocked: clocks may have jumped, so look at the schedule again.
-    'scheduled.recheck': () => void scheduled.recheck(),
+    'unsubscribe.record': (r) => unsubscribe.record(r.messageId, r.method),
+    'unsubscribe.targets': (r) => unsubscribe.targets(r.messageId),
+    'unsubscribe.sendMailto': (r) => unsubscribe.sendMailto(r),
+    // A button on a notification (DESIGN-SPEC 3.13.3): silent when the message is gone, read or archived.
+    'notifications.action': async (r) => {
+      const row = ctx.messages.row(r.messageId);
+      if (!row || row.account_id !== r.accountId || row.flag_deleted === 1) return { done: false };
+      if (r.action === 'read') {
+        if (row.flag_seen === 1) return { done: false };
+        const res = await actions.applyQuiet([row.id], { type: 'markRead', read: true });
+        return { done: res.succeeded.length > 0 };
+      }
+      if (ctx.folders.row(row.folder_id)?.role !== 'inbox') return { done: false };
+      const res = await actions.apply({ messageIds: [row.id], action: { type: 'archive' } });
+      return { done: res.succeeded.length > 0, undoToken: res.undoToken };
+    },
+    // The PC woke up or was unlocked: clocks may have jumped, so look at the schedule and the snoozed mail again.
+    'scheduled.recheck': () => {
+      void scheduled.recheck();
+      void snooze.recheck();
+    },
   };
 
   let cacheTimer: ReturnType<typeof setInterval> | null = null;
@@ -254,6 +315,7 @@ export function createEngine(opts: EngineOptions): Engine {
     compose,
     scheduled,
     rules,
+    light: { snooze, pinMute, unsubscribe },
     applySettings: () => cleanBodyCache(),
     threadsReady: () => threadBackfill.whenDone(),
     async handle(channel, payload) {
@@ -280,6 +342,8 @@ export function createEngine(opts: EngineOptions): Engine {
       scheduled.recoverOnStart();
       compose.start();
       scheduled.start();
+      pinMute.start();
+      snooze.start();
       threadBackfill.start();
       // One-time learning from the headers that are already stored (runs in small chunks).
       void ctx.contacts.backfill().catch((e) =>
@@ -290,6 +354,7 @@ export function createEngine(opts: EngineOptions): Engine {
       if (cacheTimer) clearInterval(cacheTimer);
       threadBackfill.stop();
       scheduled.stop();
+      snooze.stop();
       ctx.contacts.stop();
       await compose.shutdown().catch(() => undefined);
       actions.stop();

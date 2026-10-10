@@ -51,6 +51,8 @@ export function newMailToAnnounce(
     const row = ctx.messages.row(id);
     // A rule may have read, deleted or moved it between the sync and now.
     if (!row || row.flag_seen === 1 || row.flag_deleted === 1 || row.folder_id !== folder.id) continue;
+    // Muted conversations never notify (DESIGN-SPEC 3.13.6); a snoozed message is hidden.
+    if (row.muted === 1 || row.snoozed_until !== null) continue;
     if (row.internal_ms < floor) continue;
     if (row.message_id && ctx.recentMoves.has(`${row.account_id}|${row.message_id}`)) continue;
     const [h] = ctx.messages.headers([id]);

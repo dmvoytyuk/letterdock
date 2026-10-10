@@ -13,6 +13,7 @@ import { AppException } from '../../../shared/errors';
 import type { ContactSource } from '../../contacts/contactService';
 import { ftsText } from '../../messages/bodyUtils';
 import { normalizeSubject } from '../../messages/threading';
+import type { Statement } from 'better-sqlite3';
 import type { Db } from '../connection';
 import { ThreadRepo, type ThreadKey } from './threadRepo';
 
@@ -87,6 +88,11 @@ export interface MessageRow {
   subject_norm: string | null;
   /** 1 once the rules looked at this message (DESIGN-SPEC 3.12). */
   rules_done?: number;
+  /** DESIGN-SPEC 3.13: pin time, muted flag, hidden-until time, time it came back from snooze. */
+  pinned_at: number | null;
+  muted: number;
+  snoozed_until: number | null;
+  snooze_returned_at: number | null;
 }
 
 interface ContactRow {
@@ -158,6 +164,11 @@ export function rowToHeader(r: MessageRow): MessageHeader {
     size: r.size,
     bodyCached: r.body_state === 'cached',
     ...(r.thread_id ? { threadId: r.thread_id } : {}),
+    // Tiny flags, only present when set (DESIGN-SPEC 3.13: a few integers per row, nothing else).
+    ...(r.pinned_at ? { pinned: true } : {}),
+    ...(r.muted === 1 ? { muted: true } : {}),
+    ...(r.snooze_returned_at ? { snoozeReturnedAt: r.snooze_returned_at } : {}),
+    ...(r.snoozed_until ? { snoozedUntil: r.snoozed_until } : {}),
   };
 }
 
@@ -198,7 +209,8 @@ export interface ScopeFilter {
 /** Translate a ListScope to SQL fragments (all queries alias message as m, folder as f). */
 export function scopeFilter(scope: ListScope, unreadOnly: boolean): ScopeFilter {
   const base = 'FROM message m JOIN folder f ON f.id = m.folder_id';
-  const conds = ['m.flag_deleted = 0'];
+  // Snoozed messages are hidden everywhere (DESIGN-SPEC 3.13.2).
+  const conds = ['m.flag_deleted = 0', 'm.snoozed_until IS NULL'];
   const params: Record<string, unknown> = {};
   switch (scope.kind) {
     case 'unifiedInbox':
@@ -559,6 +571,7 @@ export class MessageRepo {
     items: MessageHeader[];
     nextCursor: PageCursor | null;
     total: number | null;
+    pinned?: MessageHeader[];
   } {
     const limit = Math.min(Math.max(req.limit || 50, 1), 200);
     const sort = req.sort ?? 'date';
@@ -597,6 +610,11 @@ export class MessageRepo {
       params.cDate = req.cursor.date;
       params.cId = req.cursor.id;
     }
+    // Pinned messages and messages that came back from snooze are served by their own small indexed
+    // queries (page 1) and left out of the paged query, so ORDER BY keeps using the date index.
+    // While nobody has pinned or snoozed anything, the main query is exactly as before.
+    const topSets = this.topSets(req, sort, asc, f, order, keyExpr);
+    where += topSets.extraWhere;
     const rows = this.db
       .prepare(
         `SELECT m.*, ${keyExpr} AS sort_key ${f.from} WHERE ${where} ORDER BY ${order} LIMIT :limit`,
@@ -607,13 +625,12 @@ export class MessageRepo {
     const last = page[page.length - 1];
     let total: number | null = null;
     if (!req.cursor) {
-      const t = this.db
-        .prepare(`SELECT COUNT(*) AS n ${f.from} WHERE ${f.where}`)
-        .get(f.params) as { n: number };
-      total = t.n;
+      total = this.countFromFolders(req) ?? (
+        this.db.prepare(`SELECT COUNT(*) AS n ${f.from} WHERE ${f.where}`).get(f.params) as { n: number }
+      ).n;
     }
     return {
-      items: page.map(rowToHeader),
+      items: [...topSets.returned.map(rowToHeader), ...page.map(rowToHeader)],
       nextCursor:
         hasMore && last
           ? {
@@ -623,7 +640,83 @@ export class MessageRepo {
             }
           : null,
       total,
+      ...(topSets.pinned.length > 0 ? { pinned: topSets.pinned.map(rowToHeader) } : {}),
     };
+  }
+
+  /**
+   * The folders keep their message counts up to date (total without deleted and snoozed mail, and
+   * unread), so the size of a folder or Inbox view is a sum over a few rows instead of a scan of
+   * every message. Other views are counted from the messages.
+   */
+  private countFromFolders(req: ListMessagesReq): number | null {
+    const col = req.unreadOnly || req.scope.kind === 'unifiedUnread' ? 'unread_count' : 'total_count';
+    const s = req.scope;
+    const row =
+      s.kind === 'folder'
+        ? this.db.prepare(`SELECT ${col} AS n FROM folder WHERE id = ?`).get(s.folderId)
+        : s.kind === 'accountInbox'
+          ? this.db
+              .prepare(`SELECT COALESCE(SUM(${col}),0) AS n FROM folder WHERE role = 'inbox' AND account_id = ?`)
+              .get(s.accountId)
+          : s.kind === 'unifiedInbox' || s.kind === 'unifiedUnread'
+            ? this.db.prepare(`SELECT COALESCE(SUM(${col}),0) AS n FROM folder WHERE role = 'inbox'`).get()
+            : undefined;
+    return row ? (row as { n: number }).n : null;
+  }
+
+  private stmtAnyPinned?: Statement;
+  private stmtAnyReturned?: Statement;
+
+  /**
+   * DESIGN-SPEC 3.13.6 / 3.13.2. Folder and Inbox views (no unread filter) show pinned messages
+   * first (any sort) and, in date order newest first, mail that came back from snooze before the
+   * rest. Both sets are tiny (pins max 10 per folder; returned ones are cleared when read).
+   * Returns the extra WHERE for the paged query and the rows for page 1.
+   */
+  private topSets(
+    req: ListMessagesReq,
+    sort: string,
+    asc: boolean,
+    f: ScopeFilter,
+    order: string,
+    keyExpr: string,
+  ): { extraWhere: string; pinned: MessageRow[]; returned: MessageRow[] } {
+    const none = { extraWhere: '', pinned: [] as MessageRow[], returned: [] as MessageRow[] };
+    const k = req.scope.kind;
+    if (req.unreadOnly || (k !== 'folder' && k !== 'accountInbox' && k !== 'unifiedInbox')) return none;
+    let extraWhere = '';
+    let pinned: MessageRow[] = [];
+    let returned: MessageRow[] = [];
+    this.stmtAnyPinned ??= this.db.prepare('SELECT 1 FROM message WHERE pinned_at IS NOT NULL LIMIT 1');
+    if (this.stmtAnyPinned.get() !== undefined) {
+      extraWhere += ' AND m.pinned_at IS NULL';
+      if (!req.cursor) {
+        pinned = this.db
+          .prepare(
+            `SELECT m.*, ${keyExpr} AS sort_key ${f.from} WHERE ${f.where} AND m.pinned_at IS NOT NULL
+             ORDER BY ${order} LIMIT 200`,
+          )
+          .all(f.params) as MessageRow[];
+      }
+    }
+    if (sort === 'date' && !asc) {
+      this.stmtAnyReturned ??= this.db.prepare(
+        'SELECT 1 FROM message WHERE snooze_returned_at IS NOT NULL LIMIT 1',
+      );
+      if (this.stmtAnyReturned.get() !== undefined) {
+        extraWhere += ' AND (m.snooze_returned_at IS NULL OR m.pinned_at IS NOT NULL)';
+        if (!req.cursor) {
+          returned = this.db
+            .prepare(
+              `SELECT m.* ${f.from} WHERE ${f.where} AND m.snooze_returned_at IS NOT NULL AND m.pinned_at IS NULL
+               ORDER BY m.snooze_returned_at DESC, m.id DESC LIMIT 100`,
+            )
+            .all(f.params) as MessageRow[];
+        }
+      }
+    }
+    return { extraWhere, pinned, returned };
   }
 
   /** Rows in the shape the contacts index reads (id order, ids above `afterId`). */
@@ -795,9 +888,16 @@ export class MessageRepo {
 
   /** Move a row to another folder/uid, keeping its id (and cached body, search entry). */
   relocate(id: MessageId, folderId: FolderId, uid: number): void {
+    // A pin belongs to the folder it was made in; a snooze to the view it hid the message from
+    // (DESIGN-SPEC 3.13): both end when the message goes to another folder.
     this.db
-      .prepare('UPDATE message SET folder_id = ?, uid = ? WHERE id = ?')
-      .run(folderId, uid, id);
+      .prepare(
+        `UPDATE message SET
+           pinned_at = CASE WHEN folder_id = @f THEN pinned_at END,
+           snoozed_until = CASE WHEN folder_id = @f THEN snoozed_until END,
+           folder_id = @f, uid = @u WHERE id = @id`,
+      )
+      .run({ f: folderId, u: uid, id });
   }
 
   idAt(folderId: FolderId, uid: number): MessageId | null {
@@ -841,8 +941,10 @@ export class MessageRepo {
     value: boolean,
   ): MessageId[] {
     const changed: MessageId[] = [];
+    // Reading a message ends its "came back from snooze" chip (DESIGN-SPEC 3.13.2).
+    const extra = column === 'flag_seen' && value ? ', snooze_returned_at = NULL' : '';
     const stmt = this.db.prepare(
-      `UPDATE message SET ${column} = ? WHERE id = ? AND ${column} != ? RETURNING id`,
+      `UPDATE message SET ${column} = ?${extra} WHERE id = ? AND ${column} != ? RETURNING id`,
     );
     this.db.transaction(() => {
       for (const id of ids) {
@@ -1114,6 +1216,32 @@ export class MessageRepo {
 
   setAttachmentPath(id: number, path: string): void {
     this.db.prepare('UPDATE attachment SET cached_path = ? WHERE id = ?').run(path, id);
+  }
+
+  // ---------- unsubscribe headers (DESIGN-SPEC 3.13.1) ----------
+  /** The headers kept when the body was downloaded (JSON), null if not read yet, undefined if no body. */
+  listHeaders(id: MessageId): string | null | undefined {
+    const r = this.db.prepare('SELECT list_headers FROM body WHERE message_pk = ?').get(id) as
+      | { list_headers: string | null }
+      | undefined;
+    return r === undefined ? undefined : r.list_headers;
+  }
+
+  setListHeaders(id: MessageId, json: string): void {
+    this.db.prepare('UPDATE body SET list_headers = ? WHERE message_pk = ?').run(json, id);
+  }
+
+  /** Messages from this sender in the account, outside Trash, Junk, Drafts and Sent (for "Move all from this sender to Trash"). */
+  idsFromSender(accountId: string, address: string): MessageId[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT m.id FROM message m JOIN folder f ON f.id = m.folder_id
+            WHERE m.account_id = ? AND m.from_addr = ? COLLATE NOCASE AND m.flag_deleted = 0 AND m.flag_draft = 0
+              AND (f.role IS NULL OR f.role NOT IN ('trash','junk','drafts','sent'))`,
+        )
+        .all(accountId, address.trim()) as { id: number }[]
+    ).map((r) => r.id);
   }
 
   /** Oldest synced UID info for load-older decisions. */

@@ -256,6 +256,7 @@ describe('repos', () => {
       header({ folderId: sent1, uid: 1, flags: flagged }),
       header({ folderId: inbox2, uid: 1, accountId: 'acc-2', flags: flagged }),
     ]);
+    ctx.folders.recomputeAll(); // the sync does this after storing headers; list totals come from the folder counts
     const count = (scope: Parameters<typeof ctx.messages.list>[0]['scope']) =>
       ctx.messages.list({ scope, cursor: null, limit: 50 }).items.length;
     expect(count({ kind: 'unifiedInbox' })).toBe(3);

@@ -142,6 +142,14 @@ export interface MessageHeader {
    * engine has threaded it; the same value for all messages of one conversation.
    */
   threadId?: string;
+  /** Pinned to the top of its folder on this PC (DESIGN-SPEC 3.13.6). Absent when not pinned. */
+  pinned?: boolean;
+  /** Part of a muted conversation. Absent when not muted. */
+  muted?: boolean;
+  /** Came back from snooze at this time and was not read since (the "Snoozed" chip). Absent otherwise. */
+  snoozeReturnedAt?: EpochMs;
+  /** Only in `snooze.list`: still hidden until this time. */
+  snoozedUntil?: EpochMs;
 }
 
 export type DraftSyncState = 'saving' | 'queued' | 'failed' | 'saved';
@@ -225,6 +233,10 @@ export interface ConversationRow {
   folderMessageIds: MessageId[];
   /** All messages counted in `count` (one id per Message-ID), oldest first. */
   messageIds: MessageId[];
+  /** Some message of the conversation in this view is pinned / muted / came back from snooze. Absent when not. */
+  pinned?: boolean;
+  muted?: boolean;
+  snoozeReturnedAt?: EpochMs;
 }
 
 /** How `conversations.list` orders the rows (DESIGN-SPEC 3.10.2). */
@@ -252,6 +264,11 @@ export interface ListConversationsRes {
   canLoadOlderFromServer: boolean;
   /** Number of conversations in the view (first page only), else null. */
   total: number | null;
+  /**
+   * First page only, folder and Inbox views without the unread filter (DESIGN-SPEC 3.13.6): the
+   * pinned conversations (max 10 per folder and account). They are NOT in `items`.
+   */
+  pinned?: ConversationRow[];
 }
 
 export interface ConversationMessage {
@@ -326,6 +343,11 @@ export interface ListMessagesRes {
   nextCursor: PageCursor | null; // null = end of LOCAL data
   canLoadOlderFromServer: boolean; // local end reached but server has older mail
   total: number | null; // total count for scope when cheap, else null
+  /**
+   * First page only, folder / Inbox views without the unread filter (DESIGN-SPEC 3.13.6): the pinned
+   * messages (max 10 per folder). They are NOT in `items`. Show them under a "Pinned" header first.
+   */
+  pinned?: MessageHeader[];
 }
 
 // ---------- accounts ----------
@@ -795,6 +817,131 @@ export interface RuleActivityItem {
   warning: boolean;
 }
 
+// ---------- light features (DESIGN-SPEC 3.13) ----------
+export const MAX_PINS_PER_FOLDER = 10;
+export const MAX_MUTED_PER_ACCOUNT = 500;
+export const MAX_QUICK_REPLIES = 50;
+export const QUICK_REPLY_NAME_MAX = 40;
+export const QUICK_REPLY_TEXT_MAX = 2000;
+export const MAX_RECENT_COMMANDS = 8;
+
+export type UnsubscribeAuth = 'verified' | 'unknown' | 'failed';
+export type UnsubscribeMethodKind = 'one-click' | 'mailto' | 'page';
+/** One way to unsubscribe, in priority order. The URLs themselves stay in main. */
+export interface UnsubscribeMethod {
+  kind: UnsubscribeMethodKind;
+  /** one-click and page: the host the request / the page goes to. */
+  host?: string;
+  /** mailto: where the email goes. */
+  address?: string;
+  /** mailto: subject from the link, else "unsubscribe". */
+  subject?: string;
+}
+export interface UnsubscribeInfo {
+  /** There is at least one usable method AND the sender check did not fail. */
+  available: boolean;
+  /** Usable methods, best first. Empty when the message has no List-Unsubscribe header. */
+  methods: UnsubscribeMethod[];
+  auth: UnsubscribeAuth;
+  /** List-Id value if present, else the lower-case sender address. */
+  listKey: string | null;
+  /** Readable list name (List-Id phrase or sender name), if any. */
+  listName: string | null;
+  /** Lower-case sender address. */
+  sender: string | null;
+  /** The user unsubscribed from this list key before (same account). */
+  previous?: { at: EpochMs; method: UnsubscribeMethodKind };
+  previouslyUnsubscribedAt?: EpochMs;
+}
+export interface UnsubscribeRunReq {
+  messageId: MessageId;
+  method: UnsubscribeMethodKind;
+}
+export interface UnsubscribeRunRes {
+  ok: boolean;
+  method: UnsubscribeMethodKind;
+  error?: AppError;
+}
+export interface FromSenderReq {
+  accountId: AccountId;
+  /** Sender address (case does not matter). */
+  address: string;
+}
+
+/** Which messages a snooze / pin command acts on. Give `messageIds`, or `threadIds` with the view's `scope`. */
+export interface LightTargets {
+  messageIds?: MessageId[];
+  /** Conversations (conversation view). Only their messages that are in `scope` are changed. */
+  threadIds?: string[];
+  /** The view the user acts in. Without it, threads use the Inbox-like folders of the account. */
+  scope?: ListScope;
+}
+export interface SnoozeSetReq extends LightTargets {
+  /** Epoch ms in the future, at most one year ahead. */
+  until: EpochMs;
+}
+export interface SnoozeSetRes {
+  snoozed: MessageId[];
+  failed: { id: MessageId; error: AppError }[];
+  /** Pass to `messages.undo`. */
+  undoToken?: string;
+}
+export interface SnoozeClearRes {
+  /** Messages that came back now (unread, at the top). */
+  cleared: MessageId[];
+  undoToken?: string;
+}
+export interface SnoozedItem {
+  header: MessageHeader;
+  snoozedUntil: EpochMs;
+}
+export interface SnoozeCount {
+  total: number;
+  nextWakeAt: EpochMs | null;
+  perAccount: { accountId: AccountId; total: number }[];
+}
+export interface PinSetReq extends LightTargets {
+  pinned: boolean;
+}
+export interface PinSetRes {
+  ok: boolean;
+  /** Set when `ok` is false because of the limit: MAX_PINS_PER_FOLDER. Nothing was changed. */
+  limit?: number;
+  changed: MessageId[];
+  undoToken?: string;
+}
+export interface MuteSetReq {
+  messageIds?: MessageId[];
+  /** Conversations of the conversation view. */
+  threads?: { accountId: AccountId; threadId: string }[];
+  /** Muting archives the conversation's messages that are in this view (default: the folder of each message). */
+  scope?: ListScope;
+  muted: boolean;
+}
+export interface MuteSetRes {
+  ok: boolean;
+  /** Messages archived by muting. */
+  archivedCount: number;
+  changed: MessageId[];
+  undoToken?: string;
+}
+
+export interface QuickReply {
+  id: string;
+  /** 1 to QUICK_REPLY_NAME_MAX characters, unique (case-insensitive). */
+  name: string;
+  /** Plain text, 1 to QUICK_REPLY_TEXT_MAX characters. */
+  text: string;
+  /** null = every account. */
+  accountId: AccountId | null;
+}
+export interface SnoozeTimes {
+  /** "HH:MM" 24 hour clock. */
+  morning: string;
+  evening: string;
+  weekendMorning: string;
+}
+
 // ---------- search ----------
 export interface SearchReq {
   query: string;
@@ -976,6 +1123,18 @@ export interface AppSettings {
   groupConversations: boolean;
   /** Key set of Settings > Shortcuts: Outlook style (default) or Gmail style (adds single-key shortcuts). */
   shortcutPreset: 'outlook' | 'gmail';
+  /** Saved text for the compose window (DESIGN-SPEC 3.13.4). Max 50. Array order = menu order. */
+  quickReplies: QuickReply[];
+  /** The last commands run from the command box, newest first (max 8, DESIGN-SPEC 3.13.5). */
+  recentCommands: string[];
+  /** Times behind the Snooze menu items (DESIGN-SPEC 3.13.2). */
+  snoozeTimes: SnoozeTimes;
+  /** Show the "Blocked N trackers" note (DESIGN-SPEC 3.13.7). Blocking itself always stays on. */
+  showTrackerNotice: boolean;
+  /** Mark as read / Archive buttons on single-message notifications (3.13.3). */
+  notifyActions: boolean;
+  /** Notify when snoozed mail comes back (3.13.2). */
+  notifySnoozeReturn: boolean;
 }
 
 // ---------- app updates (section 0, item 7; GitHub Releases via electron-updater) ----------
@@ -1042,6 +1201,24 @@ export interface IpcMethods {
   'messages.apply': { req: ApplyActionReq; res: ApplyActionRes };
   'messages.undo': { req: UndoReq; res: UndoRes };
   'messages.markAllRead': { req: MarkAllReadReq; res: { count: number } };
+  /** Messages from this sender address in the account, not counting Trash, Junk, Drafts and Sent ("Move all from this sender to Trash"). */
+  'messages.countFromSender': { req: FromSenderReq; res: { count: number } };
+  /** Move all of them to Trash (one undo token). */
+  'messages.trashFromSender': { req: FromSenderReq; res: ApplyActionRes };
+
+  // light features (DESIGN-SPEC 3.13). Everything is computed when asked; nothing runs at start-up.
+  /** Unsubscribe options of an opened message (read from stored headers, no network). */
+  'unsubscribe.info': { req: { messageId: MessageId }; res: UnsubscribeInfo };
+  /** Main: does the one-click POST / opens the page / sends the mailto, and remembers the result. */
+  'unsubscribe.run': { req: UnsubscribeRunReq; res: UnsubscribeRunRes };
+  'unsubscribe.forgetHistory': { req: void; res: { removed: number } };
+  'snooze.set': { req: SnoozeSetReq; res: SnoozeSetRes };
+  /** Bring the messages back now (unread, at the top). */
+  'snooze.clear': { req: LightTargets; res: SnoozeClearRes };
+  'snooze.list': { req: { accountId?: AccountId }; res: SnoozedItem[] };
+  'snooze.count': { req: void; res: SnoozeCount };
+  'pin.set': { req: PinSetReq; res: PinSetRes };
+  'mute.set': { req: MuteSetReq; res: MuteSetRes };
   // conversations (DESIGN-SPEC 3.10)
   'conversations.list': { req: ListConversationsReq; res: ListConversationsRes };
   'conversations.get': { req: GetConversationReq; res: GetConversationRes };
@@ -1174,7 +1351,29 @@ export type AppEvent =
       done: number;
       total: number | null;
     }
-  | { type: 'notify:newMail'; accountId: AccountId; messages: MessageHeader[] }
+  | {
+      type: 'notify:newMail';
+      accountId: AccountId;
+      messages: MessageHeader[];
+      /** The account has a folder "Archive" can go to (the notification shows the Archive button). */
+      archiveAvailable?: boolean;
+    }
+  /** Snoozed messages changed (set, cleared, woke up). Refresh lists, counts and the Snoozed view. */
+  | { type: 'snooze:changed'; accountId: AccountId }
+  /** Snoozed mail came back by itself (not for "Unsnooze now"). Main shows the "Snoozed mail is back" notification. */
+  | { type: 'snooze:returned'; accountId: AccountId; messages: MessageHeader[] }
+  /**
+   * A button on a notification (Mark as read / Archive) did its work in the background. Show the
+   * in-app toast only if the main window is visible: "Marked as read" / "Moved to Archive [Undo]"
+   * (`undoToken` for `messages.undo`). Sent to the main window only.
+   */
+  | {
+      type: 'notify:actionDone';
+      action: 'read' | 'archive';
+      accountId: AccountId;
+      messageId: MessageId;
+      undoToken?: string;
+    }
   | {
       type: 'action:failed';
       messageIds: MessageId[];

@@ -196,7 +196,7 @@ export class FolderRepo {
     const r = this.db
       .prepare(
         `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN flag_seen=0 THEN 1 ELSE 0 END),0) AS unread
-         FROM message WHERE folder_id=? AND flag_deleted=0`,
+         FROM message WHERE folder_id=? AND flag_deleted=0 AND snoozed_until IS NULL`,
       )
       .get(id) as { total: number; unread: number };
     this.db

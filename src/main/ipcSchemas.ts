@@ -87,6 +87,20 @@ const action = z.discriminatedUnion('type', [
   z.object({ type: z.literal('notSpam') }),
 ]);
 
+const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const quickReplies = z
+  .array(
+    z.object({
+      id: str(100).min(1),
+      name: z.string().trim().min(1).max(40),
+      text: z.string().min(1).max(2000),
+      accountId: accountId.nullable(),
+    }),
+  )
+  .max(50)
+  .refine((l) => new Set(l.map((q) => q.name.trim().toLowerCase())).size === l.length, 'names must be unique')
+  .refine((l) => new Set(l.map((q) => q.id)).size === l.length, 'ids must be unique');
+
 const settingsPatch = z
   .object({
     notifications: z.object({
@@ -113,8 +127,22 @@ const settingsPatch = z
     suggestFromAllAccounts: z.boolean(),
     groupConversations: z.boolean(),
     shortcutPreset: z.enum(['outlook', 'gmail']),
+    quickReplies,
+    recentCommands: z.array(str(100)).max(8),
+    snoozeTimes: z.object({ morning: hhmm, evening: hhmm, weekendMorning: hhmm }),
+    showTrackerNotice: z.boolean(),
+    notifyActions: z.boolean(),
+    notifySnoozeReturn: z.boolean(),
   })
   .partial();
+
+const lightTargets = {
+  messageIds: z.array(id).min(1).max(1000).optional(),
+  threadIds: z.array(str(300).min(1)).min(1).max(1000).optional(),
+  scope: scope.optional(),
+};
+const hasTarget = (r: { messageIds?: unknown; threadIds?: unknown }) =>
+  r.messageIds !== undefined || r.threadIds !== undefined;
 
 const none = z.undefined();
 
@@ -199,6 +227,24 @@ export const schemas: Schemas = {
   'messages.markAllRead': z.object({
     scope: z.union([scope, z.object({ kind: z.literal('account'), accountId })]),
   }),
+  'messages.countFromSender': z.object({ accountId, address: str(320).min(3) }),
+  'messages.trashFromSender': z.object({ accountId, address: str(320).min(3) }),
+  'unsubscribe.info': z.object({ messageId: id }),
+  'unsubscribe.run': z.object({ messageId: id, method: z.enum(['one-click', 'mailto', 'page']) }),
+  'unsubscribe.forgetHistory': none,
+  'snooze.set': z.object({ ...lightTargets, until: z.number().int() }).refine(hasTarget),
+  'snooze.clear': z.object(lightTargets).refine(hasTarget),
+  'snooze.list': z.object({ accountId: accountId.optional() }),
+  'snooze.count': none,
+  'pin.set': z.object({ ...lightTargets, pinned: z.boolean() }).refine(hasTarget),
+  'mute.set': z
+    .object({
+      messageIds: z.array(id).min(1).max(1000).optional(),
+      threads: z.array(z.object({ accountId, threadId: str(300).min(1) })).min(1).max(1000).optional(),
+      scope: scope.optional(),
+      muted: z.boolean(),
+    })
+    .refine((r) => r.messageIds !== undefined || r.threads !== undefined),
   'conversations.list': z.object({
     scope,
     cursor: z.object({ date: z.number(), id: z.number(), key: str(500).optional() }).nullable(),

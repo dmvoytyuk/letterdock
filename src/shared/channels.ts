@@ -16,6 +16,7 @@ export const MAIN_CHANNELS = [
   'message.print',
   'messages.saveEml',
   'ui.showUndo',
+  'unsubscribe.run',
   'settings.get',
   'settings.set',
   'images.cacheInfo',

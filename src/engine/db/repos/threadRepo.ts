@@ -120,6 +120,13 @@ export class ThreadRepo {
         this.db
           .prepare(`UPDATE thread_mid SET thread_id = ? WHERE account_id = ? AND thread_id IN (${marks})`)
           .run(threadId, i.accountId, ...losers);
+        // A muted conversation that was merged stays muted (DESIGN-SPEC 3.13.6). Rare path only.
+        this.db
+          .prepare(`UPDATE OR IGNORE muted_threads SET thread_key = ? WHERE account_id = ? AND thread_key IN (${marks})`)
+          .run(threadId, i.accountId, ...losers);
+        this.db
+          .prepare(`DELETE FROM muted_threads WHERE account_id = ? AND thread_key IN (${marks})`)
+          .run(i.accountId, ...losers);
         merged.push(...losers);
       }
     }
@@ -232,6 +239,10 @@ export class ThreadRepo {
     const touched: ThreadKey[] = [];
     const sel = this.db.prepare('SELECT thread_id, message_id FROM message WHERE id = ?');
     const upd = this.db.prepare('UPDATE message SET thread_id = ? WHERE id = ?');
+    // A muted conversation keeps its record when it gets its Gmail conversation id.
+    const moveMute = this.db.prepare(
+      'UPDATE OR IGNORE muted_threads SET thread_key = ? WHERE account_id = ? AND thread_key = ?',
+    );
     const mid = this.db.prepare(
       `INSERT INTO thread_mid (account_id, mid, thread_id) VALUES (?,?,?)
        ON CONFLICT(account_id, mid) DO UPDATE SET thread_id = excluded.thread_id`,
@@ -243,6 +254,7 @@ export class ThreadRepo {
         const next = gmailThreadId(accountId, it.gmThrid);
         if (cur.thread_id === next) continue;
         upd.run(next, it.id);
+        if (cur.thread_id) moveMute.run(next, accountId, cur.thread_id);
         const own = normalizeMessageId(cur.message_id);
         if (own) mid.run(accountId, own, next);
         touched.push({ accountId, threadId: next });

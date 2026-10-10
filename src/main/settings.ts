@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { AppSettings, OAuthSettings, OAuthSettingsUpdate } from '../shared/ipc';
+import type { AppSettings, OAuthSettings, OAuthSettingsUpdate, QuickReply } from '../shared/ipc';
+import { MAX_QUICK_REPLIES, MAX_RECENT_COMMANDS, QUICK_REPLY_NAME_MAX, QUICK_REPLY_TEXT_MAX } from '../shared/ipc';
 import { AppException } from '../shared/errors';
 import { BUILT_IN_MICROSOFT_CLIENT_ID } from './buildConfig';
 import { isValidTenant } from './oauth/microsoft';
@@ -25,7 +26,39 @@ export const DEFAULT_SETTINGS: AppSettings = {
   suggestFromAllAccounts: true,
   groupConversations: false,
   shortcutPreset: 'outlook',
+  quickReplies: [],
+  recentCommands: [],
+  snoozeTimes: { morning: '08:00', evening: '18:00', weekendMorning: '09:00' },
+  showTrackerNotice: true,
+  notifyActions: true,
+  notifySnoozeReturn: true,
 };
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Keeps only valid quick replies (max 50, name 1-40, text 1-2000, unique names and ids). */
+export function sanitizeQuickReplies(v: unknown): QuickReply[] {
+  if (!Array.isArray(v)) return [];
+  const out: QuickReply[] = [];
+  const names = new Set<string>();
+  const ids = new Set<string>();
+  for (const q of v) {
+    if (out.length >= MAX_QUICK_REPLIES) break;
+    if (!q || typeof q !== 'object') continue;
+    const r = q as Record<string, unknown>;
+    if (typeof r.id !== 'string' || !r.id || r.id.length > 100) continue;
+    if (typeof r.name !== 'string' || typeof r.text !== 'string') continue;
+    const name = r.name.trim();
+    if (name.length < 1 || name.length > QUICK_REPLY_NAME_MAX) continue;
+    if (r.text.length < 1 || r.text.length > QUICK_REPLY_TEXT_MAX) continue;
+    const accountId = typeof r.accountId === 'string' && r.accountId ? r.accountId : null;
+    if (names.has(name.toLowerCase()) || ids.has(r.id)) continue;
+    names.add(name.toLowerCase());
+    ids.add(r.id);
+    out.push({ id: r.id, name, text: r.text, accountId });
+  }
+  return out;
+}
 
 interface StoredFile {
   app: Partial<AppSettings>;
@@ -43,13 +76,24 @@ export function mergeSettings(stored: Partial<AppSettings> | undefined): AppSett
     const v = (stored as Record<string, unknown>)[key];
     if (v === undefined) continue;
     const def = DEFAULT_SETTINGS[key];
-    if (def !== null && typeof def === 'object') {
+    if (Array.isArray(def)) {
+      if (Array.isArray(v)) o[key] = v; // elements are checked below
+    } else if (def !== null && typeof def === 'object') {
       if (v && typeof v === 'object' && !Array.isArray(v)) o[key] = { ...def, ...v };
     } else if (typeof v === typeof def) {
       o[key] = v;
     }
   }
   if (out.shortcutPreset !== 'gmail') out.shortcutPreset = 'outlook'; // only the two known styles
+  out.quickReplies = sanitizeQuickReplies(out.quickReplies);
+  out.recentCommands = (Array.isArray(out.recentCommands) ? out.recentCommands : [])
+    .filter((c): c is string => typeof c === 'string' && c.length > 0 && c.length <= 100)
+    .slice(0, MAX_RECENT_COMMANDS);
+  for (const k of ['morning', 'evening', 'weekendMorning'] as const) {
+    if (typeof out.snoozeTimes[k] !== 'string' || !HHMM.test(out.snoozeTimes[k])) {
+      out.snoozeTimes[k] = DEFAULT_SETTINGS.snoozeTimes[k];
+    }
+  }
   return out;
 }
 

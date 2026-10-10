@@ -67,6 +67,31 @@ export interface MainToEngineMethods {
   };
   /** Reconnect an account after its OAuth tokens were renewed. */
   'accounts.reconnect': { req: { accountId: string }; res: void };
+  /** The user unsubscribed (main did the request): remember it. */
+  'unsubscribe.record': {
+    req: { messageId: number; method: 'one-click' | 'mailto' | 'page' };
+    res: void;
+  };
+  /** The real addresses behind an unsubscribe message. Main only; the renderer never gets the URLs. */
+  'unsubscribe.targets': {
+    req: { messageId: number };
+    res: {
+      auth: 'verified' | 'unknown' | 'failed';
+      oneClickUrl: string | null;
+      pageUrl: string | null;
+      mailto: { address: string; subject: string; body: string } | null;
+    };
+  };
+  /** Send the unsubscribe email from the receiving account (normal send path, no undo delay). */
+  'unsubscribe.sendMailto': {
+    req: { messageId: number; address: string; subject: string; body: string };
+    res: void;
+  };
+  /** A button on a notification was pressed (Mark as read / Archive). */
+  'notifications.action': {
+    req: { accountId: string; messageId: number; action: 'read' | 'archive' };
+    res: { done: boolean; undoToken?: string };
+  };
   /** The PC woke up from sleep or was unlocked: check the scheduled messages again. */
   'scheduled.recheck': { req: { reason: 'resume' | 'unlock' }; res: void };
 }

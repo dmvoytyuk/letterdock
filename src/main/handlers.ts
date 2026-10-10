@@ -1,7 +1,7 @@
 // Handlers for channels the main process owns (see shared/channels.ts).
 import { copyFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { app, BrowserWindow, dialog, nativeTheme, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, net, shell } from 'electron';
 import { convert as htmlToText } from 'html-to-text';
 import type {
   DraftAttachment,
@@ -26,6 +26,8 @@ import { computeMailtoStatus, DEFAULT_APPS_URI } from './mailto';
 import { buildPrintDocument } from './print/printDocument';
 import { printDocument, type PrintDeps } from './print/printWindow';
 import { SavedPaths, saveEml } from './saveEml';
+import { postOneClick } from './unsubscribe/oneClick';
+import { runUnsubscribe } from './unsubscribe/run';
 
 type MainHandlers = {
   [C in MainChannel]: (req: IpcReq<C>) => Promise<IpcRes<C>> | IpcRes<C>;
@@ -179,6 +181,16 @@ export function createMainHandlers(d: HandlerDeps): MainHandlers {
       if (res.saved && res.path) savedPaths.add(res.path);
       return res;
     },
+    'unsubscribe.run': (r) =>
+      runUnsubscribe(
+        {
+          engine: (channel, payload) => d.engine.request(channel, payload),
+          postOneClick: (url) => postOneClick(url),
+          openExternal: (url) => shell.openExternal(url),
+          isOnline: () => net.isOnline(),
+        },
+        r,
+      ),
     'ui.showUndo': (r) => ({
       delivered: d.showUndoInMain({ label: r.label, undoToken: r.undoToken, count: r.count ?? 0 }),
     }),

@@ -600,12 +600,20 @@ export class AccountSession {
           await this.ctx.rules?.onNewMail(fresh, res).catch((e) =>
             this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'rules failed on new mail'),
           );
+          // Mute and "a reply wakes the snoozed conversation" (also before the notification).
+          await this.ctx.light?.onNewMail(fresh, res).catch((e) =>
+            this.ctx.log.warn({ err: String((e as Error)?.message ?? e) }, 'light features failed on new mail'),
+          );
           const fresh2 = newMailToAnnounce(this.ctx, fresh, res);
           if (fresh2.length > 0) {
             this.ctx.hub.emit({
               type: 'notify:newMail',
               accountId: this.account.id,
               messages: fresh2,
+              archiveAvailable: !!(
+                this.ctx.folders.rowByRole(this.account.id, 'archive') ||
+                this.ctx.folders.rowByRole(this.account.id, 'all')
+              ),
             });
           }
         } while (entry.rerun && !this.stopped);
