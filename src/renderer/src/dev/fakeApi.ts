@@ -254,6 +254,51 @@ if (demo) {
   mid = demo.nextMessageId;
 }
 
+// ?fake=1&scenario=light: every state of the light features (DESIGN-SPEC 3.13) on the everyday dev data, so each
+// one can be looked at. The demo scenario (website pictures) is not touched.
+const LIGHT = new URLSearchParams(location.search).get('scenario') === 'light';
+/** Which unsubscribe case a message plays (see the 'unsubscribe.info' handler); falls back to id % 6. */
+const unsubKinds = new Map<number, number>();
+if (LIGHT) {
+  const newestFirst = (a: MessageHeader, b: MessageHeader) => b.date - a.date || b.id - a.id;
+  const inbox1 = folders.find((x) => x.accountId === 'a1' && x.role === 'inbox')!;
+  const rows = messages.filter((m) => m.folderId === inbox1.id && !fixtureBodies.has(m.id)).sort(newestFirst);
+  for (const i of [3, 7, 11]) rows[i]!.pinned = true; // Pinned group
+  rows[5]!.muted = true; // muted conversation glyph
+  for (const [i, hours] of [[1, 2], [4, 5]] as const) {
+    rows[i]!.snoozeReturnedAt = now - hours * 3_600_000; // "Snoozed" chip
+    rows[i]!.seen = false;
+  }
+  const at = (days: number, h: number) => {
+    const d = new Date(now);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days, h, 0).getTime();
+  };
+  rows[14]!.snoozedUntil = now + 3 * 3_600_000;
+  rows[15]!.snoozedUntil = at(1, 8);
+  rows[16]!.snoozedUntil = at(4, 9);
+  rows[17]!.snoozedUntil = at(20, 8);
+  const inbox2 = folders.find((x) => x.accountId === 'a2' && x.role === 'inbox');
+  const other = messages.filter((m) => m.folderId === inbox2?.id).sort(newestFirst)[2];
+  if (other) other.snoozedUntil = at(2, 8);
+  const fx = (subject: string, html: string, kind: number | null, from?: { name: string; address: string }) => {
+    const id = mid;
+    addFixture(subject, html, null, 20 + id);
+    if (kind !== null) unsubKinds.set(id, kind);
+    if (from) messages.find((m) => m.id === id)!.from = from;
+    return id;
+  };
+  const para = '<p>Hello Alex, here is what happened this week. Read on for the details and the links below.</p>';
+  fx('Fixture: Trackers and a real picture', `<div style="font-family:Arial">${para}<img src="https://pics.example.org/photo.png" width="300" height="60" alt="A photo"><img src="https://open.convertkit.com/o/abc.gif" width="1" height="1"><img src="https://track.mailchimpapp.net/pixel.gif"><img src="https://metrics.unknownhost.example/p.gif" width="1" height="1" style="display:none"></div>`, 5);
+  fx('Fixture: Four trackers, no pictures', `<div style="font-family:Arial">${para}<img src="https://a.list-manage.com/t.gif"><img src="https://b.sendgrid.net/wf/open?x=1"><img src="https://open.convertkit.com/o/1.gif"><img src="https://r.awstrack.me/I0/open"></div>`, 5);
+  fx('Fixture: One hidden pixel', `<div style="font-family:Arial">${para}<img src="https://metrics.unknownhost.example/p.gif" width="1" height="1"></div>`, 5);
+  fx('Fixture: Newsletter, one-click (verified)', `<div style="font-family:Arial">${para}</div>`, 0, { name: 'Brightloop Weekly', address: 'news@brightloop.example' });
+  fx('Fixture: Newsletter, one-click fails (fails)', `<div style="font-family:Arial">${para}</div>`, 0, { name: 'Flaky Mailer', address: 'hello@flaky.example' });
+  fx('Fixture: Newsletter by email only (unknown sender)', `<div style="font-family:Arial">${para}</div>`, 1, { name: 'Small Shop', address: 'shop@smallshop.example' });
+  fx('Fixture: Newsletter, web page only', `<div style="font-family:Arial">${para}</div>`, 2, { name: 'Page Only', address: 'letters@pageonly.example' });
+  fx('Fixture: Newsletter with a failed sender check', `<div style="font-family:Arial">${para}</div>`, 3, { name: 'Maybe Fake', address: 'promo@maybefake.example' });
+  fx('Fixture: Newsletter you left before', `<div style="font-family:Arial">${para}</div>`, 0, { name: 'Old Letter', address: 'old@oldletter.example' });
+}
+
 messages.sort((a, b) => b.date - a.date || b.id - a.id);
 
 function recount(): void {
@@ -285,7 +330,13 @@ const settings: AppSettings = {
   suggestFromAllAccounts: true,
   groupConversations: false,
   shortcutPreset: 'outlook',
-  quickReplies: [],
+  quickReplies: LIGHT
+    ? [
+        { id: 'q1', name: 'Thanks, received', text: 'Thank you, I received it and will get back to you shortly.', accountId: null },
+        { id: 'q2', name: 'Meeting reply', text: 'Thanks for the invitation.\nThursday works for me. See you then.', accountId: null },
+        { id: 'q3', name: 'Out of office', text: 'I am away until Monday and will reply when I am back.', accountId: 'a1' },
+      ]
+    : [],
   recentCommands: [],
   snoozeTimes: { morning: '08:00', evening: '18:00', weekendMorning: '09:00' },
   showTrackerNotice: true,
@@ -818,6 +869,7 @@ const oauthWaits = new Map<string, { cancel: () => void }>();
 let sessionSeq = 1;
 
 const unsubscribedFake = new Map<string, { at: number; method: UnsubscribeMethod['kind'] }>();
+if (LIGHT) unsubscribedFake.set('a1|old@oldletter.example', { at: now - 8 * 86_400_000, method: 'one-click' });
 function fakeFromSender(accountId: string, address: string): MessageHeader[] {
   return messages.filter((m) => {
     const role = folderOf(m.folderId).role;
@@ -979,7 +1031,8 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
         .filter((m) => !r!.unreadOnly || !m.seen)
         .sort((a, b) => {
           if (sort === 'date') {
-            const d = a.date - b.date || a.id - b.id;
+            // Mail that came back from snooze counts as new: it is dated by its return time (DESIGN-SPEC 3.13.2).
+            const d = Math.max(a.date, a.snoozeReturnedAt ?? 0) - Math.max(b.date, b.snoozeReturnedAt ?? 0) || a.id - b.id;
             return dir === 'asc' ? d : -d;
           }
           const ka = keyOf(a);
@@ -991,7 +1044,7 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       const pinsApply = !r!.unreadOnly && ['folder', 'accountInbox', 'unifiedInbox'].includes(scope.kind);
       const pinnedList = pinsApply ? list.filter((m) => m.pinned) : [];
       if (pinnedList.length > 0) list.splice(0, list.length, ...list.filter((m) => !m.pinned));
-      const at = cursor ? list.findIndex((m) => m.date === cursor.date && m.id === cursor.id) : -1;
+      const at = cursor ? list.findIndex((m) => m.id === cursor.id) : -1;
       const after = cursor ? list.slice(at + 1) : list;
       const page = after.slice(0, limit);
       const more = after.length > limit;
@@ -1201,7 +1254,8 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       const id = (r as { messageId: number }).messageId;
       const m = messages.find((x) => x.id === id);
       if (!m) return err('NOT_FOUND', 'Message not found.');
-      const k = id % 6;
+      // The demo scenario shows no Unsubscribe button, so the website pictures stay as they are.
+      const k = unsubKinds.get(id) ?? (DEMO ? 5 : id % 6);
       const host = (m.from?.address ?? 'news@example.com').split('@')[1]!;
       const methods: UnsubscribeMethod[] =
         k === 0 ? [{ kind: 'one-click', host }, { kind: 'page', host }] : k === 1 ? [{ kind: 'mailto', address: `unsubscribe@${host}`, subject: 'unsubscribe' }] : k === 2 ? [{ kind: 'page', host }] : [];
@@ -1220,6 +1274,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
     case 'unsubscribe.run': {
       const { messageId, method } = r as { messageId: number; method: UnsubscribeMethod['kind'] };
       const m = messages.find((x) => x.id === messageId);
+      if (m?.subject.includes('(fails)') && method === 'one-click') {
+        return delay({ ok: false, method, error: { code: 'SERVER_REJECTED', message: 'The sender said no.', retryable: false } }, 600);
+      }
       if (m) unsubscribedFake.set(`${m.accountId}|${m.from?.address}`, { at: Date.now(), method });
       return delay({ ok: true, method }, 500);
     }
@@ -1305,6 +1362,9 @@ function handle(channel: IpcChannel, req: unknown): Promise<unknown> {
       setTimeout(() => changed({ updated: ids, folderIds: [] }), 30);
       return delay({ ok: true, archivedCount, changed: ids }, 80);
     }
+    case 'ui.openSettings':
+      emitToOtherWindows({ type: 'ui:openSettings', section: 'mail' });
+      return delay({ delivered: true }, 30);
     case 'senders.allowImages': {
       const { address, allow } = r as { address: string; allow: boolean };
       if (allow) allowed.add(address.toLowerCase());
@@ -1766,8 +1826,26 @@ export function installFakeApi(): void {
   (window as unknown as { __fakeEmit: (e: AppEvent) => void }).__fakeEmit = emit;
   // Dev hook for the status bar (DESIGN-SPEC 4.8): __fakeScenario('syncing'), or ?fake=1&scenario=syncing.
   (window as unknown as { __fakeScenario: (name: string) => void }).__fakeScenario = runScenario;
+  // Dev hooks for the light features: __fakeLight('actionDone' | 'actionRead' | 'wake').
+  (window as unknown as { __fakeLight: (name: string) => void }).__fakeLight = (name) => {
+    if (name === 'actionDone' || name === 'actionRead') {
+      const m = messages.find((x) => x.accountId === 'a1' && folderOf(x.folderId).role === 'inbox');
+      if (m) emit({ type: 'notify:actionDone', action: name === 'actionRead' ? 'read' : 'archive', accountId: m.accountId, messageId: m.id, undoToken: 'fake-undo' });
+    } else if (name === 'wake') {
+      const woken = messages.filter((m) => m.snoozedUntil);
+      for (const m of woken) {
+        delete m.snoozedUntil;
+        m.snoozeReturnedAt = Date.now();
+        m.seen = false;
+      }
+      const returned = woken.filter((m) => m.accountId === 'a1');
+      changed({ added: woken.map((m) => m.id), folderIds: [] });
+      emit({ type: 'snooze:changed', accountId: 'a1' });
+      emit({ type: 'snooze:returned', accountId: 'a1', messages: returned });
+    }
+  };
   const wantedRaw = new URLSearchParams(location.search).get('scenario');
-  const wanted = wantedRaw === 'demo' ? 'upToDate' : wantedRaw;
+  const wanted = wantedRaw === 'demo' || wantedRaw === 'light' ? 'upToDate' : wantedRaw;
   if (wanted && !isComposeWindow && !isViewerWindow) {
     // Mutate before the first read, and again once the window listens for events.
     runScenario(wanted);
