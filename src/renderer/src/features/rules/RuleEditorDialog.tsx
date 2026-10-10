@@ -53,7 +53,7 @@ function RuleEditorDialog({ request, onClose }: { request: RuleEditorRequest; on
       accountId,
       matchMode: 'all',
       conditions: request.prefill?.conditions.map((c) => ({ ...c })) ?? [{ field: 'from', value: '' }],
-      actions: { markRead: false, flag: false, delete: false, stop: false },
+      actions: { markRead: false, flag: false, delete: false, stop: false, ...request.prefill?.actions },
       trigger: 'inbox',
     };
     // The request does not change while the dialog is open.

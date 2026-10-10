@@ -1,5 +1,6 @@
 // HTML email sanitizing (ARCHITECTURE section 9). Security-critical: keep changes small and tested.
 import DOMPurify from 'dompurify';
+import type * as TrackersModule from '../../../shared/trackers';
 import * as csstree from 'css-tree';
 import { IMAGE_SCHEME, isRemoteUrl, toProxyUrl } from '../../../shared/imageProxy';
 import { classify,detectDarkAware, type ClassifyResult } from './emailTheme';
@@ -16,6 +17,49 @@ export interface SanitizedHtml {
   classification: ClassifyResult;
   /** The sender says it supports dark mode (meta color-scheme or prefers-color-scheme rules). */
   darkAware: boolean;
+  /** Tracking images found (DESIGN-SPEC 3.13.7). They are removed from BOTH variants above, also after "Load images". */
+  trackers: { count: number; domains: string[] };
+}
+
+/** The tracker list code (`shared/trackers.ts`). It loads with `import()` the first time an HTML message is opened. */
+export type TrackerApi = typeof TrackersModule;
+let trackerLib: TrackerApi | null = null;
+let trackerLoad: Promise<TrackerApi> | null = null;
+export function loadTrackerLib(): Promise<TrackerApi> {
+  trackerLoad ??= import('../../../shared/trackers').then((m) => (trackerLib = m));
+  return trackerLoad;
+}
+export function trackerLibIfLoaded(): TrackerApi | null {
+  return trackerLib;
+}
+
+/**
+ * Takes the tracking images (known tracker hosts, hidden 1x1 images) out of the tree before it is
+ * copied into the blocked and allowed variants. They never load, and they do not count as "remote
+ * images" for the banner. Never throws: a failure here must not hold back the message.
+ */
+function stripTrackers(root: HTMLElement, lib: TrackerApi): { count: number; domains: string[] } {
+  try {
+    const found: Parameters<TrackerApi['summarizeTrackers']>[0][number][] = [];
+    root.querySelectorAll('img').forEach((img) => {
+      const raw = (img.getAttribute('src') ?? '').trim();
+      if (!isRemoteUrl(raw)) return;
+      const cand = {
+        src: raw.startsWith('//') ? `https:${raw}` : raw,
+        width: img.getAttribute('width'),
+        height: img.getAttribute('height'),
+        style: img.getAttribute('style'),
+        hidden: img.hasAttribute('hidden'),
+      };
+      if (!lib.isTracker(cand)) return;
+      found.push(cand);
+      img.removeAttribute('src');
+      img.removeAttribute('srcset');
+    });
+    return lib.summarizeTrackers(found);
+  } catch {
+    return { count: 0, domains: [] };
+  }
 }
 
 const FORBID_TAGS = [
@@ -183,7 +227,7 @@ function detectRemote(root: HTMLElement): boolean {
   return false;
 }
 
-export function sanitizeEmailHtml(raw: string, cid: Record<string, string> = {}): SanitizedHtml {
+export function sanitizeEmailHtml(raw: string, cid: Record<string, string> = {}, trackers: TrackerApi | null = null): SanitizedHtml {
   const body = purify.sanitize(raw, {
     FORBID_TAGS,
     FORBID_ATTR: ['formaction', 'ping', 'srcdoc'],
@@ -193,6 +237,7 @@ export function sanitizeEmailHtml(raw: string, cid: Record<string, string> = {})
     FORCE_BODY: true,
     RETURN_DOM: true,
   }) as HTMLElement;
+  const found = trackers ? stripTrackers(body, trackers) : { count: 0, domains: [] };
   const hasRemote = detectRemote(body);
   // Classify before remote content is removed, so blocked and allowed images give the same answer.
   const classification = classify(body.innerHTML);
@@ -201,7 +246,7 @@ export function sanitizeEmailHtml(raw: string, cid: Record<string, string> = {})
   const b = body.cloneNode(true) as HTMLElement;
   processTree(a, false, cid);
   processTree(b, true, cid);
-  return { blocked: b.innerHTML, allowed: a.innerHTML, hasRemote, classification, darkAware };
+  return { blocked: b.innerHTML, allowed: a.innerHTML, hasRemote, classification, darkAware, trackers: found };
 }
 
 // The frame height must follow the content, never the pane: height:auto!important beats sender rules.

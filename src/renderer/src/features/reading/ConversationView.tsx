@@ -15,6 +15,7 @@ import { CONV_MOVE_EVENT } from '../../lib/shortcuts';
 import { fullDate, initials, senderName } from '../../lib/format';
 import { toastError } from '../../store/toasts';
 import { CardBody, MessageView, SourceDialog } from './ReadingPane';
+import { MutedNotice } from './notices';
 import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 import { AddressButton, AddressLinks } from '../../components/ContactPopover';
 
@@ -714,7 +715,18 @@ export function ConversationPane({ item }: { item: ListItem }) {
   const scope = useList((s) => s.scope);
   const conv = item.conv!;
   if (conv.count >= 2) {
-    return <ConversationView threadId={conv.threadId} accountId={conv.accountId} scope={scope ?? undefined} itemId={item.id} />;
+    const stack = <ConversationView threadId={conv.threadId} accountId={conv.accountId} scope={scope ?? undefined} itemId={item.id} />;
+    // A muted conversation shows its thin line once, above the stack (DESIGN-SPEC 3.13.6).
+    return item.muted ? (
+      <div className="conv-muted-wrap">
+        <div className="conv-muted">
+          <MutedNotice header={item} />
+        </div>
+        {stack}
+      </div>
+    ) : (
+      stack
+    );
   }
   return <SingleMessageOfRow item={item} />;
 }

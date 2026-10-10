@@ -11,6 +11,7 @@ import {
   Skeleton,
   openMenuAt,
   useMenu,
+  type MenuEntry,
 } from '../../components/ui';
 import { useApp } from '../../store/app';
 import { openIdOf, useList, type ListItem } from '../../store/list';
@@ -20,7 +21,7 @@ import { applyToMessages, composeFrom, deleteMessages, editDraft, openInWindow, 
 import { printOpenMessage, registerPrintSource } from '../../lib/print';
 import { asAppError, call } from '../../lib/api';
 import { fileKind, fileSize, fullDate, initials, senderName } from '../../lib/format';
-import { buildSrcdoc, cidRefs, sanitizeEmailHtml, type SanitizedHtml } from '../../lib/sanitize';
+import { buildSrcdoc, cidRefs, loadTrackerLib, sanitizeEmailHtml, trackerLibIfLoaded, type SanitizedHtml, type TrackerApi } from '../../lib/sanitize';
 import { planBody, verifyContrast, type RenderPlan } from '../../lib/emailTheme';
 import { QUOTE_HIDE, QUOTE_SHOW, QUOTE_TOGGLE_ATTR, foldQuotedHtml, setQuoteOpen, splitQuotedText } from '../../lib/quotes';
 import { reportActionError, toast, toastError } from '../../store/toasts';
@@ -30,6 +31,18 @@ import { activePreset } from '../../store/app';
 import { ConversationPane, ConversationView } from './ConversationView';
 import { canMakeRuleFrom, createRuleFromSender } from '../rules/ruleActions';
 import { AddressButton, AddressLinks } from '../../components/ContactPopover';
+import { canMute, canSnoozeRole, openSnoozeMenu, setMuted, setPinned, snoozeMenuEntries } from '../../lib/light';
+import { canPinHere } from '../../lib/pinRules';
+import {
+  MutedNotice,
+  SnoozedBanner,
+  UNSUBSCRIBE_UNAVAILABLE_TIP,
+  UnsubscribeButton,
+  UnsubscribeMemory,
+  unsubscribeMenuState,
+  useUnsubscribe,
+  type UnsubscribeState,
+} from './notices';
 
 type BodyState =
   | { status: 'loading' }
@@ -181,6 +194,10 @@ export function MessageView({
     : null;
   const account = accounts.find((a) => a.id === header.accountId);
   const folder = folders.find((f) => f.id === header.folderId);
+  // Unsubscribe options come from the stored headers when the message opens (DESIGN-SPEC 3.13.1). Not for Sent, Drafts or the message window.
+  const mailRole = folder?.role;
+  const outgoing = header.draft || mailRole === 'drafts' || mailRole === 'sent';
+  const unsub = useUnsubscribe(header, !windowMode && !outgoing && state.status === 'ready');
   // Gives Ctrl+P and the Print buttons the sanitized light body of the message on screen.
   const printRef = useRef<() => string | undefined | null>(() => null);
   useEffect(
@@ -224,10 +241,18 @@ export function MessageView({
     }
   };
 
+  const notices = (
+    <>
+      {windowMode ? null : <UnsubscribeMemory header={header} u={unsub} />}
+      <MutedNotice header={header} />
+    </>
+  );
+
   return (
     <>
       <Toolbar
         header={header}
+        unsub={unsub}
         onSource={() => setShowSource(true)}
         colorToggle={toggleColors}
         windowMode={windowMode}
@@ -251,7 +276,10 @@ export function MessageView({
             color={account ? colorOf(account.id) : 'var(--accent)'}
             details={details}
             onToggle={() => setDetails((d) => !d)}
+            unsub={windowMode ? null : unsub}
           />
+          {header.snoozedUntil ? <SnoozedBanner header={header} /> : null}
+          {state.status !== 'ready' ? notices : null}
           {state.status === 'loading' ? (
             <div className="mbody-skel" aria-busy="true" aria-label="Loading message">
               {[90, 100, 80, 95, 60, 85].map((w, i) => (
@@ -292,6 +320,8 @@ export function MessageView({
               onToggleColors={toggleColors?.run ?? null}
               printRef={printRef}
               toggleLabel={toggleColors ? { label: toggleColors.label, icon: toggleColors.icon } : null}
+              notices={notices}
+              trackerNote={!outgoing}
             />
           )}
           {body ? <Attachments list={body.attachments.filter((a) => !a.inline)} /> : null}
@@ -304,12 +334,14 @@ export function MessageView({
 
 function Toolbar({
   header,
+  unsub,
   onSource,
   colorToggle,
   windowMode,
   gone,
 }: {
   header: MessageHeader;
+  unsub: UnsubscribeState;
   onSource: () => void;
   colorToggle: { label: string; icon: 'sun' | 'moon'; run: () => void } | null;
   windowMode: boolean;
@@ -319,6 +351,38 @@ function Toolbar({
   const isDraft = header.draft || roleOf(header) === 'drafts';
   const print = () => printOpenMessage(header.id);
   const readIcon = header.seen ? 'unread' : 'mail-open';
+  const role = roleOf(header);
+  const snoozeable = !isDraft && (canSnoozeRole(role) || header.snoozedUntil !== undefined);
+  const mutable = !isDraft && role !== 'sent';
+  const unsubState = unsubscribeMenuState(unsub.info);
+  // Pin, Snooze, Mute and Unsubscribe (DESIGN-SPEC 3.13.8).
+  const lightItems = (): MenuEntry[] => {
+    const ui = useUi.getState();
+    const out: MenuEntry[] = [];
+    if (!isDraft && canPinHere(ui.view, ui.unreadOnly)) {
+      out.push({ label: header.pinned ? 'Unpin' : 'Pin to top', icon: 'pin', hint: 'Alt+P', onSelect: () => void setPinned([header.id], !header.pinned) });
+    }
+    if (snoozeable) {
+      out.push({ label: 'Snooze', icon: 'alarm', hint: 'H', onSelect: () => undefined, children: snoozeMenuEntries([header.id], header.snoozedUntil !== undefined) });
+    }
+    if (mutable) {
+      const ok = canMute(header);
+      out.push({
+        label: header.muted ? 'Unmute conversation' : 'Mute conversation',
+        icon: 'bell-off',
+        hint: 'Alt+M',
+        disabled: !ok && !header.muted,
+        ...(!ok && !header.muted ? { title: "This message isn't part of a conversation." } : {}),
+        onSelect: () => void setMuted([header.id], !header.muted),
+      });
+    }
+    if (unsubState === 'ok') {
+      out.push({ label: 'Unsubscribe', icon: 'bell-off', onSelect: unsub.start });
+    } else if (unsubState === 'failed') {
+      out.push({ label: 'Unsubscribe unavailable', icon: 'bell-off', disabled: true, title: UNSUBSCRIBE_UNAVAILABLE_TIP, onSelect: () => undefined });
+    }
+    return out.length > 0 ? [...out, 'sep'] : out;
+  };
   const moreMenu = (el: HTMLElement) =>
     openMenuAt(
       el,
@@ -359,6 +423,7 @@ function Toolbar({
             { label: 'Open in new window', icon: 'open-window', hint: 'Enter', onSelect: () => openInWindow(header) },
             { label: 'Print', icon: 'print', hint: 'Ctrl+P', onSelect: print },
             'sep',
+            ...lightItems(),
             {
               label: inJunk ? 'Not spam' : 'Report spam',
               icon: 'spam',
@@ -451,6 +516,21 @@ function Toolbar({
             <span className="lbl">Move</span>
             <Icon name="chev-d" />
           </button>
+          {snoozeable ? (
+            <button
+              type="button"
+              className="tbtn ico snooze-btn"
+              title="Snooze (H)"
+              aria-label="Snooze"
+              aria-haspopup="menu"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                openSnoozeMenu([header.id], r.left, r.bottom + 2, header.snoozedUntil !== undefined);
+              }}
+            >
+              <Icon name="alarm" size={20} />
+            </button>
+          ) : null}
           <span className="tsep" />
           <button
             type="button"
@@ -487,8 +567,10 @@ function HeaderBlock({
   color,
   details,
   onToggle,
+  unsub,
 }: {
   header: MessageHeader;
+  unsub: UnsubscribeState | null;
   body: MessageBody | null;
   account: Account | undefined;
   folderName: string;
@@ -533,12 +615,15 @@ function HeaderBlock({
           </dl>
         ) : null}
         {account ? (
-          <div className="acct-chip">
-            <AccountBadge color={color} name={account.displayName} letter={account.badge} />
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {account.displayName}{' '}
-              {folderName ? <span style={{ color: 'var(--t3)' }}>&middot; {folderName}</span> : null}
-            </span>
+          <div className="acct-row">
+            <div className="acct-chip">
+              <AccountBadge color={color} name={account.displayName} letter={account.badge} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {account.displayName}{' '}
+                {folderName ? <span style={{ color: 'var(--t3)' }}>&middot; {folderName}</span> : null}
+              </span>
+            </div>
+            {unsub ? <UnsubscribeButton header={header} u={unsub} /> : null}
           </div>
         ) : null}
       </div>
@@ -575,6 +660,8 @@ function BodyView({
   onToggleColors,
   printRef,
   toggleLabel,
+  notices = null,
+  trackerNote = false,
 }: {
   body: MessageBody;
   imagesLoaded: boolean;
@@ -590,8 +677,23 @@ function BodyView({
   onToggleColors: (() => void) | null;
   printRef: React.MutableRefObject<() => string | undefined | null>;
   toggleLabel: { label: string; icon: 'sun' | 'moon' } | null;
+  /** Lines under the images banner: "You unsubscribed...", "You muted...". */
+  notices?: React.ReactNode;
+  /** Show the "Blocked N trackers" line (not for Sent and Drafts). */
+  trackerNote?: boolean;
 }) {
   const darkTheme = useThemeState((s) => s.dark);
+  const showTrackerNotice = useApp((s) => s.settings?.showTrackerNotice ?? true);
+  // The tracker list loads the first time an HTML message opens (DESIGN-SPEC 3.13.7). Until then the message waits a moment.
+  const [trk, setTrk] = useState<TrackerApi | null>(trackerLibIfLoaded);
+  useEffect(() => {
+    if (trk || !body.html) return;
+    let alive = true;
+    void loadTrackerLib().then((lib) => alive && setTrk(lib));
+    return () => {
+      alive = false;
+    };
+  }, [trk, body.html]);
   const emailDarkMode = useUi((s) => s.emailDarkMode);
   const refs = useMemo(() => (body.html ? cidRefs(body.html) : []), [body.html]);
   const [fetched, setFetched] = useState<{ body: MessageBody; map: Record<string, string> } | null>(null);
@@ -627,8 +729,8 @@ function BodyView({
   }, [body, refs]);
 
   const sanitized: SanitizedHtml | null = useMemo(
-    () => (body.html && cidReady ? sanitizeEmailHtml(body.html, cid) : null),
-    [body.html, cid, cidReady],
+    () => (body.html && cidReady && trk ? sanitizeEmailHtml(body.html, cid, trk) : null),
+    [body.html, cid, cidReady, trk],
   );
 
   const imagesOn = imagesLoaded;
@@ -665,15 +767,24 @@ function BodyView({
 
   if (body.truncated) {
     return (
-      <div style={{ marginTop: 16 }}>
-        <Banner tone="warning">
-          This message is too large to show here (over 25 MB). You can still open its attachments.
-        </Banner>
-      </div>
+      <>
+        <div style={{ marginTop: 16 }}>
+          <Banner tone="warning">
+            This message is too large to show here (over 25 MB). You can still open its attachments.
+          </Banner>
+        </div>
+        {notices}
+      </>
     );
   }
 
   const showBanner = !!sanitized?.hasRemote && !imagesLoaded && !bannerDismissed;
+  const trackerText = trk && trackerNote && showTrackerNotice && sanitized ? trk.trackerNoticeText(sanitized.trackers) : '';
+  const trackerLine = trackerText ? (
+    <span className="rtxt" title={sanitized!.trackers.domains.join(', ') || undefined}>
+      {trackerText}
+    </span>
+  ) : null;
   return (
     <>
       {showBanner ? (
@@ -689,10 +800,22 @@ function BodyView({
                 </button>
               ) : null}
             </div>
+            {trackerLine ? (
+              <div className="trk">
+                <Icon name="shield" />
+                {trackerLine}
+              </div>
+            ) : null}
           </div>
           <IconButton icon="x" label="Dismiss" size="sm" onClick={onDismiss} />
         </div>
+      ) : trackerLine ? (
+        <div className="rnotice">
+          <Icon name="shield" />
+          {trackerLine}
+        </div>
       ) : null}
+      {notices}
       <div className="mbody">
         {body.html ? (
           plan ? (
@@ -1107,7 +1230,7 @@ export function SourceDialog({ id, onClose }: { id: number; onClose: () => void 
  * A loaded message body with its own state for images and dark-mode colors, and its attachments.
  * Used by the cards of a conversation and by the read-only view of a scheduled message.
  */
-export function BodyPanel({ body, senderAddress, attachments }: { body: MessageBody; senderAddress: string | null; attachments?: React.ReactNode }) {
+export function BodyPanel({ body, senderAddress, attachments, trackerNote = true }: { body: MessageBody; senderAddress: string | null; attachments?: React.ReactNode; trackerNote?: boolean }) {
   const remoteImages = useApp((s) => s.settings?.remoteImages ?? 'block');
   const [imagesLoaded, setImagesLoaded] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
@@ -1151,6 +1274,7 @@ export function BodyPanel({ body, senderAddress, attachments }: { body: MessageB
         onToggleColors={toggleColors?.run ?? null}
         printRef={printRef}
         toggleLabel={toggleColors ? { label: toggleColors.label, icon: toggleColors.icon } : null}
+        trackerNote={trackerNote}
       />
       {attachments ?? <Attachments list={body.attachments.filter((a) => !a.inline)} />}
     </>
@@ -1201,5 +1325,6 @@ export function CardBody({ header }: { header: MessageHeader }) {
         </Banner>
       </div>
     );
-  return <BodyPanel body={state.body} senderAddress={header.from?.address ?? null} />;
+  const role = roleOf(header);
+  return <BodyPanel body={state.body} senderAddress={header.from?.address ?? null} trackerNote={role !== 'sent' && role !== 'drafts' && !header.draft} />;
 }
