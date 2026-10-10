@@ -9,6 +9,7 @@
 //                                                  only compare two saved results (no measuring)
 //   Other flags:  --only engine,bundles,renderer   run some parts only (compare uses the metrics both files have)
 //                 --runs N        repeats per measurement (default 7)
+//                 --memruns N     fresh processes used for the memory numbers (default 5)
 //                 --warm N        warm calls per engine operation and run (default 5)
 //                 --threshold P   regression limit in percent (default 10)
 //                 --no-fail       exit 0 even when a regression is found (default: exit code 1)
@@ -23,7 +24,10 @@
 //     - engine.conversations.list.*  same for conversations
 //     - engine.search.local.*   six queries: word, very common word (1 call per run), from:, "phrase", body-only word, is:unread + word
 //     - engine.messages.get.cached   open an already downloaded body
-//     - engine.memory.*         RSS and JS heap after a forced GC, once the warm calls are done
+//     - engine.memory.*, engine.sqlite.*  RSS, JS heap, external, SQLite cache/mmap/file sizes after a
+//       forced GC and the warm calls. Measured in MEMRUNS separate fresh processes (one engine each),
+//       NOT in the timing process: inside one process RSS grows ~15 MB per engine, and it is +380 MB
+//       when the seed was built in the same process (that fooled the 0.5.4 -> HEAD comparison once).
 //   bundles   (electron-vite build into a temp folder; one sample each, so median = the value)
 //     - bundle.main.*, bundle.preload.*, bundle.renderer.<index|compose|viewer>.*  raw and gzip bytes
 //   renderer  (headless Chromium + the Vite dev server + the fake backend demo scenario)
@@ -37,8 +41,7 @@
 //   2. Read the table. "REGRESSION" = median more than 10% worse AND more than the noise floor
 //      (1 ms, 3 MB, 2 KB, 2 points) worse. "better" = the same in the other direction.
 //   3. Exit code is 1 when there is a regression (use --no-fail to ignore it).
-//   4. Use the same --runs as the baseline (the default 7). The engine runs share one process, so the
-//      memory numbers grow a little with every run and are not comparable across different --runs.
+//   4. Use the same --runs as the baseline (the default 7) for the timings. Memory does not depend on --runs.
 //   5. Noise: run it twice on an idle machine before you believe a single flag. Always compare on the
 //      same computer; the file stores the CPU and Node version it was made on.
 //
@@ -71,6 +74,7 @@ const opt = (name, dflt) => {
 };
 const RUNS = Number(opt('runs', 7));
 const WARM = Number(opt('warm', 5));
+const MEMRUNS = Number(opt('memruns', 5));
 const THRESHOLD = Number(opt('threshold', 10));
 const COMPARE = opt('compare', null);
 const CURRENT = opt('current', null);
@@ -127,25 +131,46 @@ function runEngine() {
       if (d.startsWith('letterdock-perf-seed-'))
         rmSync(join(tmpdir(), d), { recursive: true, force: true });
   }
-  const r = spawnSync(
-    process.execPath,
-    [join(root, 'node_modules', 'vitest', 'vitest.mjs'), 'run', 'tests/perf/enginePerf.test.ts'],
-    {
-      cwd: root,
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        PERF: '1',
-        PERF_OUT: outFile,
-        PERF_RUNS: String(RUNS),
-        PERF_WARM: String(WARM),
+  const vitest = (extraEnv) =>
+    spawnSync(
+      process.execPath,
+      [join(root, 'node_modules', 'vitest', 'vitest.mjs'), 'run', 'tests/perf/enginePerf.test.ts'],
+      {
+        cwd: root,
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          PERF: '1',
+          PERF_OUT: outFile,
+          PERF_RUNS: String(RUNS),
+          PERF_WARM: String(WARM),
+          ...extraEnv,
+        },
       },
-    },
-  );
+    );
+  // 1. build the seed (if missing) in a process of its own; 2. timings in one process;
+  // 3. memory in MEMRUNS fresh processes.
+  if (vitest({ PERF_SEED_ONLY: '1' }).status !== 0) throw new Error('Seeding the mailbox failed.');
+  const r = vitest({});
   if (r.status !== 0 || !existsSync(outFile))
     throw new Error('The engine benchmark failed (see the output above).');
+  const memSamples = {};
+  const isMem = (k) => /^engine.(memory|sqlite)./.test(k);
+  for (let i = 0; i < MEMRUNS; i++) {
+    rmSync(outFile, { force: true });
+    log(`engine memory: fresh process ${i + 1}/${MEMRUNS}`);
+    const m = vitest({ PERF_RUNS: '1' });
+    if (m.status !== 0 || !existsSync(outFile)) throw new Error('The memory run failed.');
+    for (const [k, v] of Object.entries(JSON.parse(readFileSync(outFile, 'utf8')).metrics))
+      if (isMem(k))
+        (memSamples[k] ??= { unit: v.unit, note: v.note, samples: [] }).samples.push(v.samples[0]);
+  }
   const res = JSON.parse(readFileSync(outFile, 'utf8'));
-  for (const [name, m] of Object.entries(res.metrics)) addMetric(name, m.unit, m.samples, m.note);
+  // the timing process did not give the memory numbers (see the header); keep the fresh-process ones.
+  for (const [name, m] of Object.entries(res.metrics))
+    if (!isMem(name)) addMetric(name, m.unit, m.samples, m.note);
+  for (const [name, m] of Object.entries(memSamples))
+    addMetric(name, m.unit, m.samples, `fresh process, ${m.note ?? ''}`.trim());
   details.dataset = res.dataset;
   details.itemCounts = res.itemCounts;
   rmSync(tmp, { recursive: true, force: true });

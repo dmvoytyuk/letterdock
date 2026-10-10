@@ -149,7 +149,8 @@
       562,
       562
     ],
-    "browser": "chromium 156.0.8078.4"
+    "browser": "chromium 156.0.8078.4",
+    "memoryMethod": "2026-10-10: engine.memory.* and engine.sqlite.* re-measured with fresh process per sample (0.5.4 code, commit 4029a63, 50k seed). The earlier values (RSS 239 MB) came from 7 engines in one process and are not comparable with later numbers. Other metrics unchanged."
   },
   "metrics": {
     "engine.coldStart.create": {
@@ -856,56 +857,50 @@
     },
     "engine.memory.rss": {
       "unit": "MB",
-      "median": 239.105,
-      "p90": 244.269,
-      "min": 230.125,
-      "max": 245.492,
-      "n": 7,
-      "note": "whole vitest worker process, after GC and warm calls",
+      "median": 231.305,
+      "p90": 231.693,
+      "min": 229.5,
+      "max": 231.707,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), whole vitest worker process, after GC and warm calls",
       "samples": [
-        230.125,
-        233.832,
-        236.398,
-        239.105,
-        240.902,
-        243.453,
-        245.492
+        230.496,
+        229.5,
+        231.305,
+        231.707,
+        231.672
       ]
     },
     "engine.memory.heapUsed": {
       "unit": "MB",
-      "median": 53.962,
-      "p90": 66.597,
-      "min": 35.841,
-      "max": 69.063,
-      "n": 7,
-      "note": "JS heap in use, after GC and warm calls",
+      "median": 35.838,
+      "p90": 35.84,
+      "min": 35.837,
+      "max": 35.84,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), JS heap in use, after GC and warm calls",
       "samples": [
-        35.841,
-        41.943,
-        47.944,
-        53.962,
-        59.983,
-        64.954,
-        69.063
+        35.838,
+        35.837,
+        35.838,
+        35.84,
+        35.84
       ]
     },
     "engine.memory.rssGrowth": {
       "unit": "MB",
-      "median": 52.359,
-      "p90": 84.423,
-      "min": 49.75,
-      "max": 128.375,
-      "n": 7,
-      "note": "RSS after warm calls minus RSS before this engine existed",
+      "median": 128.051,
+      "p90": 129.503,
+      "min": 127.391,
+      "max": 130.031,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), RSS after warm calls minus RSS before this engine existed",
       "samples": [
-        128.375,
-        55.121,
-        53.582,
-        52.359,
-        50.805,
-        51.566,
-        49.75
+        128.051,
+        130.031,
+        128.711,
+        127.391,
+        127.555
       ]
     },
     "bundle.build.timeMs": {
@@ -1507,6 +1502,102 @@
         33.474,
         40.15,
         29.755
+      ]
+    },
+    "engine.memory.external": {
+      "unit": "MB",
+      "median": 4.354,
+      "p90": 4.354,
+      "min": 4.354,
+      "max": 4.354,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), process.memoryUsage() after GC and warm calls",
+      "samples": [
+        4.354,
+        4.354,
+        4.354,
+        4.354,
+        4.354
+      ]
+    },
+    "engine.memory.arrayBuffers": {
+      "unit": "MB",
+      "median": 0.497,
+      "p90": 0.497,
+      "min": 0.497,
+      "max": 0.497,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), process.memoryUsage() after GC and warm calls",
+      "samples": [
+        0.497,
+        0.497,
+        0.497,
+        0.497,
+        0.497
+      ]
+    },
+    "engine.sqlite.cacheMb": {
+      "unit": "MB",
+      "median": 15.625,
+      "p90": 15.625,
+      "min": 15.625,
+      "max": 15.625,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), SQLite setting or file size (not a timing)",
+      "samples": [
+        15.625,
+        15.625,
+        15.625,
+        15.625,
+        15.625
+      ]
+    },
+    "engine.sqlite.mmapMb": {
+      "unit": "MB",
+      "median": 0,
+      "p90": 0,
+      "min": 0,
+      "max": 0,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), SQLite setting or file size (not a timing)",
+      "samples": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "engine.sqlite.dbMb": {
+      "unit": "MB",
+      "median": 60.238,
+      "p90": 60.238,
+      "min": 60.238,
+      "max": 60.238,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), SQLite setting or file size (not a timing)",
+      "samples": [
+        60.238,
+        60.238,
+        60.238,
+        60.238,
+        60.238
+      ]
+    },
+    "engine.sqlite.walMb": {
+      "unit": "MB",
+      "median": 0.024,
+      "p90": 0.024,
+      "min": 0.024,
+      "max": 0.024,
+      "n": 5,
+      "note": "fresh process per sample (0.5.4 code), SQLite setting or file size (not a timing)",
+      "samples": [
+        0.024,
+        0.024,
+        0.024,
+        0.024,
+        0.024
       ]
     }
   }

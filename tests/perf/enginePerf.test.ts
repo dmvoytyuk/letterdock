@@ -20,9 +20,11 @@
 //   3. Writes raw samples (not statistics) to PERF_OUT. The orchestrator computes median / p90.
 //
 // Notes for reading the numbers
-//   - All runs happen in ONE vitest worker process, so the OS file cache is warm after run 1 and
-//     memory carries a small drift from the earlier engines. Compare like with like (same machine,
-//     same settings); do not read the absolute numbers as "what Electron's utility process uses".
+//   - All runs happen in ONE vitest worker process, so the OS file cache is warm after run 1. Memory
+//     read inside such a process is NOT trustworthy (it grows about 15 MB per engine, and it is
+//     +380 MB if the seed was built in the same process). The driver therefore takes the memory
+//     numbers from separate fresh processes (PERF_RUNS=1), and builds the seed in its own process
+//     (PERF_SEED_ONLY=1) before any measuring. PERF_SEED_DIR points at an existing seed folder.
 //   - Cold start does not include process start-up or any IMAP traffic (accounts are disabled to
 //     keep the dataset stable).
 import {
@@ -40,7 +42,7 @@ import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { setFlagsFromString } from 'node:v8';
 import { describe, it } from 'vitest';
-import { openDatabase } from '../../src/engine/db/connection';
+import { openDatabase, type Db } from '../../src/engine/db/connection';
 import { AccountRepo } from '../../src/engine/db/repos/accountRepo';
 import { MessageRepo, type HeaderInput } from '../../src/engine/db/repos/messageRepo';
 import { MIGRATIONS } from '../../src/engine/db/migrations';
@@ -356,7 +358,24 @@ function mem() {
   gc();
   gc();
   const u = process.memoryUsage();
-  return { rss: mb(u.rss), heap: mb(u.heapUsed) };
+  return {
+    rss: mb(u.rss),
+    heap: mb(u.heapUsed),
+    external: mb(u.external),
+    arrayBuffers: mb(u.arrayBuffers),
+  };
+}
+
+/** SQLite facts that explain native memory: page cache setting, mmap, file sizes. */
+function sqliteFacts(db: Db, dbFile: string) {
+  const pageSize = db.pragma('page_size', { simple: true }) as number;
+  const cacheSize = db.pragma('cache_size', { simple: true }) as number; // >0 pages, <0 KiB
+  return {
+    cacheMb: mb(cacheSize < 0 ? -cacheSize * 1024 : cacheSize * pageSize),
+    mmapMb: mb(db.pragma('mmap_size', { simple: true }) as number),
+    dbMb: mb(statSync(dbFile).size),
+    walMb: mb(existsSync(`${dbFile}-wal`) ? statSync(`${dbFile}-wal`).size : 0),
+  };
 }
 
 describe.skipIf(!process.env['PERF'])('engine performance baseline', () => {
@@ -364,10 +383,10 @@ describe.skipIf(!process.env['PERF'])('engine performance baseline', () => {
     const server = await startFakeImap({
       inbox: [1, 2, 3].map((n) => ({ raw: rawMessage({ subject: `seed ${n}` }) })),
     });
-    const cache = join(
-      tmpdir(),
-      `letterdock-perf-seed-v${SEED_VERSION}-m${MIGRATIONS.length}-s${SCALE}`,
-    );
+    // PERF_SEED_DIR lets two code versions run on the very same seeded database file.
+    const cache =
+      process.env['PERF_SEED_DIR'] ||
+      join(tmpdir(), `letterdock-perf-seed-v${SEED_VERSION}-m${MIGRATIONS.length}-s${SCALE}`);
     const work = mkdtempSync(join(tmpdir(), 'letterdock-perf-run-'));
     try {
       if (!existsSync(join(cache, 'mail.db'))) {
@@ -382,6 +401,9 @@ describe.skipIf(!process.env['PERF'])('engine performance baseline', () => {
       } else {
         console.log(`[perf] reusing cached seed ${cache}`);
       }
+      // Seeding is slow and leaves the process 300+ MB bigger (the first rows of the seed are
+      // built in this process), so the driver builds the seed in its own process first.
+      if (process.env['PERF_SEED_ONLY']) return;
       const dbFile = join(work, 'mail.db');
       copyFileSync(join(cache, 'mail.db'), dbFile);
 
@@ -511,6 +533,14 @@ describe.skipIf(!process.env['PERF'])('engine performance baseline', () => {
           after.rss - before.rss,
           'RSS after warm calls minus RSS before this engine existed',
         );
+        for (const [k, v] of [
+          ['external', after.external],
+          ['arrayBuffers', after.arrayBuffers],
+        ] as const)
+          add(m, `engine.memory.${k}`, 'MB', v, 'process.memoryUsage() after GC and warm calls');
+        const facts = sqliteFacts(h.engine.ctx.db, dbFile);
+        for (const [k, v] of Object.entries(facts))
+          add(m, `engine.sqlite.${k}`, 'MB', v, 'SQLite setting or file size (not a timing)');
         await h.engine.shutdown();
       }
 
