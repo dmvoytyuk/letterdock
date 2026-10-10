@@ -167,44 +167,60 @@ export class SearchService {
     }
     // The same message can sit in several folders (Gmail: INBOX plus All Mail). Show one copy per
     // account and Message-ID: prefer INBOX, then other folders, then the "All Mail" folder.
-    // A copy only hides another one if it is itself a hit (same folder / Trash filters, same words).
+    // A copy only hides another one if it is itself a hit (same folder / Trash filters, same words),
+    // so the copies are ranked among the hits only.
+    const where = conds.join(' AND ');
+    const preferF = "CASE f.role WHEN 'inbox' THEN 0 WHEN 'all' THEN 2 ELSE 1 END";
+
+    if (match) {
+      // The hits are collected ONCE (a few ms for thousands of rows). Duplicates are then removed with
+      // a window function over those hits, not with a per-hit sub-query (that was quadratic: ~56 s for
+      // 9 000 hits on a 50 000-message mailbox). Only the requested page is read from `message`.
+      const cte = `WITH fts AS MATERIALIZED (
+             SELECT rowid AS id, bm25(message_fts, 5.0, 3.0, 1.0, 1.0, 1.0) AS rank
+               FROM message_fts WHERE message_fts MATCH :match),
+           hits AS MATERIALIZED (
+             SELECT m.id AS id, m.date_ms AS date_ms, fts.rank AS rank,
+                    CASE WHEN m.message_id IS NULL OR m.message_id = '' THEN 1
+                         ELSE ROW_NUMBER() OVER (PARTITION BY m.account_id, m.message_id
+                                                 ORDER BY ${preferF}, m.id) END AS rn
+               FROM fts JOIN message m ON m.id = fts.id JOIN folder f ON f.id = m.folder_id
+              WHERE ${where})`;
+      const rows = this.ctx.db
+        .prepare(
+          `${cte}
+           SELECT m.*, x.rank AS rank
+             FROM (SELECT id, rank, date_ms FROM hits WHERE rn = 1
+                    ORDER BY rank, date_ms DESC, id DESC LIMIT :limit OFFSET :offset) x
+             JOIN message m ON m.id = x.id
+            ORDER BY x.rank, x.date_ms DESC, x.id DESC`,
+        )
+        .all({ ...params, match, limit, offset }) as Row[];
+      const total = this.ctx.db
+        .prepare(`${cte} SELECT COUNT(*) AS n FROM hits WHERE rn = 1`)
+        .get({ ...params, match }) as { n: number };
+      return { rows, total: total.n };
+    }
+
+    // No words: the filters alone pick the rows (newest first). The copy check uses the Message-ID index.
     const dup = ['d.account_id = m.account_id', 'd.message_id = m.message_id', 'd.id <> m.id', 'd.uid > 0', 'd.flag_deleted = 0'];
     if (accountIds) dup.push(`d.account_id IN (${accountIds.map((_, i) => `:acc${i}`).join(',')})`);
     if (folderIds) dup.push(`d.folder_id IN (${folderIds.map((_, i) => `:fld${i}`).join(',')})`);
     else dup.push("(df.role IS NULL OR df.role NOT IN ('trash','junk'))");
-    if (match) dup.push('d.id IN (SELECT rowid FROM message_fts WHERE message_fts MATCH :match)');
     const prefer = (a: string) => `CASE ${a}.role WHEN 'inbox' THEN 0 WHEN 'all' THEN 2 ELSE 1 END`;
-    conds.push(
-      `(m.message_id IS NULL OR m.message_id = '' OR NOT EXISTS (
-         SELECT 1 FROM message d JOIN folder df ON df.id = d.folder_id
+    const where2 = `${where} AND (m.message_id IS NULL OR m.message_id = '' OR NOT EXISTS (
+         SELECT 1 FROM message d INDEXED BY idx_msg_msgid JOIN folder df ON df.id = d.folder_id
           WHERE ${dup.join(' AND ')}
-            AND (${prefer('df')} < ${prefer('f')} OR (${prefer('df')} = ${prefer('f')} AND d.id < m.id))))`,
-    );
-    const where = conds.join(' AND ');
-
-    if (match) {
-      const from = 'FROM message_fts JOIN message m ON m.id = message_fts.rowid JOIN folder f ON f.id = m.folder_id';
-      const rows = this.ctx.db
-        .prepare(
-          `SELECT m.*, bm25(message_fts, 5.0, 3.0, 1.0, 1.0, 1.0) AS rank ${from}
-           WHERE message_fts MATCH :match AND ${where}
-           ORDER BY rank, m.date_ms DESC, m.id DESC LIMIT :limit OFFSET :offset`,
-        )
-        .all({ ...params, match, limit, offset }) as Row[];
-      const total = this.ctx.db
-        .prepare(`SELECT COUNT(*) AS n ${from} WHERE message_fts MATCH :match AND ${where}`)
-        .get({ ...params, match }) as { n: number };
-      return { rows, total: total.n };
-    }
+            AND (${prefer('df')} < ${prefer('f')} OR (${prefer('df')} = ${prefer('f')} AND d.id < m.id))))`;
     const from = 'FROM message m JOIN folder f ON f.id = m.folder_id';
     const rows = this.ctx.db
       .prepare(
-        `SELECT m.*, 0 AS rank ${from} WHERE ${where}
+        `SELECT m.*, 0 AS rank ${from} WHERE ${where2}
          ORDER BY m.date_ms DESC, m.id DESC LIMIT :limit OFFSET :offset`,
       )
       .all({ ...params, limit, offset }) as Row[];
     const total = this.ctx.db
-      .prepare(`SELECT COUNT(*) AS n ${from} WHERE ${where}`)
+      .prepare(`SELECT COUNT(*) AS n ${from} WHERE ${where2}`)
       .get(params) as { n: number };
     return { rows, total: total.n };
   }

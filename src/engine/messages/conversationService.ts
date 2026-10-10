@@ -44,11 +44,6 @@ interface Resolved {
 
 type JoinedRow = MessageRow & { frole: FolderRole | null; fname: string };
 
-/** Same condition on other aliases: the member SQL of scopeFilter uses m. and f. */
-function realias(sql: string, m: string, f: string): string {
-  return sql.replace(/\bm\./g, `${m}.`).replace(/\bf\./g, `${f}.`);
-}
-
 export class ConversationService {
   constructor(
     private readonly ctx: EngineContext,
@@ -119,7 +114,6 @@ export class ConversationService {
     const direction = req.direction ?? (sort === 'date' ? 'desc' : 'asc');
     const r = this.resolve(req.scope, unreadOnly);
     const db = this.ctx.db;
-    const memberWhere2 = realias(r.memberWhere, 'm2', 'f2');
     if (sort !== 'date' && req.cursor && typeof req.cursor.key !== 'string') {
       throw new AppException('INVALID_INPUT', 'The page position does not match the sort order.');
     }
@@ -128,28 +122,9 @@ export class ConversationService {
     const asc = direction === 'asc';
     let groups: { a: string; t: string; ld: number; mx: number; k?: string }[];
     if (sort === 'date') {
-      let having = '';
-      if (req.cursor) {
-        having = asc
-          ? 'HAVING (ld > :cDate OR (ld = :cDate AND mx > :cId))'
-          : 'HAVING (ld < :cDate OR (ld = :cDate AND mx < :cId))';
-        params.cDate = req.cursor.date;
-        params.cId = req.cursor.id;
-      }
-      groups = db
-        .prepare(
-          `SELECT m.account_id AS a, m.thread_id AS t, MAX(m.date_ms) AS ld, MAX(m.id) AS mx
-             FROM message m JOIN folder f ON f.id = m.folder_id
-            WHERE ${r.inclusion}
-              AND EXISTS (SELECT 1 FROM message m2 JOIN folder f2 ON f2.id = m2.folder_id
-                           WHERE m2.account_id = m.account_id AND m2.thread_id = m.thread_id
-                             AND ${memberWhere2})
-            GROUP BY m.account_id, m.thread_id
-            ${having}
-            ORDER BY ld ${asc ? 'ASC' : 'DESC'}, mx ${asc ? 'ASC' : 'DESC'}
-            LIMIT :limit`,
-        )
-        .all(params) as typeof groups;
+      groups =
+        (!asc ? this.walkNewest(r, limit, req.cursor) : null) ??
+        this.dateGroups(r, params, asc, req.cursor);
     } else {
       // The key comes from the LATEST message of the conversation (rn = 1): the sender as shown
       // (name, else address) or the subject without Re:/Fwd: prefixes. The same SQL text gives the
@@ -176,12 +151,13 @@ export class ConversationService {
                                        ORDER BY m.date_ms DESC, m.id DESC) AS rn,
                     SUBSTR(${keyExpr}, 1, 200) AS k
                FROM message m JOIN folder f ON f.id = m.folder_id
-              WHERE ${r.inclusion}
-                AND EXISTS (SELECT 1 FROM message m2 JOIN folder f2 ON f2.id = m2.folder_id
-                             WHERE m2.account_id = m.account_id AND m2.thread_id = m.thread_id
-                               AND ${memberWhere2}))
+              WHERE ${r.inclusion}),
+              ok AS (SELECT m.account_id AS a, m.thread_id AS t
+                       FROM message m JOIN folder f ON f.id = m.folder_id
+                      WHERE ${r.memberWhere} GROUP BY m.account_id, m.thread_id)
            SELECT a, t, ld, mx, k FROM g
             ${after ? `${after} AND rn = 1` : 'WHERE rn = 1'}
+              AND EXISTS (SELECT 1 FROM ok WHERE ok.a = g.a AND ok.t = g.t)
             ORDER BY k ${asc ? 'ASC' : 'DESC'}, ld DESC, mx DESC
             LIMIT :limit`,
         )
@@ -194,17 +170,7 @@ export class ConversationService {
     const items = page.map((g) => this.buildRow(r, unreadOnly, g.a, g.t, own));
     const last = page[page.length - 1];
 
-    let total: number | null = null;
-    if (!req.cursor) {
-      const t = db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM (
-             SELECT 1 FROM message m JOIN folder f ON f.id = m.folder_id
-              WHERE ${r.memberWhere} GROUP BY m.account_id, m.thread_id)`,
-        )
-        .get(r.params) as { n: number };
-      total = t.n;
-    }
+    const total = req.cursor ? null : this.totalThreads(r);
     const nextCursor =
       more && last
         ? { date: last.ld, id: last.mx, ...(sort !== 'date' ? { key: last.k ?? '' } : {}) }
@@ -215,6 +181,113 @@ export class ConversationService {
       canLoadOlderFromServer: nextCursor === null && this.messages.canLoadOlder(req.scope),
       total,
     };
+  }
+
+  /** Counting every conversation of a big view takes tens of ms: remember it until anything is written. */
+  private totalCache = new Map<string, { changes: number; n: number }>();
+
+  private totalThreads(r: Resolved): number {
+    const db = this.ctx.db;
+    const changes = (db.prepare('SELECT total_changes() AS c').get() as { c: number }).c;
+    const key = `${r.memberWhere}|${JSON.stringify(r.params)}`;
+    const hit = this.totalCache.get(key);
+    if (hit && hit.changes === changes) return hit.n;
+    const t = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM (
+           SELECT 1 FROM message m JOIN folder f ON f.id = m.folder_id
+            WHERE ${r.memberWhere} GROUP BY m.account_id, m.thread_id)`,
+      )
+      .get(r.params) as { n: number };
+    if (this.totalCache.size > 50) this.totalCache.clear();
+    this.totalCache.set(key, { changes, n: t.n });
+    return t.n;
+  }
+
+  /** One pass over the view's messages, grouped by conversation (any order, any cursor). */
+  private dateGroups(
+    r: Resolved,
+    params: Record<string, unknown>,
+    asc: boolean,
+    cursor: ListConversationsReq['cursor'],
+  ): { a: string; t: string; ld: number; mx: number }[] {
+    let having = `HAVING MAX(CASE WHEN ${r.memberWhere} THEN 1 ELSE 0 END) = 1`;
+    if (cursor) {
+      having += asc
+        ? ' AND (ld > :cDate OR (ld = :cDate AND mx > :cId))'
+        : ' AND (ld < :cDate OR (ld = :cDate AND mx < :cId))';
+      params.cDate = cursor.date;
+      params.cId = cursor.id;
+    }
+    return this.ctx.db
+      .prepare(
+        `SELECT m.account_id AS a, m.thread_id AS t, MAX(m.date_ms) AS ld, MAX(m.id) AS mx
+           FROM message m JOIN folder f ON f.id = m.folder_id
+          WHERE ${r.inclusion}
+          GROUP BY m.account_id, m.thread_id
+          ${having}
+          ORDER BY ld ${asc ? 'ASC' : 'DESC'}, mx ${asc ? 'ASC' : 'DESC'}
+          LIMIT :limit`,
+      )
+      .all(params) as { a: string; t: string; ld: number; mx: number }[];
+  }
+
+  /**
+   * Newest conversations first without looking at the whole mailbox. The view's messages are read from
+   * the newest down; the first message of a conversation that we meet carries its latest date. The walk
+   * stops as soon as `limit + 1` conversations are known and no unseen one can be newer than the last of
+   * them. Returns null when the view is too sparse for this (the caller then groups everything).
+   */
+  private walkNewest(
+    r: Resolved,
+    limit: number,
+    cursor: ListConversationsReq['cursor'],
+  ): { a: string; t: string; ld: number; mx: number }[] | null {
+    const MAX_THREADS_LOOKED_AT = 1500;
+    const db = this.ctx.db;
+    const walk = db.prepare(
+      `SELECT m.account_id AS a, m.thread_id AS t, m.date_ms AS d
+         FROM message m JOIN folder f ON f.id = m.folder_id
+        WHERE ${r.inclusion}${cursor ? ' AND m.date_ms <= :cDate' : ''}
+        ORDER BY m.date_ms DESC, m.id DESC`,
+    );
+    const agg = db.prepare(
+      `SELECT MAX(m.date_ms) AS ld, MAX(m.id) AS mx,
+              MAX(CASE WHEN ${r.memberWhere} THEN 1 ELSE 0 END) AS mem
+         FROM message m JOIN folder f ON f.id = m.folder_id
+        WHERE m.account_id = :tAcc AND m.thread_id = :tThr AND ${r.inclusion}`,
+    );
+    const seen = new Set<string>();
+    const found: { a: string; t: string; ld: number; mx: number }[] = [];
+    const newestFirst = (x: { ld: number; mx: number }, y: { ld: number; mx: number }) =>
+      y.ld - x.ld || y.mx - x.mx;
+    let sorted = true;
+    const params: Record<string, unknown> = { ...r.params };
+    if (cursor) params.cDate = cursor.date;
+    for (const row of walk.iterate(params) as Iterable<{ a: string; t: string; d: number }>) {
+      if (found.length > limit) {
+        if (!sorted) {
+          found.sort(newestFirst);
+          sorted = true;
+        }
+        if (row.d < found[limit]!.ld) break;
+      }
+      const key = `${row.a} ${row.t}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (seen.size > MAX_THREADS_LOOKED_AT && found.length <= limit) return null;
+      const g = agg.get({ ...r.params, tAcc: row.a, tThr: row.t }) as {
+        ld: number;
+        mx: number;
+        mem: number;
+      };
+      if (!g.mem) continue;
+      if (cursor && !(g.ld < cursor.date || (g.ld === cursor.date && g.mx < cursor.id))) continue;
+      found.push({ a: row.a, t: row.t, ld: g.ld, mx: g.mx });
+      sorted = false;
+    }
+    found.sort(newestFirst);
+    return found.slice(0, limit + 1);
   }
 
   private threadRows(r: Resolved, accountId: string, threadId: string): JoinedRow[] {
