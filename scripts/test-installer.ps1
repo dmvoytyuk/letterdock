@@ -1,7 +1,6 @@
 # Installer self-test (runs on the GitHub Windows runner, never on a dev machine with Smart App Control).
 # 1) silent install; 2) break the old uninstaller; 3) silent install again (as an update would);
 # 4) assert it succeeded, the app files were replaced, and the uninstall entry still exists.
-# The rename migration (Mailroom -> Letterdock) is tested by scripts/test-migration.ps1.
 param([string]$ReleaseDir = 'release')
 $ErrorActionPreference = 'Stop'
 

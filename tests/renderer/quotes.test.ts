@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { foldQuotedHtml, setQuoteOpen, splitQuotedText, QUOTE_SHOW, QUOTE_HIDE } from '../../src/renderer/src/lib/quotes';
+import { OWN_CLASS_PREFIXES, foldQuotedHtml, setQuoteOpen, splitQuotedText, QUOTE_SHOW, QUOTE_HIDE } from '../../src/renderer/src/lib/quotes';
 import { buildSrcdoc, sanitizeEmailHtml } from '../../src/renderer/src/lib/sanitize';
 
 const parse = (html: string) => new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html').body;
@@ -46,8 +46,8 @@ describe('foldQuotedHtml', () => {
     expect(hiddenText(r.html)).toContain('Are we still on for Thursday?');
   });
 
-  it('Letterdock and old Mailroom replies: intro line plus blockquote', () => {
-    for (const cls of ['letterdock', 'mailroom']) {
+  it('Letterdock replies, also from older versions: intro line plus blockquote', () => {
+    for (const cls of OWN_CLASS_PREFIXES) {
       const r = foldQuotedHtml(
         `<p>Reply text</p><div class="${cls}-quote-intro">On Oct 5, 2026, 10:41 AM, Jane wrote:</div><blockquote class="${cls}-quote" style="margin:0">Older text</blockquote>`,
       );

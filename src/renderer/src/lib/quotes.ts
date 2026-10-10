@@ -11,7 +11,14 @@ export const QUOTE_HIDE = 'Hide quoted text';
 export const QUOTE_WRAP = 'ld-qw';
 export const QUOTE_TOGGLE_ATTR = 'data-ld-toggle';
 
-const INTRO_CLASSES = /(^|\s)(letterdock-quote-intro|mailroom-quote-intro|moz-cite-prefix|gmail_attr)(\s|$)/;
+/** Class prefixes (before "-signature" / "-quote-intro") that our own mail carries. */
+export const OWN_CLASS_PREFIXES = ['letterdock', /* classes written by older versions */ 'mailroom'] as const;
+/** CSS selector for our own classes with the given suffix, e.g. ownClassSelector('signature'). */
+export function ownClassSelector(suffix: string): string {
+  return OWN_CLASS_PREFIXES.map((p) => `.${p}-${suffix}`).join(', ');
+}
+
+const INTRO_CLASSES = new RegExp(`(^|\\s)(${OWN_CLASS_PREFIXES.map((p) => `${p}-quote-intro`).join('|')}|moz-cite-prefix|gmail_attr)(\\s|$)`);
 /** "On Mon, 5 Oct 2026, Jane wrote:" in the languages mail clients write it in. */
 const WROTE = /(wrote|écrit|schrieb|escribió|scritto|schreef|skrev|napisał|escreveu)\s*:?\s*$/i;
 const NOT_TABLE_PARENT = new Set(['TABLE', 'TBODY', 'THEAD', 'TFOOT', 'TR', 'UL', 'OL', 'DL', 'SELECT', 'COLGROUP']);
@@ -83,8 +90,8 @@ function findRegions(body: HTMLElement, html: string): Region[] {
   // Apple Mail and Thunderbird: blockquote[type=cite].
   body.querySelectorAll('blockquote[type="cite"]').forEach((el) => add(withIntro(el)));
 
-  // Our own reply (and the old Mailroom one): an intro line followed by a blockquote.
-  body.querySelectorAll('.letterdock-quote-intro, .mailroom-quote-intro, .moz-cite-prefix').forEach((el) => {
+  // Our own reply (also from older versions): an intro line followed by a blockquote.
+  body.querySelectorAll(`${ownClassSelector('quote-intro')}, .moz-cite-prefix`).forEach((el) => {
     const next = nextMeaningful(el);
     if (isEl(next) && next.tagName === 'BLOCKQUOTE' && el.parentNode) add({ parent: el.parentNode, first: el, last: next });
   });

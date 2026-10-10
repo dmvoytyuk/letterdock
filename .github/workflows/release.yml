@@ -47,14 +47,6 @@ jobs:
         shell: pwsh
         run: ./scripts/test-installer.ps1 -ReleaseDir release
 
-      # Proves that the real published Mailroom 0.2.9 can be replaced by this build: user data moves
-      # to the new folder and the old app is removed. Also stops the release if it fails.
-      - name: Migration self-test (real Mailroom 0.2.9 -> this build)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/test-migration.ps1 -ReleaseDir release
-
       # Code signing (later): SignPath Foundation, free for open-source projects.
       # Upload the unsigned installer to SignPath, wait for the signed one, then replace it
       # in release/ BEFORE the upload steps below. Rebuild latest.yml hashes after signing.

@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 
 import DOMPurify from 'dompurify';
 import { Icon, type IconName } from '../../components/Icon';
 import { escapeHtml } from '../../lib/format';
+import { ownClassSelector } from '../../lib/quotes';
 
 // Only plain formatting survives a paste or a draft reload (no scripts, no foreign styles).
 const purify = DOMPurify(window);
@@ -103,7 +104,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       getOwnText: () => {
         if (!el.current) return '';
         const clone = el.current.cloneNode(true) as HTMLElement;
-        clone.querySelectorAll('blockquote, .letterdock-signature, .letterdock-quote-intro, .mailroom-signature, .mailroom-quote-intro').forEach((n) => n.remove());
+        clone.querySelectorAll(`blockquote, ${ownClassSelector('signature')}, ${ownClassSelector('quote-intro')}`).forEach((n) => n.remove());
         return clone.textContent ?? '';
       },
       focusStart: () => {
@@ -120,7 +121,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       focus: () => el.current?.focus(),
       swapSignature: (oldHtml, newHtml) => {
         const e = el.current;
-        const block = e?.querySelector<HTMLElement>('.letterdock-signature, .mailroom-signature');
+        const block = e?.querySelector<HTMLElement>(ownClassSelector('signature'));
         if (!e) return false;
         const norm = (h: string) => {
           const d = document.createElement('div');

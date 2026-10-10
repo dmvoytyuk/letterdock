@@ -1,6 +1,5 @@
 # Permanent app identity: appId is also the Windows AppUserModelID (src/main/buildConfig.ts APP_ID).
-# Never change it after the first public release. (It was changed once, on purpose: the product was
-# renamed from Mailroom (app.mailroom) to Letterdock in 0.3.0. See src/main/legacyMigration.ts.)
+# Never change it after the first public release.
 appId: app.letterdock
 productName: Letterdock
 executableName: Letterdock

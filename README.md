@@ -1,7 +1,5 @@
 # Letterdock
 
-_Letterdock was called Mailroom until version 0.2.9. Updating from 0.2.9 keeps your accounts, mail and settings and removes the old app._
-
 A free, open-source email client for Windows. Add as many accounts as you like. No limits, no ads, no subscription.
 
 Website: <https://voydapps.github.io/letterdock/>

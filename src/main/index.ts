@@ -32,8 +32,6 @@ import { AppTray } from './tray';
 import { QUIT_BUTTONS, QuitState, quitPromptText, shouldAskBeforeQuit } from './quitGuard';
 import { relayUndoToMain } from './undoRelay';
 import { APP_NAME, readEnv, resolveAppUserModelId } from './buildConfig';
-import { LEGACY_APP_NAME, MIGRATION_MARKER, migrateUserData } from './legacyMigration';
-import { nodeCleanupDeps, removeLegacyInstall, stopLegacyProcessesSync } from './legacyCleanup';
 import { createComposeWindow } from './composeWindow';
 import { EngineHost } from './engineHost';
 import { createEngineBridge } from './engineBridge';
@@ -59,32 +57,12 @@ import { ViewerWindows } from './viewerWindow';
 import { BoundsStore, COMPOSE_RULES } from './windowBounds';
 
 app.setName(APP_NAME);
-// Up to 0.2.9 the app was called Mailroom and kept its data in %APPDATA%\Mailroom. Move that folder
-// (whole: it holds Chromium's "Local State", the key for the saved passwords) BEFORE anything
-// opens a file in the data folder. Only for the installed app with the default data folder:
-// development runs must never stop the installed Mailroom or move its data. They use their own
-// folder (Letterdock-dev), like they use their own AppUserModelID.
+// Development runs use their own data folder (Letterdock-dev), like they use their own
+// AppUserModelID, so they never touch the installed app's data.
 const dataDirOverride = readEnv('DATA_DIR');
-const legacyDir = join(app.getPath('appData'), LEGACY_APP_NAME);
-const migration =
-  dataDirOverride || !app.isPackaged
-    ? null
-    : migrateUserData({
-        oldDir: legacyDir,
-        newDir: join(app.getPath('appData'), APP_NAME),
-        stopOldApp: stopLegacyProcessesSync,
-        appVersion: app.getVersion(),
-      });
-// If the migration failed, keep running on the old folder so nothing looks lost. It is tried
-// again at the next start.
-const useLegacyDir = migration?.status === 'failed' && existsSync(legacyDir);
 app.setPath(
   'userData',
-  dataDirOverride ??
-    join(
-      app.getPath('appData'),
-      app.isPackaged ? (useLegacyDir ? LEGACY_APP_NAME : APP_NAME) : `${APP_NAME}-dev`,
-    ),
+  dataDirOverride ?? join(app.getPath('appData'), app.isPackaged ? APP_NAME : `${APP_NAME}-dev`),
 );
 app.setAppUserModelId(resolveAppUserModelId(app.isPackaged));
 
@@ -107,9 +85,6 @@ async function boot(): Promise<void> {
   const logsDir = join(dataDir, 'logs');
   const log = createLogger(logsDir, 'main', settings.get().verboseLogging);
   log.info({ version: app.getVersion() }, 'starting');
-  for (const [level, msg] of migration?.messages ?? [])
-    log[level]({ migration: migration?.status }, msg);
-  scheduleLegacyCleanup(dataDir, log, migration !== null);
 
   await app.whenReady();
   nativeTheme.themeSource = settings.get().theme;
@@ -524,36 +499,6 @@ async function boot(): Promise<void> {
       });
     }
   });
-}
-
-/**
- * After the data folder was migrated, removes the old Mailroom install (it is a separate app id,
- * so the Letterdock installer leaves it in place). Packaged Windows builds only. Runs a few
- * seconds after start so it never slows the first window down.
- */
-function scheduleLegacyCleanup(dataDir: string, log: Logger, defaultDataDir: boolean): void {
-  if (!app.isPackaged || process.platform !== 'win32' || !defaultDataDir) return;
-  if (!existsSync(join(dataDir, MIGRATION_MARKER))) return;
-  const timer = setTimeout(() => {
-    const deps = nodeCleanupDeps({
-      localAppData: process.env['LOCALAPPDATA'] ?? join(app.getPath('home'), 'AppData', 'Local'),
-      appData: app.getPath('appData'),
-      desktopDir: app.getPath('desktop'),
-      dataDir,
-      readShortcutTarget: (lnk) => {
-        try {
-          return shell.readShortcutLink(lnk).target || null;
-        } catch {
-          return null;
-        }
-      },
-      log: { info: (m) => log.info(m), warn: (m) => log.warn(m) },
-    });
-    removeLegacyInstall(deps).catch((e) =>
-      log.warn({ err: String(e) }, 'old install cleanup failed'),
-    );
-  }, 8000);
-  timer.unref();
 }
 
 /** Loads electron-updater (only when packaged) and routes its log lines to our logger. */

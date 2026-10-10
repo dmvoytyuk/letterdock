@@ -2,23 +2,6 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { AccountId, ConversationSort, FolderId, ListScope, MessageId, Rule, RuleCondition } from '../../../shared/ipc';
 
-// Settings saved by the app under its old name are still read once (the data folder is migrated
-// as a whole, including this storage).
-const LEGACY_UI_KEY = 'mailroom.ui';
-const uiStorage = {
-  getItem: (name: string): string | null => {
-    const v = localStorage.getItem(name);
-    if (v !== null) return v;
-    try {
-      return localStorage.getItem(LEGACY_UI_KEY);
-    } catch {
-      return null;
-    }
-  },
-  setItem: (name: string, value: string): void => localStorage.setItem(name, value),
-  removeItem: (name: string): void => localStorage.removeItem(name),
-};
-
 export type View =
   | { kind: 'all' }
   | { kind: 'unread' }
@@ -237,7 +220,7 @@ export const useUi = create<UiState>()(
     {
       name: 'letterdock.ui',
       version: 1,
-      storage: createJSONStorage(() => uiStorage),
+      storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({
         sidebarCollapsed: s.sidebarCollapsed,
         sidebarW: s.sidebarW,
