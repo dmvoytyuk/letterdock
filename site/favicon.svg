@@ -7,10 +7,13 @@
     </linearGradient>
   </defs>
   <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
-  <!-- two letters peeking out behind: the other inboxes -->
-  <rect x="68" y="46" width="120" height="40" rx="14" fill="#FFFFFF" fill-opacity="0.45"/>
-  <rect x="48" y="68" width="160" height="44" rx="16" fill="#FFFFFF" fill-opacity="0.72"/>
-  <!-- front envelope: all inboxes in one -->
-  <rect x="30" y="92" width="196" height="132" rx="22" fill="#FFFFFF"/>
-  <path d="M56 124 L128 176 L200 124" fill="none" stroke="#0F6CBD" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- inner artwork: same as the old icon, scaled to 85% around the tile center for wider side margins -->
+  <g transform="translate(128 130) scale(0.85) translate(-128 -135)">
+    <!-- two letters peeking out behind: the other inboxes -->
+    <rect x="68" y="46" width="120" height="40" rx="14" fill="#FFFFFF" fill-opacity="0.45"/>
+    <rect x="48" y="68" width="160" height="44" rx="16" fill="#FFFFFF" fill-opacity="0.72"/>
+    <!-- front envelope: all inboxes in one -->
+    <rect x="30" y="92" width="196" height="132" rx="22" fill="#FFFFFF"/>
+    <path d="M56 124 L128 176 L200 124" fill="none" stroke="#0F6CBD" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
 </svg>
