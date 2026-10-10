@@ -345,14 +345,14 @@ describe('outbox: retries, failures, undo send', () => {
   });
 
   it('undo send: cancelling inside the delay stops the send and brings the draft back', async () => {
-    const c = await boot({ harness: { settings: { undoSendDelayMs: 600 } } });
+    const c = await boot({ harness: { settings: { undoSendDelayMs: 20_000 } } });
     const d = await newDraft(c.h, c.acc.id);
     const res = await handle<SendRes>(
       c.h,
       'compose.send',
       sendReq(d, { to: [{ address: 'x@example.com' }], subject: 'Oops', html: '<p>draft text</p>' }),
     );
-    expect(res.sendAt).toBeGreaterThan(Date.now() + 200);
+    expect(res.sendAt).toBeGreaterThan(Date.now() + 5_000);
     const [item] = (await handle(c.h, 'outbox.list')) as { state: string; sendAt: number }[];
     expect(item).toMatchObject({ state: 'queued', sendAt: res.sendAt });
 
@@ -380,7 +380,7 @@ describe('outbox: retries, failures, undo send', () => {
   });
 
   it('a queued message survives an engine restart (compose.start re-arms it)', async () => {
-    const c = await boot({ harness: { settings: { undoSendDelayMs: 400 } } });
+    const c = await boot({ harness: { settings: { undoSendDelayMs: 2_000 } } });
     const d = await newDraft(c.h, c.acc.id);
     await handle(c.h, 'compose.send', sendReq(d, { to: [{ address: 'x@example.com' }], subject: 'Persist' }));
     await c.h.engine.compose.shutdown();
@@ -423,6 +423,9 @@ describe('drafts', () => {
     const req = sendReq(d, { to: [{ address: 'x@example.com' }], subject: 'Soon sent' });
     await handle(c.h, 'compose.saveDraft', req);
     await waitFor('server draft', () => imap!.mailbox('Drafts').messages.length === 1);
+    // The copy on the server appears before the local row is linked to it; wait for the link, or send cannot find it.
+    await waitFor('draft linked to server copy', () =>
+      (c.h.engine.ctx.db.prepare('SELECT server_folder_id AS f FROM draft_state WHERE draft_id = ?').get(d.draftId) as { f: number | null } | undefined)?.f != null);
     await handle(c.h, 'compose.send', req);
     await waitFor('delivered', () => c.smtp.mails.length === 1);
     await waitFor('draft removed', () => imap!.mailbox('Drafts').messages.length === 0);

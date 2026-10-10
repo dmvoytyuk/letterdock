@@ -25,6 +25,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "bench": "node scripts/bench.mjs",
     "postinstall": "node node_modules/electron/install.js && electron-builder install-app-deps",
     "icons": "node scripts/build-icons.mjs",
     "site:screenshots": "node scripts/make-site-screenshots.mjs"

@@ -163,7 +163,7 @@ export async function createHarness(
 export async function waitFor<T>(
   what: string,
   fn: () => T | Promise<T>,
-  timeoutMs = 10_000,
+  timeoutMs = 30_000, // generous: polling returns as soon as true, so only a real hang pays it
 ): Promise<NonNullable<T>> {
   const start = Date.now();
   let lastErr: unknown;

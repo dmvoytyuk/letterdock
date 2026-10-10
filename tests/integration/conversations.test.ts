@@ -371,8 +371,8 @@ describe('late parents and events', () => {
       const res = await list(c.h, { kind: 'unifiedInbox' });
       return res.items.length === 1 && res.items[0]!.count === 2;
     });
+    await waitFor('conversations:changed event', () => c.h.eventsOfType('conversations:changed').length > 0);
     const ev = c.h.eventsOfType('conversations:changed');
-    expect(ev.length).toBeGreaterThan(0);
     const row = (await list(c.h, { kind: 'unifiedInbox' })).items[0]!;
     expect(ev.some((e) => e.accountId === c.acc.id && e.threadIds.includes(row.threadId))).toBe(true);
   });

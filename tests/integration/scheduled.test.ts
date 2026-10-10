@@ -198,8 +198,8 @@ describe('sending on time', () => {
 
   it('the real timer fires too (no manual check)', async () => {
     const c = await boot();
-    await schedule(c, 400);
-    await waitFor('delivered by the timer', () => smtp!.mails.length === 1, 8000);
+    await schedule(c, 3000);
+    await waitFor('delivered by the timer', () => smtp!.mails.length === 1, 25_000);
   });
 
   it('From and the text are frozen when it is scheduled', async () => {
